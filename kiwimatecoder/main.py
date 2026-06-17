@@ -7,6 +7,7 @@ from rich.console import Console
 from kiwimatecoder.ai import stream_response
 from kiwimatecoder.config import (
     get_key,
+    get_selected_provider_id,
     load_config,
     set_key,
     set_selected_model,
@@ -35,12 +36,8 @@ def main(ctx: typer.Context):
     from kiwimatecoder import repl
 
     cfg = load_config()
-    provider_id = cfg.get("selected_provider") or default_provider().id
-    try:
-        provider = get_provider(provider_id)
-    except KeyError:
-        provider = default_provider()
-        provider_id = provider.id
+    provider_id = get_selected_provider_id(cfg)
+    provider = get_provider(provider_id)
     model = cfg.get("selected_model") or provider.default_model
 
     try:
@@ -148,10 +145,16 @@ def set_model_cmd(model: str = typer.Argument(..., help="Model id")):
 def check():
     """Check which providers have a configured API key."""
     cfg = load_config()
+    provider_id = get_selected_provider_id(cfg)
+    mode = cfg.get("default_mode") or "ask"
+    try:
+        PermissionMode.from_str(mode)
+    except ValueError:
+        mode = "ask"
     console.print(
-        f"Default provider: [cyan]{cfg.get('selected_provider')}[/cyan], "
+        f"Default provider: [cyan]{provider_id}[/cyan], "
         f"model: [cyan]{cfg.get('selected_model') or '(provider default)'}[/cyan], "
-        f"mode: [cyan]{cfg.get('default_mode')}[/cyan]"
+        f"mode: [cyan]{mode}[/cyan]"
     )
     for provider in list_providers():
         key = get_key(provider.id)

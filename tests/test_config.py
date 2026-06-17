@@ -44,6 +44,20 @@ def test_env_var_overrides_stored_key(monkeypatch):
     assert config.get_key("openrouter") == "from-env"
 
 
+def test_empty_env_var_takes_precedence_and_disables_stored_key(monkeypatch):
+    """Exported empty env var must win over stored key (returns None -> friendly no-key path)."""
+    config.set_key("openrouter", "stored-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    assert config.get_key("openrouter") is None
+
+
+def test_absent_env_uses_stored_key(monkeypatch):
+    """When env var is not present at all, stored key is used."""
+    config.set_key("openai", "sk-stored")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert config.get_key("openai") == "sk-stored"
+
+
 def test_set_key_unknown_provider_raises():
     with pytest.raises(KeyError):
         config.set_key("nope", "x")

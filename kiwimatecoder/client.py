@@ -125,6 +125,8 @@ def parse_sse_chunk(data: str) -> list[StreamEvent]:
 
     ``data`` is the raw text after the ``data: `` prefix. ``[DONE]`` yields a
     terminal :class:`Done`. Malformed JSON yields no events (callers skip it).
+    Top-level ``error`` objects in a chunk are detected by the streaming client
+    (which raises ProviderError) rather than being turned into events here.
     """
     if data.strip() == "[DONE]":
         return [Done()]
@@ -227,7 +229,21 @@ class UnifiedClient:
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):
                         continue
-                    for event in parse_sse_chunk(line[6:]):
+                    data_part = line[6:]
+                    # Detect in-stream error payloads (some gateways deliver {"error": ...}
+                    # inside a 200 SSE stream). Raise the same ProviderError used for
+                    # non-200 responses so existing handlers in agent/ai print it cleanly.
+                    try:
+                        chunk = json.loads(data_part)
+                        if isinstance(chunk, dict) and "error" in chunk:
+                            err = chunk["error"]
+                            msg = err.get("message") if isinstance(err, dict) else str(err)
+                            raise ProviderError(
+                                f"{self.provider.name} stream error: {str(msg)[:500]}"
+                            )
+                    except (json.JSONDecodeError, TypeError, AttributeError, KeyError):
+                        pass
+                    for event in parse_sse_chunk(data_part):
                         yield event
                         if isinstance(event, Done) and event.finish_reason is None:
                             return

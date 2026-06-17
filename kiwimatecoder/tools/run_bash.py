@@ -1,4 +1,10 @@
-"""run_bash tool: execute a shell command in the workspace."""
+"""run_bash tool: execute a shell command in the workspace.
+
+Note: unlike the read/write/list/search/edit file tools (which use
+resolve_in_workspace for sandboxing), run_bash is not restricted beyond setting
+cwd to the workspace root. The command string is executed via shell=True (with
+user approval in ask/plan modes). Intended for git, pytest, builds, etc.
+"""
 
 from __future__ import annotations
 

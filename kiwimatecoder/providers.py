@@ -1,10 +1,10 @@
 """Built-in registry of model providers.
 
-Every provider here speaks the OpenAI-compatible ``/chat/completions`` API, so a
-single :class:`~kiwimatecoder.client.UnifiedClient` can drive all of them. The
-``compat`` field is reserved for the day a provider needs a native code path
-(e.g. Anthropic's native Messages API); callers branch on it instead of
-hard-coding provider ids.
+Most providers expose an OpenAI-compatible ``/chat/completions`` API so a single
+:class:`~kiwimatecoder.client.UnifiedClient` can drive them. The ``compat`` field
+and the ``anthropic`` entry are reserved for future native code paths (e.g.
+Anthropic's native Messages API). Callers must not assume every registered id
+yields a fully compatible endpoint today.
 
 Model ids drift fast — the defaults below were verified in June 2026. They are
 only starting points: the user can override the model for any provider at
@@ -25,8 +25,20 @@ class ProviderConfig:
     base_url: str  # includes /v1, never a trailing /chat/completions
     default_model: str
     key_env: str
-    compat: str = "openai"  # "openai" | "anthropic" (reserved for native paths)
+    compat: str = "openai"  # "openai" | "anthropic" (reserved; native paths not yet implemented)
     extra_headers: dict[str, str] = field(default_factory=dict)
+
+
+class UnknownProviderError(KeyError):
+    """KeyError subclass for unknown provider IDs.
+
+    Subclassing preserves all existing ``except KeyError`` sites (in main,
+    commands, config, and tests). Overrides __str__ so f"{exc}" and the red
+    error prints produce clean messages without Python's extra repr quotes.
+    """
+
+    def __str__(self) -> str:
+        return self.args[0] if self.args else super().__str__()
 
 
 REGISTRY: dict[str, ProviderConfig] = {
@@ -104,11 +116,11 @@ DEFAULT_PROVIDER_ID = "openrouter"
 
 
 def get_provider(provider_id: str) -> ProviderConfig:
-    """Return the provider config for ``provider_id`` or raise ``KeyError``."""
+    """Return the provider config for ``provider_id`` or raise ``UnknownProviderError`` (a ``KeyError`` subclass)."""
     try:
         return REGISTRY[provider_id]
     except KeyError:
-        raise KeyError(
+        raise UnknownProviderError(
             f"Unknown provider '{provider_id}'. "
             f"Known providers: {', '.join(sorted(REGISTRY))}"
         ) from None

@@ -47,7 +47,7 @@ it can do without asking, and you can switch it at any time with `/mode`:
 | `auto-accept` | Actions run without prompting. |
 | `plan` | Read-only: the agent can inspect and explain, but cannot write or run anything. |
 
-All file access is sandboxed to the current working directory.
+Reads, writes, edits, listings and searches are sandboxed to the workspace root (via symlink-aware path resolution). `run_bash` commands execute with the workspace root as their cwd but are otherwise unrestricted (subject to approval/mode); use them for git, tests, builds, etc.
 
 ## Slash commands
 
@@ -91,6 +91,12 @@ either via `config set-key --provider <id>` or the provider's environment variab
 
 Default model ids reflect what was current at the time of writing; they drift, so
 override them with `/model <name>` or `config set-model <name>` as providers update.
+
+Note: The `anthropic` provider id is kept for key configuration and future expansion.
+Its current base URL points at Anthropic's native API; the client assumes
+OpenAI-compatible chat+tools streaming for all providers today. For Anthropic
+models, routing via `openrouter` (or another gateway) is the most reliable path
+until native support is added.
 
 ## One-shot mode
 

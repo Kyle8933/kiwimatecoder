@@ -91,12 +91,14 @@ def save_config(cfg: dict) -> None:
 def get_key(provider_id: str) -> str | None:
     """Return the API key for a provider.
 
-    Environment variable (the provider's ``key_env``) wins over the stored key.
+    Environment variable (the provider's ``key_env``) takes precedence over the
+    stored key (even if the env var is set to the empty string, which clears any
+    stored key for this process and forces the friendly "no key" path).
     """
     provider = get_provider(provider_id)
     env_key = os.environ.get(provider.key_env)
-    if env_key:
-        return env_key
+    if env_key is not None:
+        return env_key or None  # exported empty string -> treat as "no key"
     return load_config()["keys"].get(provider_id)
 
 
@@ -122,6 +124,22 @@ def set_selected_model(model: str | None) -> None:
     cfg = load_config()
     cfg["selected_model"] = model
     save_config(cfg)
+
+
+def get_selected_provider_id(cfg: dict | None = None) -> str:
+    """Return the configured selected_provider if valid in the registry, else DEFAULT_PROVIDER_ID.
+
+    Used by the bare launch (forgiving fallback) and ``config check`` (accurate display
+    instead of advertising a stale/unknown value from the on-disk JSON).
+    """
+    if cfg is None:
+        cfg = load_config()
+    pid = cfg.get("selected_provider") or DEFAULT_PROVIDER_ID
+    try:
+        get_provider(pid)
+        return pid
+    except KeyError:
+        return DEFAULT_PROVIDER_ID
 
 
 # ---------------------------------------------------------------------------
