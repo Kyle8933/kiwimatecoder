@@ -30,7 +30,7 @@ until you exit. Type a request in plain language and KiwiMateCoder will read fil
 search the codebase, propose edits, and run commands to carry it out.
 
 ```
-kiwi (openrouter:mistralai/devstral-2512 · ask) › add a docstring to main.py
+kiwi (openrouter:z-ai/glm-5.2 · ask) › add a docstring to main.py
 ```
 
 - **Ctrl-C** cancels the current turn and returns you to the prompt.
@@ -87,7 +87,7 @@ either via `config set-key --provider <id>` or the provider's environment variab
 | `deepseek` | `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
 | `qwen` | `qwen3.7-max` | `DASHSCOPE_API_KEY` |
 | `moonshot` | `kimi-k2.7-code` | `MOONSHOT_API_KEY` |
-| `openrouter` | `mistralai/devstral-2512` | `OPENROUTER_API_KEY` |
+| `openrouter` | `z-ai/glm-5.2` | `OPENROUTER_API_KEY` |
 
 Default model ids reflect what was current at the time of writing; they drift, so
 override them with `/model <name>` or `config set-model <name>` as providers update.

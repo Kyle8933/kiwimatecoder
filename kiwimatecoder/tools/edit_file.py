@@ -6,7 +6,12 @@ import difflib
 
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
-from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_workspace
+from kiwimatecoder.tools.paths import (
+    PathError,
+    atomic_write_text,
+    display_path,
+    resolve_in_workspace,
+)
 
 
 class EditError(ValueError):
@@ -52,7 +57,7 @@ def preview(args: dict, session: Session) -> str:
     if not resolved.exists():
         return f"(file not found: {path})"
     rel = display_path(resolved, session.workspace_root)
-    old_text = resolved.read_text(errors="replace")
+    old_text = resolved.read_text(encoding="utf-8", errors="replace")
     try:
         new_text = compute_edit(
             old_text,
@@ -76,7 +81,7 @@ def _edit_file(args: dict, session: Session) -> ToolResult:
     if not resolved.exists():
         return ToolResult.error(f"File not found: {path}")
 
-    old_text = resolved.read_text(errors="replace")
+    old_text = resolved.read_text(encoding="utf-8", errors="replace")
     try:
         new_text = compute_edit(
             old_text,
@@ -87,7 +92,10 @@ def _edit_file(args: dict, session: Session) -> ToolResult:
     except EditError as exc:
         return ToolResult.error(str(exc))
 
-    resolved.write_text(new_text)
+    try:
+        atomic_write_text(resolved, new_text)
+    except OSError as exc:
+        return ToolResult.error(f"Could not write file: {exc}")
     session.record_touched(display_path(resolved, session.workspace_root))
     return ToolResult(content=f"Edited {path}.")
 

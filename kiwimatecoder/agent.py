@@ -19,6 +19,7 @@ from kiwimatecoder.client import (
 from kiwimatecoder.permissions import ConfirmFn, PermissionMode, gate
 from kiwimatecoder.prompts import build_system_prompt
 from kiwimatecoder.session import Session
+from kiwimatecoder.tools.base import ToolResult
 
 MAX_TOOL_ROUNDS = 25
 
@@ -51,7 +52,7 @@ class Agent:
         """Process one user message, looping over tool calls until the model stops."""
         self.session.messages.append({"role": "user", "content": user_input})
 
-        for _ in range(MAX_TOOL_ROUNDS):
+        for round_num in range(MAX_TOOL_ROUNDS):
             try:
                 assistant_msg, tool_calls = await self._stream_once()
             except ProviderError as exc:
@@ -63,12 +64,23 @@ class Agent:
             if not tool_calls:
                 return
 
+            # On the final allowed round, don't execute the model's new tool
+            # calls — instead record synthetic results so the conversation
+            # history stays valid (every tool_call id has a matching result)
+            # and the model can wrap up on the next turn.
+            if round_num == MAX_TOOL_ROUNDS - 1:
+                for call in tool_calls:
+                    self._append_result(
+                        call.id, "Reached the step limit for this turn."
+                    )
+                self.console.print(
+                    f"\n[yellow]Reached the {MAX_TOOL_ROUNDS}-step limit "
+                    "for this turn.[/yellow]"
+                )
+                return
+
             for call in tool_calls:
                 self._handle_tool_call(call)
-
-        self.console.print(
-            f"\n[yellow]Reached the {MAX_TOOL_ROUNDS}-step limit for this turn.[/yellow]"
-        )
 
     async def _stream_once(self) -> tuple[dict, list]:
         """Stream one assistant response, rendering text and collecting tool calls."""
@@ -84,7 +96,7 @@ class Agent:
             self._request_messages(), schemas, self.session.model
         ):
             if isinstance(event, TextDelta):
-                self.console.print(event.text, end="")
+                self.console.print(event.text, end="", markup=False, highlight=False)
                 text_parts.append(event.text)
                 printed_any = True
             elif isinstance(event, ToolCallDelta):
@@ -132,7 +144,10 @@ class Agent:
             self._append_result(call.id, decision.reason)
             return
 
-        result = tool.execute(args, self.session)
+        try:
+            result = tool.execute(args, self.session)
+        except Exception as exc:
+            result = ToolResult.error(f"Tool crashed: {exc!r}")
         style = "green" if result.ok else "red"
         self.console.print(f"[{style}]• {call.name}[/{style}]")
         self._append_result(call.id, result.content)

@@ -6,11 +6,31 @@ which rejects paths that escape the workspace root (via ``..`` or symlinks).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
 class PathError(ValueError):
     """Raised when a path escapes the workspace root."""
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` atomically as UTF-8.
+
+    Writes to a sibling temp file then ``os.replace``s it into place, so a
+    crash mid-write cannot truncate the destination. Parent directories must
+    already exist.
+    """
+    tmp = path.with_name(path.name + ".kiwi.tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def resolve_in_workspace(path: str, workspace_root: Path) -> Path:

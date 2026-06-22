@@ -40,6 +40,6 @@ async def stream_response(
     try:
         async for event in client.stream_chat(messages, tools=None, model=model):
             if isinstance(event, TextDelta):
-                console.print(event.text, end="")
+                console.print(event.text, end="", markup=False, highlight=False)
     except ProviderError as exc:
         console.print(f"\n[red]{exc}[/red]")

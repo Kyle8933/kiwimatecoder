@@ -83,9 +83,21 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    """Persist configuration to the JSON config file."""
+    """Persist configuration to the JSON config file.
+
+    The file (and its directory) are tightened to owner-only permissions since
+    they may contain API keys.
+    """
     CONFIG_DIR.mkdir(exist_ok=True)
+    try:
+        os.chmod(CONFIG_DIR, 0o700)
+    except OSError:
+        pass
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n")
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except OSError:
+        pass
 
 
 def get_key(provider_id: str) -> str | None:

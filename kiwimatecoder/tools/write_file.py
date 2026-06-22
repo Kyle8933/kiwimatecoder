@@ -6,7 +6,12 @@ import difflib
 
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
-from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_workspace
+from kiwimatecoder.tools.paths import (
+    PathError,
+    atomic_write_text,
+    display_path,
+    resolve_in_workspace,
+)
 
 
 def preview(args: dict, session: Session) -> str:
@@ -19,7 +24,7 @@ def preview(args: dict, session: Session) -> str:
         return str(exc)
     rel = display_path(resolved, session.workspace_root)
     if resolved.exists():
-        old = resolved.read_text(errors="replace").splitlines(keepends=True)
+        old = resolved.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
         new = content.splitlines(keepends=True)
         diff = "".join(
             difflib.unified_diff(old, new, fromfile=rel, tofile=rel, n=3)
@@ -42,7 +47,10 @@ def _write_file(args: dict, session: Session) -> ToolResult:
 
     existed = resolved.exists()
     resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(content)
+    try:
+        atomic_write_text(resolved, content)
+    except OSError as exc:
+        return ToolResult.error(f"Could not write file: {exc}")
     session.record_touched(display_path(resolved, session.workspace_root))
     verb = "Updated" if existed else "Created"
     return ToolResult(content=f"{verb} {path} ({len(content)} bytes).")

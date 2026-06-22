@@ -34,10 +34,22 @@ def _read_file(args: dict, session: Session) -> ToolResult:
     text = data.decode("utf-8", "replace")
     lines = text.splitlines()
 
-    offset = int(args.get("offset", 0) or 0)
+    try:
+        offset = int(args.get("offset", 0) or 0)
+    except (TypeError, ValueError):
+        return ToolResult.error("'offset' must be an integer")
+    if offset < 0:
+        return ToolResult.error("'offset' must be non-negative")
     limit = args.get("limit")
+    if limit is not None:
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            return ToolResult.error("'limit' must be an integer")
+        if limit < 0:
+            return ToolResult.error("'limit' must be non-negative")
     if offset or limit is not None:
-        end = offset + int(limit) if limit is not None else len(lines)
+        end = offset + limit if limit is not None else len(lines)
         lines = lines[offset:end]
 
     truncated = False
