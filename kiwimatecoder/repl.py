@@ -22,7 +22,9 @@ console = Console()
 def _banner(session: Session) -> Panel:
     return Panel(
         "[bold green]KiwiMateCoder[/bold green] — agentic coding assistant\n"
-        "[dim]Type your request, or /help for commands. Ctrl-C cancels, Ctrl-D exits.[/dim]",
+        "[dim]Ask for a task, or start with /mode plan for read-only planning. "
+        "Kiwi will keep plans short and offer options when choices matter.\n"
+        "Type /help for commands. Ctrl-C cancels, Ctrl-D exits.[/dim]",
         subtitle=f"{session.provider_id}:{session.model} · {session.mode.value}",
     )
 

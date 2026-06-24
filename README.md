@@ -27,7 +27,9 @@ kiwimatecoder
 
 Running `kiwimatecoder` with no arguments opens the interactive REPL. It keeps running
 until you exit. Type a request in plain language and KiwiMateCoder will read files,
-search the codebase, propose edits, and run commands to carry it out.
+search the codebase, propose edits, and run commands to carry it out. For larger or
+ambiguous tasks, it starts with a short plan and gives you a few concrete options
+so you can choose the scope and tradeoffs before it proceeds.
 
 ```
 kiwi (openrouter:z-ai/glm-5.2 · ask) › add a docstring to main.py
@@ -35,6 +37,8 @@ kiwi (openrouter:z-ai/glm-5.2 · ask) › add a docstring to main.py
 
 - **Ctrl-C** cancels the current turn and returns you to the prompt.
 - **Ctrl-D** exits the session.
+- Use `/mode plan` when you only want investigation and options, with no edits or
+  shell commands.
 
 ## Permission modes
 
