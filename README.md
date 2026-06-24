@@ -67,6 +67,7 @@ Reads, writes, edits, listings and searches are sandboxed to the workspace root 
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
+| `/config` | Show or change providers, API keys, model defaults, and model filters. |
 | `/cost` | Show token usage for this session. |
 
 Examples:
@@ -76,6 +77,18 @@ Examples:
 /context
 /context remove README.md
 /context clear
+```
+
+Config examples:
+
+```text
+/config
+/config provider add local "Local Models" http://localhost:1234/v1 local-code LOCAL_API_KEY
+/config key set local <YOUR_KEY>
+/config provider use local
+/config models allow local-code local-fast
+/config models deny deprecated-model
+/config provider remove local
 ```
 
 ## Tools
@@ -89,8 +102,10 @@ The assistant has these capabilities, all scoped to the workspace:
 ## Providers
 
 KiwiMateCoder ships a built-in registry of providers. Switch live with `/provider`,
-or set defaults with `config set-provider` / `config set-model`. A key can be supplied
-either via `config set-key --provider <id>` or the provider's environment variable.
+or set persistent defaults with `/config provider use`, `config set-provider`, and
+`config set-model`. A key can be supplied via `/config key set <provider> <key>`,
+`config set-key --provider <id>`, or the provider's environment variable. You can
+also add OpenAI-compatible custom providers with `/config provider add`.
 
 | Provider id | Default model | Key env var |
 |-------------|---------------|-------------|

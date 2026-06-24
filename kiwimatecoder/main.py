@@ -7,14 +7,15 @@ from rich.console import Console
 from kiwimatecoder.ai import stream_response
 from kiwimatecoder.config import (
     get_key,
+    get_provider_config,
     get_selected_provider_id,
+    list_provider_configs,
     load_config,
     set_key,
     set_selected_model,
     set_selected_provider,
 )
 from kiwimatecoder.permissions import PermissionMode
-from kiwimatecoder.providers import default_provider, get_provider, list_providers
 from kiwimatecoder.session import Session
 from kiwimatecoder.updater import run_update
 
@@ -49,7 +50,7 @@ def main(
 
     cfg = load_config()
     provider_id = get_selected_provider_id(cfg)
-    provider = get_provider(provider_id)
+    provider = get_provider_config(provider_id, cfg)
     model = cfg.get("selected_model") or provider.default_model
 
     try:
@@ -86,9 +87,9 @@ def ask(
 ):
     """Ask KiwiMateCoder a one-shot coding question."""
     cfg = load_config()
-    provider_id = provider or cfg.get("selected_provider") or default_provider().id
+    provider_id = provider or get_selected_provider_id(cfg)
     try:
-        provider_cfg = get_provider(provider_id)
+        provider_cfg = get_provider_config(provider_id, cfg)
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
@@ -174,7 +175,7 @@ def check():
         f"model: [cyan]{cfg.get('selected_model') or '(provider default)'}[/cyan], "
         f"mode: [cyan]{mode}[/cyan]"
     )
-    for provider in list_providers():
+    for provider in list_provider_configs(cfg):
         key = get_key(provider.id)
         if key:
             console.print(
@@ -187,7 +188,7 @@ def check():
 @config_app.command("list")
 def list_cmd():
     """List all built-in providers and their default models."""
-    for provider in list_providers():
+    for provider in list_provider_configs():
         console.print(
             f"[cyan]{provider.id}[/cyan]: {provider.name} "
             f"(default: {provider.default_model}, key env: {provider.key_env})"

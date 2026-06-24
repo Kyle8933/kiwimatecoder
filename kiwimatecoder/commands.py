@@ -10,8 +10,22 @@ from rich.console import Console
 from rich.table import Table
 
 from kiwimatecoder import tools
+from kiwimatecoder.config import (
+    add_provider,
+    get_key,
+    get_model_filter,
+    get_provider_config,
+    list_provider_configs,
+    list_visible_models,
+    remove_key,
+    remove_provider,
+    set_key,
+    set_model_filter,
+    set_selected_model,
+    set_selected_provider,
+)
 from kiwimatecoder.permissions import PermissionMode
-from kiwimatecoder.providers import get_provider, list_providers
+from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_workspace
 
@@ -72,13 +86,13 @@ def _provider(arg: str, session: Session, console: Console) -> str:
         table.add_column("id", style="cyan")
         table.add_column("name")
         table.add_column("default model")
-        for p in list_providers():
+        for p in list_provider_configs():
             marker = " (active)" if p.id == session.provider_id else ""
             table.add_row(p.id + marker, p.name, p.default_model)
         console.print(table)
         return CommandResult.CONTINUE
     try:
-        get_provider(arg)
+        get_provider_config(arg)
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         return CommandResult.CONTINUE
@@ -278,6 +292,302 @@ def _context(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
+def _config_help(console: Console) -> None:
+    table = Table(title="/config commands", show_header=True)
+    table.add_column("Command", style="cyan")
+    table.add_column("Description")
+    rows = [
+        ("/config", "Show active provider, model, key, and model filter."),
+        ("/config providers", "List built-in and custom providers."),
+        (
+            "/config provider add <id> <name> <base_url> <default_model> [key_env]",
+            "Add an OpenAI-compatible custom provider. Quote names with spaces.",
+        ),
+        ("/config provider remove <id>", "Remove a custom provider."),
+        ("/config provider use <id>", "Persist and switch to a provider."),
+        ("/config key set <provider> <key>", "Save an API key."),
+        ("/config key remove <provider>", "Remove a stored API key."),
+        ("/config key list", "Show which providers have keys configured."),
+        ("/config model set <model>", "Persist the default model."),
+        ("/config model reset", "Use the provider default model."),
+        (
+            "/config models allow <model> [...]",
+            "Only show these models for the active provider.",
+        ),
+        (
+            "/config models deny <model> [...]",
+            "Hide these models for the active provider.",
+        ),
+        ("/config models clear", "Clear model visibility for the active provider."),
+    ]
+    for command, description in rows:
+        table.add_row(command, description)
+    console.print(table)
+
+
+def _config_show(session: Session, console: Console) -> None:
+    provider = session.provider
+    key = get_key(provider.id)
+    model_filter = get_model_filter(provider.id)
+    console.print(
+        f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
+        f"Model: [cyan]{session.model}[/cyan]\n"
+        f"Key: {'[green]configured[/green]' if key else '[yellow]missing[/yellow]'} "
+        f"({provider.key_env})\n"
+        f"Model visibility: [cyan]{model_filter['mode']}[/cyan]"
+    )
+    if model_filter["models"]:
+        console.print("Models: " + ", ".join(model_filter["models"]))
+
+
+def _config_providers(
+    action_parts: list[str], session: Session, console: Console
+) -> None:
+    action = action_parts[0].lower() if action_parts else "list"
+    rest = action_parts[1:]
+
+    if action in {"list", "ls"}:
+        table = Table(title="Providers", show_header=True)
+        table.add_column("id", style="cyan")
+        table.add_column("type")
+        table.add_column("name")
+        table.add_column("default model")
+        table.add_column("base URL")
+        for provider in list_provider_configs():
+            marker = " (active)" if provider.id == session.provider_id else ""
+            kind = "built-in" if provider.id in REGISTRY else "custom"
+            table.add_row(
+                provider.id + marker,
+                kind,
+                provider.name,
+                provider.default_model,
+                provider.base_url,
+            )
+        console.print(table)
+        return
+
+    if action in {"add", "create"}:
+        if len(rest) < 4:
+            console.print(
+                "[yellow]Usage: /config provider add <id> <name> "
+                "<base_url> <default_model> [key_env][/yellow]"
+            )
+            return
+        provider_id, name, base_url, default_model = rest[:4]
+        key_env = rest[4] if len(rest) > 4 else None
+        try:
+            provider = add_provider(provider_id, name, base_url, default_model, key_env)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Added provider[/green] [cyan]{provider.id}[/cyan] "
+            f"({provider.name})."
+        )
+        return
+
+    if action in {"remove", "rm", "delete"}:
+        if not rest:
+            console.print("[yellow]Usage: /config provider remove <id>[/yellow]")
+            return
+        provider_id = rest[0]
+        was_active = provider_id == session.provider_id
+        try:
+            remove_provider(provider_id)
+        except (KeyError, ValueError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        if was_active:
+            session.set_provider(DEFAULT_PROVIDER_ID)
+        console.print(f"[green]Removed provider[/green] [cyan]{provider_id}[/cyan].")
+        return
+
+    if action in {"use", "select", "set"}:
+        if not rest:
+            console.print("[yellow]Usage: /config provider use <id>[/yellow]")
+            return
+        provider_id = rest[0]
+        try:
+            set_selected_provider(provider_id)
+            session.set_provider(provider_id)
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"Provider set to [cyan]{session.provider_id}[/cyan] "
+            f"(model: [cyan]{session.model}[/cyan])."
+        )
+        return
+
+    console.print("[yellow]Unknown provider config action. Try /config help.[/yellow]")
+
+
+def _config_keys(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "list"
+    rest = action_parts[1:]
+
+    if action in {"list", "ls"}:
+        table = Table(title="API keys", show_header=True)
+        table.add_column("provider", style="cyan")
+        table.add_column("env var")
+        table.add_column("status")
+        for provider in list_provider_configs():
+            key = get_key(provider.id)
+            status = (
+                f"[green]configured (...{key[-4:]})[/green]"
+                if key
+                else "[dim]missing[/dim]"
+            )
+            table.add_row(provider.id, provider.key_env, status)
+        console.print(table)
+        return
+
+    if action in {"set", "save", "add"}:
+        if len(rest) < 2:
+            console.print("[yellow]Usage: /config key set <provider> <key>[/yellow]")
+            return
+        provider_id, key = rest[0], rest[1]
+        try:
+            set_key(provider_id, key)
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(f"[green]Saved API key for[/green] [cyan]{provider_id}[/cyan].")
+        return
+
+    if action in {"remove", "rm", "delete", "clear"}:
+        if not rest:
+            console.print("[yellow]Usage: /config key remove <provider>[/yellow]")
+            return
+        provider_id = rest[0]
+        try:
+            existed = remove_key(provider_id)
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        if existed:
+            console.print(
+                f"[green]Removed stored API key for[/green] [cyan]{provider_id}[/cyan]."
+            )
+        else:
+            console.print(f"[dim]No stored API key for {provider_id}.[/dim]")
+        return
+
+    console.print("[yellow]Unknown key config action. Try /config help.[/yellow]")
+
+
+def _config_model(action_parts: list[str], session: Session, console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action == "show":
+        console.print(f"Current model: [cyan]{session.model}[/cyan]")
+        return
+    if action == "set":
+        if not rest:
+            console.print("[yellow]Usage: /config model set <model>[/yellow]")
+            return
+        model = rest[0]
+        set_selected_model(model)
+        session.model = model
+        console.print(f"[green]Default model set to[/green] [cyan]{model}[/cyan].")
+        return
+    if action in {"reset", "clear"}:
+        set_selected_model(None)
+        session.model = session.provider.default_model
+        console.print(
+            f"[green]Default model reset.[/green] "
+            f"Using [cyan]{session.model}[/cyan]."
+        )
+        return
+    console.print("[yellow]Unknown model config action. Try /config help.[/yellow]")
+
+
+def _config_models(action_parts: list[str], session: Session, console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    models = action_parts[1:]
+    provider_id = session.provider_id
+
+    if action in {"show", "list", "ls"}:
+        model_filter = get_model_filter(provider_id)
+        visible = list_visible_models(provider_id)
+        console.print(
+            f"Model visibility for [cyan]{provider_id}[/cyan]: "
+            f"[cyan]{model_filter['mode']}[/cyan]"
+        )
+        if model_filter["models"]:
+            console.print("Configured list: " + ", ".join(model_filter["models"]))
+        console.print("Shown in completions: " + (", ".join(visible) or "[none]"))
+        return
+
+    if action in {"allow", "only"}:
+        if not models:
+            console.print("[yellow]Usage: /config models allow <model> [...][/yellow]")
+            return
+        try:
+            set_model_filter(provider_id, "allow", models)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Only showing these models for {provider_id}:[/green] "
+            + ", ".join(models)
+        )
+        return
+
+    if action in {"deny", "hide", "block"}:
+        if not models:
+            console.print("[yellow]Usage: /config models deny <model> [...][/yellow]")
+            return
+        try:
+            set_model_filter(provider_id, "deny", models)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Hiding these models for {provider_id}:[/green] "
+            + ", ".join(models)
+        )
+        return
+
+    if action in {"clear", "reset", "all"}:
+        set_model_filter(provider_id, "all", [])
+        console.print(f"[green]Cleared model visibility for {provider_id}.[/green]")
+        return
+
+    console.print("[yellow]Unknown models config action. Try /config help.[/yellow]")
+
+
+def _config(arg: str, session: Session, console: Console) -> str:
+    try:
+        parts = shlex.split(arg)
+    except ValueError as exc:
+        console.print(f"[red]Could not parse command: {exc}[/red]")
+        return CommandResult.CONTINUE
+
+    if not parts or parts[0] in {"show", "status"}:
+        _config_show(session, console)
+        return CommandResult.CONTINUE
+
+    section = parts[0].lower()
+    rest = parts[1:]
+    if section in {"help", "?"}:
+        _config_help(console)
+    elif section in {"providers", "provider"}:
+        _config_providers(rest, session, console)
+    elif section in {"keys", "key", "api-key", "api-keys"}:
+        _config_keys(rest, console)
+    elif section == "use":
+        _config_providers(["use", *rest], session, console)
+    elif section == "model":
+        _config_model(rest, session, console)
+    elif section == "models":
+        _config_models(rest, session, console)
+    else:
+        console.print("[yellow]Unknown config command. Try /config help.[/yellow]")
+    return CommandResult.CONTINUE
+
+
 def _cost(arg: str, session: Session, console: Console) -> str:
     console.print(
         f"Tokens this session — prompt: [cyan]{session.prompt_tokens}[/cyan], "
@@ -299,6 +609,7 @@ _COMMANDS = {
     "files": _files,
     "context": _context,
     "ctx": _context,
+    "config": _config,
     "cost": _cost,
 }
 
@@ -313,6 +624,9 @@ _HELP = {
     "/files": "List files changed this session.",
     "/context [list|add|remove|clear]": (
         "Manage pinned files included with each turn."
+    ),
+    "/config": (
+        "Show or change providers, API keys, model defaults, and model filters."
     ),
     "/cost": "Show token usage for this session.",
 }
@@ -329,6 +643,9 @@ _COMMAND_DESCRIPTIONS = {
     "files": "List files changed this session.",
     "context": "Manage pinned files included with each turn.",
     "ctx": "Alias for /context.",
+    "config": (
+        "Show or change providers, API keys, model defaults, and model filters."
+    ),
     "cost": "Show token usage for this session.",
 }
 
@@ -345,6 +662,18 @@ _MODE_DESCRIPTIONS = {
     "plan": "Read-only planning mode.",
 }
 
+_CONFIG_ACTION_DESCRIPTIONS = {
+    "show": "Show active config.",
+    "help": "Show /config usage.",
+    "providers": "List or manage providers.",
+    "provider": "List or manage providers.",
+    "key": "Save, remove, or list API keys.",
+    "keys": "Save, remove, or list API keys.",
+    "use": "Persist and switch provider.",
+    "model": "Set or reset the default model.",
+    "models": "Manage model allow/deny filters.",
+}
+
 
 def slash_command_completions(prefix: str = "") -> list[tuple[str, str]]:
     """Return slash command completions matching ``prefix`` without the slash."""
@@ -356,7 +685,9 @@ def slash_command_completions(prefix: str = "") -> list[tuple[str, str]]:
     ]
 
 
-def slash_argument_completions(command: str, prefix: str = "") -> list[tuple[str, str]]:
+def slash_argument_completions(
+    command: str, prefix: str = "", session: Session | None = None
+) -> list[tuple[str, str]]:
     """Return first-argument completions for slash commands that have them."""
     normalized = prefix.lower()
     command = command.lower()
@@ -364,8 +695,15 @@ def slash_argument_completions(command: str, prefix: str = "") -> list[tuple[str
         choices = _CONTEXT_ACTION_DESCRIPTIONS
     elif command == "mode":
         choices = _MODE_DESCRIPTIONS
+    elif command == "model" and session is not None:
+        choices = {
+            model: f"{session.provider_id} model"
+            for model in list_visible_models(session.provider_id)
+        }
     elif command == "provider":
-        choices = {p.id: p.name for p in list_providers()}
+        choices = {p.id: p.name for p in list_provider_configs()}
+    elif command == "config":
+        choices = _CONFIG_ACTION_DESCRIPTIONS
     else:
         return []
     return [

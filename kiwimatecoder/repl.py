@@ -30,6 +30,9 @@ console = Console()
 class SlashCommandCompleter(Completer):
     """Prompt-toolkit completer for KiwiMate slash commands."""
 
+    def __init__(self, session: Session | None = None):
+        self.session = session
+
     def get_completions(self, document: Document, complete_event):
         text = document.text_before_cursor
         if "\n" in text or not text.startswith("/"):
@@ -49,7 +52,9 @@ class SlashCommandCompleter(Completer):
         command, arg_text = body.split(" ", 1)
         if " " in arg_text.strip():
             return
-        for value, description in slash_argument_completions(command, arg_text):
+        for value, description in slash_argument_completions(
+            command, arg_text, self.session
+        ):
             yield Completion(
                 value,
                 start_position=-len(arg_text),
@@ -117,7 +122,7 @@ def run(session: Session) -> None:
     agent = Agent(session, console, confirm)
     pt_session: PromptSession = PromptSession(
         history=InMemoryHistory(),
-        completer=SlashCommandCompleter(),
+        completer=SlashCommandCompleter(session),
         complete_while_typing=True,
         complete_style=CompleteStyle.MULTI_COLUMN,
     )

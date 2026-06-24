@@ -16,6 +16,7 @@ def test_slash_completer_lists_commands_at_slash():
 
     assert "/help" in completions
     assert "/context" in completions
+    assert "/config" in completions
     assert "/cost" in completions
 
 
@@ -31,3 +32,10 @@ def test_slash_completer_completes_mode_values():
     completions = _completion_texts("/mode p")
 
     assert completions == ["plan"]
+
+
+def test_slash_completer_completes_config_actions():
+    completions = _completion_texts("/config m")
+
+    assert "model" in completions
+    assert "models" in completions

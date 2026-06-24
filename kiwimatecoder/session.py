@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kiwimatecoder.permissions import PermissionMode
-from kiwimatecoder.providers import ProviderConfig, get_provider
+from kiwimatecoder.config import get_provider_config
+from kiwimatecoder.providers import ProviderConfig
 
 
 @dataclass
@@ -26,11 +27,11 @@ class Session:
 
     @property
     def provider(self) -> ProviderConfig:
-        return get_provider(self.provider_id)
+        return get_provider_config(self.provider_id)
 
     def set_provider(self, provider_id: str, model: str | None = None) -> None:
         """Switch provider; reset to the provider default model unless given."""
-        provider = get_provider(provider_id)
+        provider = get_provider_config(provider_id)
         self.provider_id = provider_id
         self.model = model or provider.default_model
         # Tool/command approvals don't carry across providers.
