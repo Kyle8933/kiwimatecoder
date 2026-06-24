@@ -21,6 +21,7 @@ class Session:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     touched_files: list[str] = field(default_factory=list)
+    context_files: list[str] = field(default_factory=list)
     always_allowed: set[str] = field(default_factory=set)
 
     @property
@@ -38,6 +39,31 @@ class Session:
     def record_touched(self, path: str) -> None:
         if path not in self.touched_files:
             self.touched_files.append(path)
+
+    def add_context_file(self, path: str) -> bool:
+        """Track a workspace-relative file as pinned context.
+
+        Returns True when the file was newly added and False when it was already
+        present. The caller is responsible for resolving and validating paths.
+        """
+        if path in self.context_files:
+            return False
+        self.context_files.append(path)
+        return True
+
+    def remove_context_file(self, path: str) -> bool:
+        """Remove a pinned context file, returning whether anything changed."""
+        try:
+            self.context_files.remove(path)
+        except ValueError:
+            return False
+        return True
+
+    def clear_context_files(self) -> int:
+        """Remove all pinned context files and return the number removed."""
+        count = len(self.context_files)
+        self.context_files = []
+        return count
 
     def is_always_allowed(self, tool_name: str) -> bool:
         return tool_name in self.always_allowed

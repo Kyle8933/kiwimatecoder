@@ -37,6 +37,7 @@ kiwi (openrouter:z-ai/glm-5.2 · ask) › add a docstring to main.py
 
 - **Ctrl-C** cancels the current turn and returns you to the prompt.
 - **Ctrl-D** exits the session.
+- Type `/` to open the slash-command menu. It filters as you keep typing.
 - Use `/mode plan` when you only want investigation and options, with no edits or
   shell commands.
 
@@ -65,7 +66,17 @@ Reads, writes, edits, listings and searches are sandboxed to the workspace root 
 | `/mode [ask\|auto-accept\|plan]` | Show or set the permission mode. |
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
+| `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
 | `/cost` | Show token usage for this session. |
+
+Examples:
+
+```text
+/context add README.md kiwimatecoder/*.py
+/context
+/context remove README.md
+/context clear
+```
 
 ## Tools
 
@@ -110,6 +121,16 @@ For a quick question without entering the REPL:
 kiwimatecoder ask "how do I reverse a list in python?"
 kiwimatecoder ask "review this file" --file app.py --provider openai
 ```
+
+## Update
+
+Update the installed CLI from the same Python environment:
+
+```bash
+kiwimatecoder -update
+```
+
+You can also run `kiwimatecoder update`.
 
 ## Configuration
 

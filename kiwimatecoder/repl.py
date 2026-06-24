@@ -5,18 +5,57 @@ from __future__ import annotations
 import asyncio
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.shortcuts import CompleteStyle
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
 from kiwimatecoder.agent import Agent
-from kiwimatecoder.commands import CommandResult, dispatch
+from kiwimatecoder.commands import (
+    CommandResult,
+    dispatch,
+    slash_argument_completions,
+    slash_command_completions,
+)
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import Session
 
 console = Console()
+
+
+class SlashCommandCompleter(Completer):
+    """Prompt-toolkit completer for KiwiMate slash commands."""
+
+    def get_completions(self, document: Document, complete_event):
+        text = document.text_before_cursor
+        if "\n" in text or not text.startswith("/"):
+            return
+
+        body = text[1:]
+        if " " not in body:
+            for command, description in slash_command_completions(body):
+                yield Completion(
+                    command,
+                    start_position=-len(text),
+                    display=command,
+                    display_meta=description,
+                )
+            return
+
+        command, arg_text = body.split(" ", 1)
+        if " " in arg_text.strip():
+            return
+        for value, description in slash_argument_completions(command, arg_text):
+            yield Completion(
+                value,
+                start_position=-len(arg_text),
+                display=value,
+                display_meta=description,
+            )
 
 
 def _banner(session: Session) -> Panel:
@@ -76,7 +115,12 @@ def run(session: Session) -> None:
     console.print(_banner(session))
     confirm = _make_confirm(session)
     agent = Agent(session, console, confirm)
-    pt_session: PromptSession = PromptSession(history=InMemoryHistory())
+    pt_session: PromptSession = PromptSession(
+        history=InMemoryHistory(),
+        completer=SlashCommandCompleter(),
+        complete_while_typing=True,
+        complete_style=CompleteStyle.MULTI_COLUMN,
+    )
 
     while True:
         try:

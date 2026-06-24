@@ -16,6 +16,7 @@ from kiwimatecoder.config import (
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import default_provider, get_provider, list_providers
 from kiwimatecoder.session import Session
+from kiwimatecoder.updater import run_update
 
 app = typer.Typer(
     help="KiwiMateCoder - agentic AI coding assistant CLI",
@@ -28,8 +29,19 @@ app.add_typer(config_app, name="config")
 
 
 @app.callback()
-def main(ctx: typer.Context):
+def main(
+    ctx: typer.Context,
+    update: bool = typer.Option(
+        False,
+        "-update",
+        "--update",
+        help="Update KiwiMateCoder in the current Python environment.",
+    ),
+):
     """Launch the interactive session when run with no subcommand."""
+    if update:
+        raise typer.Exit(run_update(console))
+
     if ctx.invoked_subcommand is not None:
         return
 
@@ -105,6 +117,12 @@ def ask(
         )
     )
     console.print()
+
+
+@app.command("update")
+def update_cmd():
+    """Update KiwiMateCoder in the current Python environment."""
+    raise typer.Exit(run_update(console))
 
 
 @config_app.command("set-key")
