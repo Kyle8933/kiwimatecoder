@@ -139,13 +139,18 @@ kiwimatecoder ask "review this file" --file app.py --provider openai
 
 ## Update
 
-Update the installed CLI from the same Python environment:
+Update the CLI from the same Python environment:
 
 ```bash
 kiwimatecoder -update
 ```
 
 You can also run `kiwimatecoder update`.
+
+When KiwiMateCoder is running from a Git checkout, the updater pulls from
+`origin` with `git pull --ff-only` and then reinstalls the checkout with
+`pip install --upgrade -e <path>`. For packaged installs, it falls back to
+`pip install --upgrade kiwimatecoder`.
 
 ## Configuration
 
