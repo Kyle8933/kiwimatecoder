@@ -4,6 +4,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from kiwimatecoder import __version__
 from kiwimatecoder.ai import stream_response
 from kiwimatecoder.config import (
     get_key,
@@ -32,6 +33,13 @@ app.add_typer(config_app, name="config")
 @app.callback()
 def main(
     ctx: typer.Context,
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show the installed KiwiMateCoder version and exit.",
+        is_eager=True,
+    ),
     update: bool = typer.Option(
         False,
         "-update",
@@ -40,6 +48,10 @@ def main(
     ),
 ):
     """Launch the interactive session when run with no subcommand."""
+    if version:
+        console.print(f"kiwimatecoder {__version__}")
+        raise typer.Exit(0)
+
     if update:
         raise typer.Exit(run_update(console))
 
@@ -124,6 +136,12 @@ def ask(
 def update_cmd():
     """Update KiwiMateCoder in the current Python environment."""
     raise typer.Exit(run_update(console))
+
+
+@app.command("version")
+def version_cmd():
+    """Show the installed KiwiMateCoder version."""
+    console.print(f"kiwimatecoder {__version__}")
 
 
 @config_app.command("set-key")

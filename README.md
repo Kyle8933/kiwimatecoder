@@ -145,12 +145,25 @@ Update the CLI from the same Python environment:
 kiwimatecoder -update
 ```
 
-You can also run `kiwimatecoder update`.
+You can also run `kiwimatecoder update`. Check the installed version before/after
+with:
 
-When KiwiMateCoder is running from a Git checkout, the updater pulls from
-`origin` with `git pull --ff-only` and then reinstalls the checkout with
-`pip install --upgrade -e <path>`. For packaged installs, it falls back to
-`pip install --upgrade kiwimatecoder`.
+```bash
+kiwimatecoder --version
+```
+
+When KiwiMateCoder is running from a Git checkout, the updater first fetches
+`origin` and compares the local `HEAD` to `origin/<branch>`:
+
+- **Already up to date** — prints `Already on the latest version (commit <sha>).`
+  and exits without pulling or reinstalling.
+- **Behind** — prints `Updating from <old-sha> (N commit(s) behind origin/<branch>)…`,
+  runs `git pull --ff-only`, reinstalls the checkout with
+  `pip install --upgrade -e <path>`, and reports `Updated <old-sha> → <new-sha>.`
+
+KiwiMateCoder is not published to PyPI, so for packaged (non-Git) installs the
+fallback runs `pip install --upgrade git+https://github.com/Kyle8933/kiwimatecoder.git`.
+
 
 ## Configuration
 
