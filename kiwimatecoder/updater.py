@@ -69,7 +69,7 @@ def _has_git_remote(source_root: Path) -> bool:
     return probe.returncode == 0
 
 
-def _git(args: list[str], source_root: Path) -> subprocess.CompletedProcess:
+def _git(args: list[str], source_root: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(source_root), *args],
         capture_output=True,
