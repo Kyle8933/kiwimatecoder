@@ -17,7 +17,10 @@ def build_update_command() -> list[str]:
     """Return the fallback update command for packaged (non-Git) installs.
 
     KiwiMateCoder is not published to PyPI, so the fallback installs from the
-    GitHub repository instead of a PyPI package name.
+    GitHub repository instead of a PyPI package name. ``--force-reinstall`` is
+    required because the package version string is often unchanged between
+    commits, so ``--upgrade`` alone can be a no-op ("Requirement already
+    satisfied").
     """
     return [
         sys.executable,
@@ -25,6 +28,7 @@ def build_update_command() -> list[str]:
         "pip",
         "install",
         "--upgrade",
+        "--force-reinstall",
         f"git+{GITHUB_REPO_URL}",
     ]
 
@@ -191,7 +195,8 @@ def run_update(console: Console | None = None) -> int:
             console.print(
                 f"[red]Update failed with exit code {code}.[/red] "
                 "[yellow]KiwiMateCoder is not on PyPI; install from a source "
-                f"checkout or run: pip install --upgrade git+{GITHUB_REPO_URL}[/yellow]"
+                f"checkout or run: pip install --upgrade --force-reinstall "
+                f"git+{GITHUB_REPO_URL}[/yellow]"
             )
             return code
 

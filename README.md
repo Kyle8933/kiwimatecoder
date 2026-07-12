@@ -162,7 +162,8 @@ When KiwiMateCoder is running from a Git checkout, the updater first fetches
   `pip install --upgrade -e <path>`, and reports `Updated <old-sha> → <new-sha>.`
 
 KiwiMateCoder is not published to PyPI, so for packaged (non-Git) installs the
-fallback runs `pip install --upgrade git+https://github.com/Kyle8933/kiwimatecoder.git`.
+fallback runs
+`pip install --upgrade --force-reinstall git+https://github.com/Kyle8933/kiwimatecoder.git`.
 
 
 ## Configuration

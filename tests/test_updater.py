@@ -27,9 +27,16 @@ def test_build_source_install_command_uses_editable_source_root():
 def test_build_update_command_uses_github_repo_url():
     command = updater.build_update_command()
 
+    assert command[0]  # current interpreter
     assert command[1:4] == ["-m", "pip", "install"]
     assert "--upgrade" in command
+    assert "--force-reinstall" in command
     assert command[-1] == f"git+{updater.GITHUB_REPO_URL}"
+    # Match the known-working manual command shape:
+    # pip install --upgrade --force-reinstall git+https://github.com/.../kiwimatecoder.git
+    upgrade_idx = command.index("--upgrade")
+    force_idx = command.index("--force-reinstall")
+    assert upgrade_idx < force_idx < len(command) - 1
 
 
 def _patch_git_helpers(monkeypatch, *, root, behind, shas, branch="main"):
@@ -76,7 +83,12 @@ def test_run_update_falls_back_to_git_url(monkeypatch):
     code = updater.run_update(Console(record=True))
 
     assert code == 0
-    assert calls == [updater.build_update_command()]
+    assert len(calls) == 1
+    command = calls[0]
+    assert command == updater.build_update_command()
+    assert "--upgrade" in command
+    assert "--force-reinstall" in command
+    assert command[-1] == f"git+{updater.GITHUB_REPO_URL}"
 
 
 def test_run_update_stops_when_git_pull_fails(monkeypatch):
@@ -172,3 +184,4 @@ def test_run_update_git_fallback_failure_prints_guidance(monkeypatch):
     output = console.export_text()
     assert "not on PyPI" in output
     assert updater.GITHUB_REPO_URL in output
+    assert "--force-reinstall" in output
