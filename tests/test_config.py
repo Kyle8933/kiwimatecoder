@@ -107,7 +107,7 @@ def test_model_filters_control_visible_models():
     }
     assert config.list_visible_models("openrouter") == ["a", "b"]
 
-    config.set_model_filter("openrouter", "deny", ["z-ai/glm-5.2"])
+    config.set_model_filter("openrouter", "deny", ["anthropic/claude-sonnet-5"])
     assert config.list_visible_models("openrouter") == []
 
     config.set_model_filter("openrouter", "all", [])

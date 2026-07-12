@@ -32,7 +32,7 @@ ambiguous tasks, it starts with a short plan and gives you a few concrete option
 so you can choose the scope and tradeoffs before it proceeds.
 
 ```
-kiwi (openrouter:z-ai/glm-5.2 · ask) › add a docstring to main.py
+kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.py
 ```
 
 - **Ctrl-C** cancels the current turn and returns you to the prompt.
@@ -117,7 +117,7 @@ also add OpenAI-compatible custom providers with `/config provider add`.
 | `deepseek` | `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
 | `qwen` | `qwen3.7-max` | `DASHSCOPE_API_KEY` |
 | `moonshot` | `kimi-k2.7-code` | `MOONSHOT_API_KEY` |
-| `openrouter` | `z-ai/glm-5.2` | `OPENROUTER_API_KEY` |
+| `openrouter` | `anthropic/claude-sonnet-5` | `OPENROUTER_API_KEY` |
 
 Default model ids reflect what was current at the time of writing; they drift, so
 override them with `/model <name>` or `config set-model <name>` as providers update.

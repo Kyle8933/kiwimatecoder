@@ -103,7 +103,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="openrouter",
         name="OpenRouter",
         base_url="https://openrouter.ai/api/v1",
-        default_model="z-ai/glm-5.2",
+        default_model="anthropic/claude-sonnet-5",
         key_env="OPENROUTER_API_KEY",
         extra_headers={
             "HTTP-Referer": "https://kiwimatecoder.com",
