@@ -46,7 +46,7 @@ def test_provider_switch_clears_always_allowed(session):
     session.allow_always("run_bash")
     session.set_provider("openai")
     assert not session.is_always_allowed("run_bash")
-    assert session.model == "gpt-5.5"
+    assert session.model == "gpt-5.6-sol"
 
 
 def test_mode_from_str_aliases():

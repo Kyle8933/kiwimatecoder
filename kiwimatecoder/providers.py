@@ -6,7 +6,7 @@ and the ``anthropic`` entry are reserved for future native code paths (e.g.
 Anthropic's native Messages API). Callers must not assume every registered id
 yields a fully compatible endpoint today.
 
-Model ids drift fast — the defaults below were verified in June 2026. They are
+Model ids drift fast — the defaults below were verified in July 2026. They are
 only starting points: the user can override the model for any provider at
 runtime with ``/model`` or persist a choice via ``config set-model``.
 """
@@ -46,14 +46,14 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="openai",
         name="OpenAI",
         base_url="https://api.openai.com/v1",
-        default_model="gpt-5.5",
+        default_model="gpt-5.6-sol",
         key_env="OPENAI_API_KEY",
     ),
     "anthropic": ProviderConfig(
         id="anthropic",
         name="Anthropic",
         base_url="https://api.anthropic.com/v1",
-        default_model="claude-opus-4-8",
+        default_model="claude-sonnet-5",
         key_env="ANTHROPIC_API_KEY",
         compat="anthropic",
     ),
@@ -68,7 +68,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="xai",
         name="xAI Grok",
         base_url="https://api.x.ai/v1",
-        default_model="grok-build-0.1",
+        default_model="grok-4.5",
         key_env="XAI_API_KEY",
     ),
     "mistral": ProviderConfig(

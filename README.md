@@ -109,10 +109,10 @@ also add OpenAI-compatible custom providers with `/config provider add`.
 
 | Provider id | Default model | Key env var |
 |-------------|---------------|-------------|
-| `openai` | `gpt-5.5` | `OPENAI_API_KEY` |
-| `anthropic` | `claude-opus-4-8` | `ANTHROPIC_API_KEY` |
+| `openai` | `gpt-5.6-sol` | `OPENAI_API_KEY` |
+| `anthropic` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
 | `google` | `gemini-3.5-flash` | `GEMINI_API_KEY` |
-| `xai` | `grok-build-0.1` | `XAI_API_KEY` |
+| `xai` | `grok-4.5` | `XAI_API_KEY` |
 | `mistral` | `mistral-medium-3.5` | `MISTRAL_API_KEY` |
 | `deepseek` | `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
 | `qwen` | `qwen3.7-max` | `DASHSCOPE_API_KEY` |
