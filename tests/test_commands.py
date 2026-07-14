@@ -4,7 +4,13 @@ import pytest
 from rich.console import Console
 
 from kiwimatecoder import config
-from kiwimatecoder.commands import CommandResult, dispatch, slash_command_completions
+from kiwimatecoder.commands import (
+    CommandResult,
+    SelectionPrompt,
+    dispatch,
+    slash_command_completions,
+)
+from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import REGISTRY
 
 
@@ -70,6 +76,53 @@ def test_slash_command_completions_include_core_commands():
     completions = {command for command, _ in slash_command_completions("")}
 
     assert {"/help", "/model", "/provider", "/mode", "/context", "/config", "/cost"} <= completions
+
+
+def test_bare_model_command_selects_from_current_provider(session):
+    config.set_model_filter("openrouter", "allow", ["model-a", "model-b"])
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        prompts.append(prompt)
+        return "model-b"
+
+    result = dispatch("/model", session, _console(), selector=select)
+
+    assert result == CommandResult.CONTINUE
+    assert session.model == "model-b"
+    assert prompts[0].title == "Select model"
+    assert [option.value for option in prompts[0].options] == ["model-a", "model-b"]
+    assert "openrouter" in prompts[0].text
+
+
+def test_cancelled_model_selection_leaves_model_unchanged(session):
+    result = dispatch("/model", session, _console(), selector=lambda prompt: None)
+
+    assert result == CommandResult.CONTINUE
+    assert session.model == "test-model"
+
+
+def test_bare_provider_and_mode_commands_are_interactive(session):
+    def select(prompt: SelectionPrompt) -> str:
+        if prompt.title == "Select provider":
+            return "openai"
+        return "plan"
+
+    dispatch("/provider", session, _console(), selector=select)
+    dispatch("/mode", session, _console(), selector=select)
+
+    assert session.provider_id == "openai"
+    assert session.model == REGISTRY["openai"].default_model
+    assert session.mode is PermissionMode.PLAN
+
+
+def test_explicit_choice_does_not_open_selector(session):
+    def fail_if_called(prompt: SelectionPrompt) -> str:
+        raise AssertionError("selector should not be called")
+
+    dispatch("/model custom-model", session, _console(), selector=fail_if_called)
+
+    assert session.model == "custom-model"
 
 
 def test_config_provider_key_and_model_filter_workflow(session):

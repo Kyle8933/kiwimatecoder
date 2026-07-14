@@ -9,7 +9,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
-from prompt_toolkit.shortcuts import CompleteStyle
+from prompt_toolkit.shortcuts import CompleteStyle, choice
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -17,11 +17,11 @@ from rich.syntax import Syntax
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
+    SelectionPrompt,
     dispatch,
     slash_argument_completions,
     slash_command_completions,
 )
-from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import Session
 
 console = Console()
@@ -79,6 +79,20 @@ def _prompt_text(session: Session) -> HTML:
         f"<ansiblue>({session.provider_id}:{session.model} · {session.mode.value})</ansiblue> "
         f"<ansicyan>›</ansicyan> "
     )
+
+
+def _select_command_option(prompt: SelectionPrompt) -> str | None:
+    """Render a keyboard-driven selector for a choice-based slash command."""
+    try:
+        return choice(
+            message=f"{prompt.title}\n{prompt.text}",
+            options=[(option.value, option.label) for option in prompt.options],
+            default=prompt.selected,
+            show_frame=True,
+            bottom_toolbar="↑/↓ move • Enter select • Ctrl-C cancel",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return None
 
 
 def _make_confirm(session: Session):
@@ -143,7 +157,10 @@ def run(session: Session) -> None:
             continue
 
         if line.startswith("/"):
-            if dispatch(line, session, console) == CommandResult.EXIT:
+            if (
+                dispatch(line, session, console, selector=_select_command_option)
+                == CommandResult.EXIT
+            ):
                 break
             continue
 

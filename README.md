@@ -38,6 +38,9 @@ kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.p
 - **Ctrl-C** cancels the current turn and returns you to the prompt.
 - **Ctrl-D** exits the session.
 - Type `/` to open the slash-command menu. It filters as you keep typing.
+- Run `/model`, `/provider`, or `/mode` without an argument to open a
+  keyboard-driven selector. Arrow keys move, Enter selects, and Ctrl-C returns to
+  the prompt without changing anything.
 - Use `/mode plan` when you only want investigation and options, with no edits or
   shell commands.
 
@@ -61,9 +64,9 @@ Reads, writes, edits, listings and searches are sandboxed to the workspace root 
 | `/help` | Show available commands. |
 | `/exit`, `/quit` | Leave the session. |
 | `/clear` | Clear the conversation history. |
-| `/model [name]` | Show or set the model. |
-| `/provider [id]` | List providers or switch the active one. |
-| `/mode [ask\|auto-accept\|plan]` | Show or set the permission mode. |
+| `/model [name]` | Interactively choose a visible model, or set one by name. |
+| `/provider [id]` | Interactively choose a provider, or switch by id. |
+| `/mode [ask\|auto-accept\|plan]` | Interactively choose, or directly set, the permission mode. |
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |

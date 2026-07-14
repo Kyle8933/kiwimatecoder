@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Callable
+from dataclasses import dataclass
 from glob import has_magic
 from pathlib import Path
 
@@ -37,7 +39,34 @@ class CommandResult:
     EXIT = "exit"
 
 
-def dispatch(line: str, session: Session, console: Console) -> str:
+@dataclass(frozen=True)
+class CommandOption:
+    """One value offered by an interactive slash-command selector."""
+
+    value: str
+    label: str
+
+
+@dataclass(frozen=True)
+class SelectionPrompt:
+    """Terminal-agnostic description of an interactive selection prompt."""
+
+    title: str
+    text: str
+    options: tuple[CommandOption, ...]
+    selected: str | None = None
+    empty_message: str = "No choices are available."
+
+
+CommandSelector = Callable[[SelectionPrompt], str | None]
+
+
+def dispatch(
+    line: str,
+    session: Session,
+    console: Console,
+    selector: CommandSelector | None = None,
+) -> str:
     """Run a slash command. Returns CommandResult.CONTINUE or .EXIT."""
     parts = line[1:].strip().split(maxsplit=1)
     name = parts[0].lower() if parts else ""
@@ -47,6 +76,20 @@ def dispatch(line: str, session: Session, console: Console) -> str:
     if handler is None:
         console.print(f"[yellow]Unknown command '/{name}'. Try /help.[/yellow]")
         return CommandResult.CONTINUE
+
+    if not arg and selector is not None:
+        prompt = _selection_prompt(name, session)
+        if prompt is not None:
+            if not prompt.options:
+                console.print(f"[yellow]{prompt.empty_message}[/yellow]")
+                return CommandResult.CONTINUE
+            selected = selector(prompt)
+            if selected is None:
+                return CommandResult.CONTINUE
+            if selected not in {option.value for option in prompt.options}:
+                console.print("[red]The selector returned an invalid choice.[/red]")
+                return CommandResult.CONTINUE
+            arg = selected
     return handler(arg, session, console)
 
 
@@ -617,9 +660,9 @@ _HELP = {
     "/help": "Show this help.",
     "/exit, /quit": "Leave the session.",
     "/clear": "Clear the conversation history.",
-    "/model [name]": "Show or set the model.",
-    "/provider [id]": "List providers or switch the active one.",
-    "/mode [ask|auto-accept|plan]": "Show or set the permission mode.",
+    "/model [name]": "Choose a visible model, or set one by name.",
+    "/provider [id]": "Choose a provider, or switch by id.",
+    "/mode [ask|auto-accept|plan]": "Choose or directly set the permission mode.",
     "/tools": "List available tools.",
     "/files": "List files changed this session.",
     "/context [list|add|remove|clear]": (
@@ -636,9 +679,9 @@ _COMMAND_DESCRIPTIONS = {
     "exit": "Leave the session.",
     "quit": "Leave the session.",
     "clear": "Clear the conversation history.",
-    "model": "Show or set the model.",
-    "provider": "List providers or switch the active one.",
-    "mode": "Show or set the permission mode.",
+    "model": "Choose a visible model, or set one by name.",
+    "provider": "Choose a provider, or switch by id.",
+    "mode": "Choose or directly set the permission mode.",
     "tools": "List available tools.",
     "files": "List files changed this session.",
     "context": "Manage pinned files included with each turn.",
@@ -673,6 +716,53 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "model": "Set or reset the default model.",
     "models": "Manage model allow/deny filters.",
 }
+
+
+def _selection_prompt(name: str, session: Session) -> SelectionPrompt | None:
+    """Build the selector shown for choice-based commands without arguments."""
+    if name == "model":
+        models = list_visible_models(session.provider_id)
+        return SelectionPrompt(
+            title="Select model",
+            text=(
+                f"Choose a model from {session.provider.name} "
+                f"({session.provider_id}).\nCurrent model: {session.model}"
+            ),
+            options=tuple(CommandOption(model, model) for model in models),
+            selected=session.model if session.model in models else None,
+            empty_message=(
+                f"No models are visible for {session.provider_id}. "
+                "Use /config models clear or /model <name>."
+            ),
+        )
+
+    if name == "provider":
+        providers = list_provider_configs()
+        return SelectionPrompt(
+            title="Select provider",
+            text="Choose the provider to use for this session.",
+            options=tuple(
+                CommandOption(
+                    provider.id,
+                    f"{provider.name} — {provider.default_model}",
+                )
+                for provider in providers
+            ),
+            selected=session.provider_id,
+        )
+
+    if name == "mode":
+        return SelectionPrompt(
+            title="Select permission mode",
+            text="Choose how KiwiMateCoder may use tools in this session.",
+            options=tuple(
+                CommandOption(value, f"{value} — {description}")
+                for value, description in _MODE_DESCRIPTIONS.items()
+            ),
+            selected=session.mode.value,
+        )
+
+    return None
 
 
 def slash_command_completions(prefix: str = "") -> list[tuple[str, str]]:
