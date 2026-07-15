@@ -3,6 +3,7 @@ import json
 import pytest
 
 from kiwimatecoder import config
+from kiwimatecoder.providers import REGISTRY
 
 
 @pytest.fixture(autouse=True)
@@ -108,10 +109,32 @@ def test_model_filters_control_visible_models():
     assert config.list_visible_models("openrouter") == ["a", "b"]
 
     config.set_model_filter("openrouter", "deny", ["anthropic/claude-sonnet-5"])
-    assert config.list_visible_models("openrouter") == []
+    visible = config.list_visible_models("openrouter")
+    assert "anthropic/claude-sonnet-5" not in visible
+    assert visible  # the rest of the catalog is still offered
 
     config.set_model_filter("openrouter", "all", [])
     assert config.get_model_filter("openrouter") == {"mode": "all", "models": []}
+
+
+def test_visible_models_default_to_full_provider_catalog():
+    for provider_id, provider in REGISTRY.items():
+        visible = config.list_visible_models(provider_id)
+        assert visible[0] == provider.default_model
+        assert set(provider.models) <= set(visible)
+        assert len(visible) == len(set(visible))
+        assert len(visible) > 1, f"{provider_id} should offer more than one model"
+
+
+def test_custom_provider_models_from_config():
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    assert config.list_visible_models("local") == ["local-code"]
+
+    cfg = config.load_config()
+    cfg["providers"]["local"]["models"] = ["local-fast", "local-code", " ", "local-fast"]
+    config.save_config(cfg)
+
+    assert config.list_visible_models("local") == ["local-code", "local-fast"]
 
 
 def test_remove_key():

@@ -6,9 +6,11 @@ and the ``anthropic`` entry are reserved for future native code paths (e.g.
 Anthropic's native Messages API). Callers must not assume every registered id
 yields a fully compatible endpoint today.
 
-Model ids drift fast — the defaults below were verified in July 2026. They are
-only starting points: the user can override the model for any provider at
-runtime with ``/model`` or persist a choice via ``config set-model``.
+Model ids drift fast — the defaults and ``models`` catalogs below were verified
+in July 2026. They are only starting points: the user can override the model for
+any provider at runtime with ``/model`` (typing any id works, listed or not) or
+persist a choice via ``config set-model``, and can reshape the offered list with
+``/config models allow|deny``.
 """
 
 from __future__ import annotations
@@ -27,6 +29,9 @@ class ProviderConfig:
     key_env: str
     compat: str = "openai"  # "openai" | "anthropic" (reserved; native paths not yet implemented)
     extra_headers: dict[str, str] = field(default_factory=dict)
+    # Curated catalog offered by /model; not exhaustive, and any id can still
+    # be set by name. The default model is always offered even if absent here.
+    models: tuple[str, ...] = ()
 
 
 class UnknownProviderError(KeyError):
@@ -48,6 +53,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         base_url="https://api.openai.com/v1",
         default_model="gpt-5.6-sol",
         key_env="OPENAI_API_KEY",
+        models=("gpt-5.6-sol", "gpt-5.5"),
     ),
     "anthropic": ProviderConfig(
         id="anthropic",
@@ -56,6 +62,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         default_model="claude-sonnet-5",
         key_env="ANTHROPIC_API_KEY",
         compat="anthropic",
+        models=("claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"),
     ),
     "google": ProviderConfig(
         id="google",
@@ -63,6 +70,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         default_model="gemini-3.5-flash",
         key_env="GEMINI_API_KEY",
+        models=("gemini-3.5-flash", "gemini-3.5-pro"),
     ),
     "xai": ProviderConfig(
         id="xai",
@@ -70,6 +78,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         base_url="https://api.x.ai/v1",
         default_model="grok-4.5",
         key_env="XAI_API_KEY",
+        models=("grok-4.5", "grok-build-0.1"),
     ),
     "mistral": ProviderConfig(
         id="mistral",
@@ -77,6 +86,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         base_url="https://api.mistral.ai/v1",
         default_model="mistral-medium-3.5",
         key_env="MISTRAL_API_KEY",
+        models=("mistral-medium-3.5", "devstral-2512"),
     ),
     "deepseek": ProviderConfig(
         id="deepseek",
@@ -84,6 +94,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         base_url="https://api.deepseek.com/v1",
         default_model="deepseek-v4-pro",
         key_env="DEEPSEEK_API_KEY",
+        models=("deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"),
     ),
     "qwen": ProviderConfig(
         id="qwen",
@@ -91,6 +102,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         default_model="qwen3.7-max",
         key_env="DASHSCOPE_API_KEY",
+        models=("qwen3.7-max", "qwen-plus", "qwen-turbo"),
     ),
     "moonshot": ProviderConfig(
         id="moonshot",
@@ -98,6 +110,7 @@ REGISTRY: dict[str, ProviderConfig] = {
         base_url="https://api.moonshot.ai/v1",
         default_model="kimi-k2.7-code",
         key_env="MOONSHOT_API_KEY",
+        models=("kimi-k2.7-code", "kimi-latest"),
     ),
     "openrouter": ProviderConfig(
         id="openrouter",
@@ -109,6 +122,18 @@ REGISTRY: dict[str, ProviderConfig] = {
             "HTTP-Referer": "https://kiwimatecoder.com",
             "X-Title": "KiwiMateCoder",
         },
+        models=(
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-opus-4-8",
+            "openai/gpt-5.6-sol",
+            "google/gemini-3.5-flash",
+            "x-ai/grok-4.5",
+            "deepseek/deepseek-v4-pro",
+            "qwen/qwen3.7-max",
+            "moonshotai/kimi-k2.7-code",
+            "mistralai/devstral-2512",
+            "z-ai/glm-5.2",
+        ),
     ),
 }
 

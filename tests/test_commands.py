@@ -95,6 +95,22 @@ def test_bare_model_command_selects_from_current_provider(session):
     assert "openrouter" in prompts[0].text
 
 
+def test_bare_model_command_offers_full_catalog_without_filter(session):
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        prompts.append(prompt)
+        return prompt.options[0].value
+
+    dispatch("/model", session, _console(), selector=select)
+
+    offered = [option.value for option in prompts[0].options]
+    provider = REGISTRY["openrouter"]
+    assert offered[0] == provider.default_model
+    assert set(provider.models) <= set(offered)
+    assert len(offered) > 1
+
+
 def test_cancelled_model_selection_leaves_model_unchanged(session):
     result = dispatch("/model", session, _console(), selector=lambda prompt: None)
 

@@ -139,6 +139,12 @@ def _provider_from_config(provider_id: str, data: dict) -> ProviderConfig | None
     extra_headers = data.get("extra_headers") or {}
     if not isinstance(extra_headers, dict):
         extra_headers = {}
+    raw_models = data.get("models") or []
+    if not isinstance(raw_models, list):
+        raw_models = []
+    models = tuple(
+        dict.fromkeys(str(model).strip() for model in raw_models if str(model).strip())
+    )
 
     return ProviderConfig(
         id=provider_id,
@@ -148,6 +154,7 @@ def _provider_from_config(provider_id: str, data: dict) -> ProviderConfig | None
         key_env=key_env,
         compat=compat,
         extra_headers={str(k): str(v) for k, v in extra_headers.items()},
+        models=models,
     )
 
 
@@ -346,12 +353,13 @@ def list_visible_models(provider_id: str) -> list[str]:
     model_filter = get_model_filter(provider_id)
     mode = model_filter["mode"]
     models = model_filter["models"]
+    catalog = list(dict.fromkeys((provider.default_model, *provider.models)))
     if mode == "allow":
         return models
     if mode == "deny":
-        fallback = [provider.default_model]
-        return [model for model in fallback if model not in set(models)]
-    return [provider.default_model]
+        denied = set(models)
+        return [model for model in catalog if model not in denied]
+    return catalog
 
 
 # ---------------------------------------------------------------------------

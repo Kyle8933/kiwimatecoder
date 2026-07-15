@@ -122,8 +122,12 @@ also add OpenAI-compatible custom providers with `/config provider add`.
 | `moonshot` | `kimi-k2.7-code` | `MOONSHOT_API_KEY` |
 | `openrouter` | `anthropic/claude-sonnet-5` | `OPENROUTER_API_KEY` |
 
-Default model ids reflect what was current at the time of writing; they drift, so
-override them with `/model <name>` or `config set-model <name>` as providers update.
+Each provider also ships a curated model catalog that `/model` offers when run
+without an argument. Custom providers can list theirs via a `"models"` array in
+`~/.kiwimatecoder/config.json`, and `/config models allow|deny` reshapes what is
+offered. Model ids reflect what was current at the time of writing; they drift, so
+override them with `/model <name>` or `config set-model <name>` as providers update
+— any id works, listed or not.
 
 Note: The `anthropic` provider id is kept for key configuration and future expansion.
 Its current base URL points at Anthropic's native API; the client assumes
