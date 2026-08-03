@@ -41,6 +41,8 @@ kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.p
 - Run `/model`, `/provider`, or `/mode` without an argument to open a
   keyboard-driven selector. Arrow keys move, Enter selects, and Ctrl-C returns to
   the prompt without changing anything.
+- Opening `/model` checks the provider for models released since you last looked,
+  and drops any it has retired. `/model refresh` forces the check.
 - Use `/mode plan` when you only want investigation and options, with no edits or
   shell commands.
 
@@ -64,7 +66,7 @@ Reads, writes, edits, listings and searches are sandboxed to the workspace root 
 | `/help` | Show available commands. |
 | `/exit`, `/quit` | Leave the session. |
 | `/clear` | Clear the conversation history. |
-| `/model [name]` | Interactively choose a visible model, or set one by name. |
+| `/model [name\|refresh\|list]` | Interactively choose a model (the list is refreshed from the provider), set one by name, or refresh/show the list. |
 | `/provider [id]` | Interactively choose a provider, or switch by id. |
 | `/mode [ask\|auto-accept\|plan]` | Interactively choose, or directly set, the permission mode. |
 | `/tools` | List available tools. |
@@ -90,7 +92,8 @@ Config examples:
 /config key set local <YOUR_KEY>
 /config provider use local
 /config models allow local-code local-fast
-/config models deny deprecated-model
+/config models deny noisy-model
+/config models refresh
 /config provider remove local
 ```
 
@@ -122,18 +125,45 @@ also add OpenAI-compatible custom providers with `/config provider add`.
 | `moonshot` | `kimi-k2.7-code` | `MOONSHOT_API_KEY` |
 | `openrouter` | `anthropic/claude-sonnet-5` | `OPENROUTER_API_KEY` |
 
-Each provider also ships a curated model catalog that `/model` offers when run
-without an argument. Custom providers can list theirs via a `"models"` array in
-`~/.kiwimatecoder/config.json`, and `/config models allow|deny` reshapes what is
-offered. Model ids reflect what was current at the time of writing; they drift, so
-override them with `/model <name>` or `config set-model <name>` as providers update
-— any id works, listed or not.
+These defaults are a starting point; the live catalog below is what `/model`
+actually offers once a provider is in use.
 
 Note: The `anthropic` provider id is kept for key configuration and future expansion.
 Its current base URL points at Anthropic's native API; the client assumes
 OpenAI-compatible chat+tools streaming for all providers today. For Anthropic
 models, routing via `openrouter` (or another gateway) is the most reliable path
-until native support is added.
+until native support is added. (Model listing already speaks Anthropic's native
+`/v1/models` scheme, so `/model` works there today.)
+
+## Model catalogs
+
+Model ids drift constantly, so the list `/model` offers is fetched from the
+provider itself rather than being frozen into the release.
+
+- **Newest first.** Opening `/model` (or running `/model refresh`) calls the
+  provider's `/models` endpoint and offers what it serves today, ordered by
+  release date, with the provider default pinned first.
+- **Deprecated ids disappear.** Anything the provider no longer lists is dropped
+  from the catalog, and `/model refresh` prints what was removed. If your current
+  model is one of them, it says so.
+- **Only usable models.** Embedding, image, audio, moderation, and non
+  tool-calling models are filtered out — the agent loop needs text chat plus tool
+  calls. The newest 60 are offered; any other id still works if you type it.
+- **Cached for a day.** Results are stored in `~/.kiwimatecoder/model_cache.json`
+  and reused for 24 hours, so the selector stays instant and tab completion never
+  touches the network. A failed fetch falls back to the cached list, then to the
+  built-in one, and is not retried automatically for 30 minutes.
+- **Needs a key.** A provider is only queried once it has an API key configured
+  (local providers on `localhost` are queried without one).
+
+From the shell, `kiwimatecoder config models [--provider <id>] [--refresh]` shows
+or refreshes the same catalog.
+
+The curated tuples in `kiwimatecoder/providers.py` remain the offline fallback,
+and custom providers can list theirs via a `"models"` array in
+`~/.kiwimatecoder/config.json`. `/config models allow|deny` reshapes what is
+offered on top of whichever catalog is in use, and `/model <name>` or
+`config set-model <name>` accepts any id, listed or not.
 
 ## One-shot mode
 
@@ -178,6 +208,10 @@ fallback runs
 Settings live in `~/.kiwimatecoder/config.json` (provider keys, default
 provider/model, default mode). The original single-key `~/.kiwimatecoder/config`
 format is read automatically, so existing setups keep working.
+
+Fetched model catalogs are cached separately in
+`~/.kiwimatecoder/model_cache.json`. It holds no secrets and can be deleted at
+any time; the next `/model` rebuilds it.
 
 ## Development
 

@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import shlex
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from glob import has_magic
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from kiwimatecoder import tools
+from kiwimatecoder.catalog import ModelCatalog, summarize_ids
 from kiwimatecoder.config import (
     add_provider,
+    apply_model_filter,
     get_key,
+    get_model_catalog,
     get_model_filter,
     get_provider_config,
     list_provider_configs,
@@ -78,7 +83,7 @@ def dispatch(
         return CommandResult.CONTINUE
 
     if not arg and selector is not None:
-        prompt = _selection_prompt(name, session)
+        prompt = _selection_prompt(name, session, console)
         if prompt is not None:
             if not prompt.options:
                 console.print(f"[yellow]{prompt.empty_message}[/yellow]")
@@ -98,7 +103,9 @@ def _help(arg: str, session: Session, console: Console) -> str:
     table.add_column("Command", style="cyan")
     table.add_column("Description")
     for cmd, desc in _HELP.items():
-        table.add_row(cmd, desc)
+        # Escaped: rich reads argument hints like [name|refresh] as markup tags
+        # and would drop them from the table.
+        table.add_row(escape(cmd), desc)
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -114,10 +121,125 @@ def _clear(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
+_MODEL_REFRESH_WORDS = {"refresh", "--refresh", "-r", "update"}
+_MODEL_LIST_WORDS = {"list", "--list", "ls"}
+
+
+def _format_age(seconds: float) -> str:
+    """Render a cache age as a short human string."""
+    if seconds < 90:
+        return "just now"
+    minutes = seconds / 60
+    if minutes < 90:
+        return f"{int(minutes)}m ago"
+    hours = minutes / 60
+    if hours < 48:
+        return f"{int(hours)}h ago"
+    return f"{int(hours / 24)}d ago"
+
+
+def _catalog_status(catalog: ModelCatalog) -> str:
+    """Describe where a catalog came from, for display."""
+    if catalog.source == "curated":
+        return "built-in list"
+    age = (
+        _format_age(max(0.0, time.time() - catalog.fetched_at))
+        if catalog.fetched_at
+        else "unknown age"
+    )
+    return f"live from provider, {'refreshed' if catalog.source == 'live' else 'cached'} {age}"
+
+
+def _report_catalog(
+    catalog: ModelCatalog, session: Session, console: Console, *, verbose: bool
+) -> None:
+    """Print what a catalog refresh changed.
+
+    Kept quiet on the selector path (``verbose=False``) — only real news is
+    worth interrupting a model pick: models that appeared, models the provider
+    retired, and a current model that no longer exists.
+    """
+    if catalog.source == "live":
+        if verbose:
+            console.print(
+                f"[green]Refreshed {session.provider.name} models[/green] — "
+                f"{len(catalog.models)} offered."
+            )
+        if catalog.added:
+            console.print(
+                f"[green]New ({len(catalog.added)}):[/green] "
+                f"{summarize_ids(catalog.added)}"
+            )
+        if catalog.removed:
+            console.print(
+                f"[yellow]Deprecated, removed ({len(catalog.removed)}):[/yellow] "
+                f"{summarize_ids(catalog.removed)}"
+            )
+        if verbose and not catalog.added and not catalog.removed:
+            console.print("[dim]No changes since the last check.[/dim]")
+        if session.model not in catalog.models:
+            console.print(
+                f"[yellow]Current model[/yellow] [cyan]{session.model}[/cyan] "
+                f"[yellow]is no longer offered by {session.provider.name}.[/yellow] "
+                "Pick another with /model, or run /config model reset."
+            )
+        return
+
+    if catalog.error:
+        console.print(
+            f"[dim]Could not refresh models ({catalog.error}); "
+            f"using the {'cached' if catalog.source == 'cache' else 'built-in'} "
+            "list.[/dim]"
+        )
+    elif verbose:
+        console.print(f"[dim]Using the {_catalog_status(catalog)}.[/dim]")
+
+
+def _model_catalog_for(
+    session: Session, console: Console, *, force: bool = False, verbose: bool = False
+) -> ModelCatalog:
+    """Resolve the catalog for the active provider and report what changed."""
+    with console.status(f"Checking {session.provider.name} for new models…"):
+        catalog = get_model_catalog(
+            session.provider_id, refresh=True, force=force, keep=(session.model,)
+        )
+    _report_catalog(catalog, session, console, verbose=verbose)
+    return catalog
+
+
+def _print_model_catalog(session: Session, console: Console, catalog: ModelCatalog) -> None:
+    visible = apply_model_filter(session.provider_id, catalog.models)
+    table = Table(
+        title=f"{session.provider.name} models ({_catalog_status(catalog)})",
+        show_header=True,
+    )
+    table.add_column("model", style="cyan")
+    table.add_column("")
+    for model in visible:
+        table.add_row(model, "active" if model == session.model else "")
+    console.print(table)
+    if not visible:
+        console.print(
+            f"[yellow]No models are visible for {session.provider_id}.[/yellow] "
+            "Use /config models clear or /model <name>."
+        )
+
+
 def _model(arg: str, session: Session, console: Console) -> str:
     if not arg:
         console.print(f"Current model: [cyan]{session.model}[/cyan]")
         return CommandResult.CONTINUE
+
+    action = arg.strip().lower()
+    if action in _MODEL_REFRESH_WORDS:
+        catalog = _model_catalog_for(session, console, force=True, verbose=True)
+        _print_model_catalog(session, console, catalog)
+        return CommandResult.CONTINUE
+    if action in _MODEL_LIST_WORDS:
+        catalog = _model_catalog_for(session, console)
+        _print_model_catalog(session, console, catalog)
+        return CommandResult.CONTINUE
+
     session.model = arg
     console.print(f"Model set to [cyan]{arg}[/cyan].")
     return CommandResult.CONTINUE
@@ -362,9 +484,13 @@ def _config_help(console: Console) -> None:
             "Hide these models for the active provider.",
         ),
         ("/config models clear", "Clear model visibility for the active provider."),
+        (
+            "/config models refresh",
+            "Fetch the provider's live model list, dropping deprecated ids.",
+        ),
     ]
     for command, description in rows:
-        table.add_row(command, description)
+        table.add_row(escape(command), description)
     console.print(table)
 
 
@@ -553,14 +679,22 @@ def _config_models(action_parts: list[str], session: Session, console: Console) 
 
     if action in {"show", "list", "ls"}:
         model_filter = get_model_filter(provider_id)
-        visible = list_visible_models(provider_id)
+        catalog = get_model_catalog(provider_id)
+        visible = apply_model_filter(provider_id, catalog.models)
         console.print(
             f"Model visibility for [cyan]{provider_id}[/cyan]: "
-            f"[cyan]{model_filter['mode']}[/cyan]"
+            f"[cyan]{model_filter['mode']}[/cyan]\n"
+            f"Catalog: [cyan]{_catalog_status(catalog)}[/cyan] "
+            f"({len(catalog.models)} models)"
         )
         if model_filter["models"]:
             console.print("Configured list: " + ", ".join(model_filter["models"]))
         console.print("Shown in completions: " + (", ".join(visible) or "[none]"))
+        return
+
+    if action in {"refresh", "update", "fetch"}:
+        catalog = _model_catalog_for(session, console, force=True, verbose=True)
+        _print_model_catalog(session, console, catalog)
         return
 
     if action in {"allow", "only"}:
@@ -660,7 +794,10 @@ _HELP = {
     "/help": "Show this help.",
     "/exit, /quit": "Leave the session.",
     "/clear": "Clear the conversation history.",
-    "/model [name]": "Choose a visible model, or set one by name.",
+    "/model [name|refresh|list]": (
+        "Choose a model (the list is refreshed from the provider), set one by "
+        "name, or refresh the list now."
+    ),
     "/provider [id]": "Choose a provider, or switch by id.",
     "/mode [ask|auto-accept|plan]": "Choose or directly set the permission mode.",
     "/tools": "List available tools.",
@@ -679,7 +816,7 @@ _COMMAND_DESCRIPTIONS = {
     "exit": "Leave the session.",
     "quit": "Leave the session.",
     "clear": "Clear the conversation history.",
-    "model": "Choose a visible model, or set one by name.",
+    "model": "Choose a model, set one by name, or refresh the list.",
     "provider": "Choose a provider, or switch by id.",
     "mode": "Choose or directly set the permission mode.",
     "tools": "List available tools.",
@@ -699,6 +836,11 @@ _CONTEXT_ACTION_DESCRIPTIONS = {
     "clear": "Remove all pinned context files.",
 }
 
+_MODEL_ACTION_DESCRIPTIONS = {
+    "refresh": "Fetch the provider's newest models now.",
+    "list": "Show the models currently offered.",
+}
+
 _MODE_DESCRIPTIONS = {
     "ask": "Approve writes and shell commands.",
     "auto-accept": "Run writes and commands without prompting.",
@@ -714,19 +856,30 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "keys": "Save, remove, or list API keys.",
     "use": "Persist and switch provider.",
     "model": "Set or reset the default model.",
-    "models": "Manage model allow/deny filters.",
+    "models": "Refresh the model catalog or manage allow/deny filters.",
 }
 
 
-def _selection_prompt(name: str, session: Session) -> SelectionPrompt | None:
-    """Build the selector shown for choice-based commands without arguments."""
+def _selection_prompt(
+    name: str, session: Session, console: Console | None = None
+) -> SelectionPrompt | None:
+    """Build the selector shown for choice-based commands without arguments.
+
+    Opening ``/model`` is the moment the active provider is actually in use, so
+    that branch refreshes the catalog from the provider (subject to the cache
+    TTL) before offering it. ``console`` is optional so callers that only want
+    the prompt can skip the reporting.
+    """
     if name == "model":
-        models = list_visible_models(session.provider_id)
+        quiet = console or Console(quiet=True)
+        catalog = _model_catalog_for(session, quiet)
+        models = apply_model_filter(session.provider_id, catalog.models)
         return SelectionPrompt(
             title="Select model",
             text=(
                 f"Choose a model from {session.provider.name} "
-                f"({session.provider_id}).\nCurrent model: {session.model}"
+                f"({session.provider_id}) — {_catalog_status(catalog)}."
+                f"\nCurrent model: {session.model}"
             ),
             options=tuple(CommandOption(model, model) for model in models),
             selected=session.model if session.model in models else None,
@@ -786,9 +939,14 @@ def slash_argument_completions(
     elif command == "mode":
         choices = _MODE_DESCRIPTIONS
     elif command == "model" and session is not None:
+        # Completion runs on every keystroke, so this reads the cached catalog
+        # only — refreshing from the provider happens in /model itself.
         choices = {
-            model: f"{session.provider_id} model"
-            for model in list_visible_models(session.provider_id)
+            **_MODEL_ACTION_DESCRIPTIONS,
+            **{
+                model: f"{session.provider_id} model"
+                for model in list_visible_models(session.provider_id)
+            },
         }
     elif command == "provider":
         choices = {p.id: p.name for p in list_provider_configs()}

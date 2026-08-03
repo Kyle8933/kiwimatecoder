@@ -1,8 +1,9 @@
 import json
+import time
 
 import pytest
 
-from kiwimatecoder import config
+from kiwimatecoder import catalog, config
 from kiwimatecoder.providers import REGISTRY
 
 
@@ -141,3 +142,205 @@ def test_remove_key():
     config.set_key("openai", "sk-openai")
     assert config.remove_key("openai")
     assert config.get_key("openai") is None
+
+
+# ---------------------------------------------------------------------------
+# Live model catalogs
+# ---------------------------------------------------------------------------
+
+
+def _install_fetch(monkeypatch, model_ids=(), error=None):
+    """Patch the network fetch and return the list of providers it was asked for.
+
+    ``model_ids`` are dated newest-first so the catalog order matches the order
+    they are written in each test.
+    """
+    calls: list[str] = []
+
+    def fake_fetch(provider, api_key=None, **kwargs):
+        calls.append(provider.id)
+        if error is not None:
+            raise catalog.CatalogFetchError(error)
+        return [
+            catalog.RemoteModel(model_id, float(len(model_ids) - index))
+            for index, model_id in enumerate(model_ids)
+        ]
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+    return calls
+
+
+def _forbid_fetch(monkeypatch):
+    def fake_fetch(provider, api_key=None, **kwargs):
+        raise AssertionError("the network must not be touched here")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+
+
+def test_refresh_adds_new_models_and_drops_deprecated_ones(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    default = REGISTRY["openrouter"].default_model
+    calls = _install_fetch(monkeypatch, [default, "vendor/brand-new"])
+
+    result = config.get_model_catalog("openrouter", refresh=True)
+
+    assert calls == ["openrouter"]
+    assert result.source == "live"
+    assert result.models == [default, "vendor/brand-new"]
+    assert result.added == ["vendor/brand-new"]
+    # Curated ids the provider no longer serves are gone from the catalog.
+    assert "openai/gpt-5.6-sol" in result.removed
+    assert "openai/gpt-5.6-sol" not in config.list_visible_models("openrouter")
+
+
+def test_live_catalog_is_cached_and_reused_without_network(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one", "vendor/two"])
+    config.get_model_catalog("openrouter", refresh=True)
+
+    _forbid_fetch(monkeypatch)
+    result = config.get_model_catalog("openrouter", refresh=True)
+
+    assert result.source == "cache"
+    assert result.models == ["vendor/one", "vendor/two"]
+    assert config.list_visible_models("openrouter") == ["vendor/one", "vendor/two"]
+
+
+def test_stale_cache_is_refetched(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/old"])
+    config.get_model_catalog("openrouter", refresh=True)
+
+    cache = config.load_model_cache()
+    cache["providers"]["openrouter"]["fetched_at"] = (
+        time.time() - catalog.CATALOG_TTL_SECONDS - 1
+    )
+    config.save_model_cache(cache)
+
+    _install_fetch(monkeypatch, ["vendor/fresh"])
+    result = config.get_model_catalog("openrouter", refresh=True)
+
+    assert result.source == "live"
+    assert result.models == ["vendor/fresh"]
+    assert result.removed == ["vendor/old"]
+
+
+def test_force_refetches_a_fresh_cache(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one"])
+    config.get_model_catalog("openrouter", refresh=True)
+
+    calls = _install_fetch(monkeypatch, ["vendor/two"])
+    result = config.get_model_catalog("openrouter", force=True)
+
+    assert calls == ["openrouter"]
+    assert result.models == ["vendor/two"]
+
+
+def test_no_key_means_no_fetch(monkeypatch):
+    _forbid_fetch(monkeypatch)
+
+    result = config.get_model_catalog("openrouter", refresh=True)
+
+    assert result.source == "curated"
+    assert result.models[0] == REGISTRY["openrouter"].default_model
+    # The automatic path stays quiet about providers that aren't set up.
+    assert result.error is None
+
+
+def test_forced_refresh_without_a_key_says_why(monkeypatch):
+    _forbid_fetch(monkeypatch)
+
+    result = config.get_model_catalog("openrouter", force=True)
+
+    assert result.source == "curated"
+    assert "no API key" in result.error
+    assert "OPENROUTER_API_KEY" in result.error
+
+
+def test_local_provider_is_fetched_without_a_key(monkeypatch):
+    monkeypatch.delenv("LOCAL_API_KEY", raising=False)
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    calls = _install_fetch(monkeypatch, ["local-code", "local-new"])
+
+    result = config.get_model_catalog("local", refresh=True)
+
+    assert calls == ["local"]
+    assert result.models == ["local-code", "local-new"]
+
+
+def test_failed_fetch_falls_back_and_backs_off(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    calls = _install_fetch(monkeypatch, error="boom")
+
+    result = config.get_model_catalog("openrouter", refresh=True)
+
+    assert calls == ["openrouter"]
+    assert result.source == "curated"
+    assert result.error and "boom" in result.error
+    assert result.models[0] == REGISTRY["openrouter"].default_model
+
+    # A second automatic refresh is suppressed until the backoff expires.
+    _forbid_fetch(monkeypatch)
+    assert config.get_model_catalog("openrouter", refresh=True).source == "curated"
+
+
+def test_failed_refresh_keeps_serving_the_cached_catalog(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one"])
+    config.get_model_catalog("openrouter", refresh=True)
+
+    _install_fetch(monkeypatch, error="offline")
+    result = config.get_model_catalog("openrouter", force=True)
+
+    assert result.source == "cache"
+    assert result.models == ["vendor/one"]
+    assert "offline" in result.error
+
+
+def test_visible_models_apply_filters_to_the_live_catalog(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one", "vendor/two"])
+    config.get_model_catalog("openrouter", refresh=True)
+    config.set_model_filter("openrouter", "deny", ["vendor/two"])
+
+    assert config.list_visible_models("openrouter") == ["vendor/one"]
+
+
+def test_list_visible_models_never_fetches_by_default(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _forbid_fetch(monkeypatch)
+
+    assert config.list_visible_models("openrouter")[0] == (
+        REGISTRY["openrouter"].default_model
+    )
+
+
+def test_clear_model_cache(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one"])
+    config.get_model_catalog("openrouter", refresh=True)
+
+    config.clear_model_cache("openrouter")
+
+    assert config.load_model_cache()["providers"] == {}
+    _forbid_fetch(monkeypatch)
+    assert config.get_model_catalog("openrouter").source == "curated"
+
+
+def test_removing_a_provider_clears_its_cached_catalog(monkeypatch):
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    _install_fetch(monkeypatch, ["local-code"])
+    config.get_model_catalog("local", refresh=True)
+
+    config.remove_provider("local")
+
+    assert "local" not in config.load_model_cache()["providers"]
+
+
+def test_corrupt_model_cache_is_ignored(monkeypatch):
+    (config.CONFIG_DIR / config.MODEL_CACHE_NAME).write_text("{not json")
+    _forbid_fetch(monkeypatch)
+
+    assert config.load_model_cache() == {"version": 1, "providers": {}}
+    assert config.get_model_catalog("openrouter").source == "curated"

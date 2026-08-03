@@ -7,8 +7,11 @@ Anthropic's native Messages API). Callers must not assume every registered id
 yields a fully compatible endpoint today.
 
 Model ids drift fast — the defaults and ``models`` catalogs below were verified
-in July 2026. They are only starting points: the user can override the model for
-any provider at runtime with ``/model`` (typing any id works, listed or not) or
+in July 2026. They are only the offline starting point: once a provider is in
+use, :mod:`kiwimatecoder.catalog` fetches its live ``/models`` listing so newly
+released ids are offered and retired ones disappear (see
+``config.get_model_catalog``). The user can still override the model for any
+provider at runtime with ``/model`` (typing any id works, listed or not) or
 persist a choice via ``config set-model``, and can reshape the offered list with
 ``/config models allow|deny``.
 """

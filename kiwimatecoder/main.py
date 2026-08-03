@@ -6,8 +6,11 @@ from rich.console import Console
 
 from kiwimatecoder import __version__
 from kiwimatecoder.ai import stream_response
+from kiwimatecoder.catalog import summarize_ids
 from kiwimatecoder.config import (
+    apply_model_filter,
     get_key,
+    get_model_catalog,
     get_provider_config,
     get_selected_provider_id,
     list_provider_configs,
@@ -201,6 +204,51 @@ def check():
             )
         else:
             console.print(f"[dim]✗ {provider.id} — no key[/dim]")
+
+
+@config_app.command("models")
+def models_cmd(
+    provider: str = typer.Option(
+        None, "--provider", "-p", help="Provider id (default: configured provider)"
+    ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        "-r",
+        help="Fetch the provider's live model list before showing it.",
+    ),
+):
+    """List the models offered for a provider, newest first.
+
+    With ``--refresh`` the provider is asked what it serves right now: newly
+    released models are added and ones it no longer lists are dropped.
+    """
+    cfg = load_config()
+    provider_id = provider or get_selected_provider_id(cfg)
+    try:
+        provider_cfg = get_provider_config(provider_id, cfg)
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    catalog = get_model_catalog(provider_id, force=refresh, cfg=cfg)
+    if catalog.error:
+        console.print(f"[yellow]Could not refresh models: {catalog.error}[/yellow]")
+    if catalog.added:
+        console.print(f"[green]New:[/green] {summarize_ids(catalog.added)}")
+    if catalog.removed:
+        console.print(
+            f"[yellow]Deprecated, removed:[/yellow] {summarize_ids(catalog.removed)}"
+        )
+
+    source = {
+        "live": "live from provider",
+        "cache": "cached",
+        "curated": "built-in list",
+    }[catalog.source]
+    console.print(f"[cyan]{provider_cfg.name}[/cyan] models ({source}):")
+    for model in apply_model_filter(provider_id, catalog.models):
+        console.print(f"  {model}")
 
 
 @config_app.command("list")

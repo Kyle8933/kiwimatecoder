@@ -3,11 +3,12 @@ import io
 import pytest
 from rich.console import Console
 
-from kiwimatecoder import config
+from kiwimatecoder import catalog, config
 from kiwimatecoder.commands import (
     CommandResult,
     SelectionPrompt,
     dispatch,
+    slash_argument_completions,
     slash_command_completions,
 )
 from kiwimatecoder.permissions import PermissionMode
@@ -173,3 +174,130 @@ def test_config_key_remove(session):
     dispatch("/config key remove openai", session, console)
 
     assert config.get_key("openai") is None
+
+
+# ---------------------------------------------------------------------------
+# Live model catalogs
+# ---------------------------------------------------------------------------
+
+
+def _install_fetch(monkeypatch, model_ids, calls=None):
+    """Patch the network fetch to return ``model_ids`` newest-first."""
+
+    def fake_fetch(provider, api_key=None, **kwargs):
+        if calls is not None:
+            calls.append(provider.id)
+        return [
+            catalog.RemoteModel(model_id, float(len(model_ids) - index))
+            for index, model_id in enumerate(model_ids)
+        ]
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+
+
+def _output(console) -> str:
+    return console.file.getvalue()
+
+
+def test_bare_model_command_refreshes_the_catalog(session, monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    calls: list[str] = []
+    _install_fetch(monkeypatch, ["vendor/new", "vendor/stable"], calls)
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        prompts.append(prompt)
+        return "vendor/new"
+
+    dispatch("/model", session, _console(), selector=select)
+
+    assert calls == ["openrouter"]
+    assert [option.value for option in prompts[0].options] == [
+        "vendor/new",
+        "vendor/stable",
+    ]
+    assert session.model == "vendor/new"
+
+
+def test_model_refresh_reports_new_and_deprecated_models(session, monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    session.model = "anthropic/claude-opus-4-8"  # a curated id the provider drops
+    _install_fetch(monkeypatch, ["anthropic/claude-sonnet-5", "vendor/brand-new"])
+    console = _console()
+
+    assert dispatch("/model refresh", session, console) == CommandResult.CONTINUE
+
+    output = _output(console)
+    assert "vendor/brand-new" in output
+    assert "Deprecated" in output
+    assert "anthropic/claude-opus-4-8" in output
+    # The retired model is called out rather than silently left selected.
+    assert "no longer offered" in output
+    assert config.list_visible_models("openrouter") == [
+        "anthropic/claude-sonnet-5",
+        "vendor/brand-new",
+    ]
+
+
+def test_model_refresh_survives_a_failing_provider(session, monkeypatch):
+    config.set_key("openrouter", "sk-test")
+
+    def fake_fetch(provider, api_key=None, **kwargs):
+        raise catalog.CatalogFetchError("connection refused")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+    console = _console()
+
+    dispatch("/model refresh", session, console)
+
+    output = _output(console)
+    assert "connection refused" in output
+    assert REGISTRY["openrouter"].default_model in output
+
+
+def test_model_list_uses_the_cache_without_fetching(session, monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one"])
+    config.get_model_catalog("openrouter", refresh=True)
+
+    def fail(provider, api_key=None, **kwargs):
+        raise AssertionError("no network for /model list")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fail)
+    console = _console()
+
+    dispatch("/model list", session, console)
+
+    assert "vendor/one" in _output(console)
+
+
+def test_setting_a_model_by_name_still_works(session, monkeypatch):
+    config.set_key("openrouter", "sk-test")
+
+    def fail(provider, api_key=None, **kwargs):
+        raise AssertionError("setting a model must not hit the network")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fail)
+
+    dispatch("/model some/unlisted-model", session, _console())
+
+    assert session.model == "some/unlisted-model"
+
+
+def test_config_models_refresh_updates_the_catalog(session, monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one", "vendor/two"])
+    console = _console()
+
+    dispatch("/config models refresh", session, console)
+
+    assert "vendor/two" in _output(console)
+    assert config.list_visible_models("openrouter") == ["vendor/one", "vendor/two"]
+
+
+def test_model_argument_completions_include_refresh(session):
+    values = {
+        value for value, _ in slash_argument_completions("model", "", session)
+    }
+
+    assert {"refresh", "list"} <= values

@@ -11,6 +11,11 @@ Configuration lives in ``~/.kiwimatecoder/config.json`` with this shape::
         "default_mode": "ask"
     }
 
+Live model catalogs are cached separately in
+``~/.kiwimatecoder/model_cache.json`` so ``/model`` can offer what a provider
+serves today without hitting the network on every invocation. That file holds no
+secrets and can be deleted at any time.
+
 The original releases stored a single OpenRouter key in a flat
 ``~/.kiwimatecoder/config`` file (``OPENROUTER_API_KEY=...``). That file is read
 transparently when the JSON config is absent, so existing users keep working;
@@ -24,8 +29,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from collections.abc import Sequence
 from pathlib import Path
+from urllib.parse import urlparse
 
+from kiwimatecoder import catalog
+from kiwimatecoder.catalog import CatalogFetchError, ModelCatalog
 from kiwimatecoder.providers import (
     DEFAULT_PROVIDER_ID,
     REGISTRY,
@@ -36,8 +46,13 @@ from kiwimatecoder.providers import (
 CONFIG_DIR = Path.home() / ".kiwimatecoder"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LEGACY_CONFIG_FILE = CONFIG_DIR / "config"
+MODEL_CACHE_NAME = "model_cache.json"
 
 DEFAULT_MODE = "ask"
+MODEL_CACHE_VERSION = 1
+# Hosts we treat as "no key needed" — local model servers (LM Studio, Ollama,
+# llama.cpp) serve /v1/models without auth.
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
 
 
 def _empty_config() -> dict:
@@ -246,6 +261,7 @@ def remove_provider(provider_id: str) -> None:
         cfg["selected_provider"] = DEFAULT_PROVIDER_ID
         cfg["selected_model"] = None
     save_config(cfg)
+    clear_model_cache(provider_id)
 
 
 def get_key(provider_id: str) -> str | None:
@@ -347,19 +363,189 @@ def set_model_filter(provider_id: str, mode: str, models: list[str] | None = Non
     save_config(cfg)
 
 
-def list_visible_models(provider_id: str) -> list[str]:
-    """Return models that should be offered in model-selection UI."""
-    provider = get_provider_config(provider_id)
+def apply_model_filter(provider_id: str, models: Sequence[str]) -> list[str]:
+    """Apply the provider's allow/deny visibility filter to ``models``."""
     model_filter = get_model_filter(provider_id)
     mode = model_filter["mode"]
-    models = model_filter["models"]
-    catalog = list(dict.fromkeys((provider.default_model, *provider.models)))
+    filtered = model_filter["models"]
     if mode == "allow":
-        return models
+        return list(filtered)
     if mode == "deny":
-        denied = set(models)
-        return [model for model in catalog if model not in denied]
-    return catalog
+        denied = set(filtered)
+        return [model for model in models if model not in denied]
+    return list(models)
+
+
+# ---------------------------------------------------------------------------
+# Live model catalogs
+# ---------------------------------------------------------------------------
+
+
+def _model_cache_file() -> Path:
+    """Path of the model cache (resolved lazily so CONFIG_DIR stays patchable)."""
+    return CONFIG_DIR / MODEL_CACHE_NAME
+
+
+def load_model_cache() -> dict:
+    """Load the cached provider catalogs, tolerating a missing/corrupt file."""
+    path = _model_cache_file()
+    if path.exists():
+        try:
+            stored = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            stored = None
+        if isinstance(stored, dict) and stored.get("version") == MODEL_CACHE_VERSION:
+            providers = stored.get("providers")
+            if isinstance(providers, dict):
+                return {"version": MODEL_CACHE_VERSION, "providers": dict(providers)}
+    return {"version": MODEL_CACHE_VERSION, "providers": {}}
+
+
+def save_model_cache(cache: dict) -> None:
+    """Persist the model cache, ignoring write failures (it is only a cache)."""
+    try:
+        CONFIG_DIR.mkdir(exist_ok=True)
+        _model_cache_file().write_text(json.dumps(cache, indent=2) + "\n")
+    except OSError:
+        pass
+
+
+def clear_model_cache(provider_id: str | None = None) -> None:
+    """Drop cached catalogs for one provider, or all of them."""
+    cache = load_model_cache()
+    if provider_id is None:
+        cache["providers"] = {}
+    else:
+        cache["providers"].pop(provider_id, None)
+    save_model_cache(cache)
+
+
+def _curated_models(provider: ProviderConfig) -> list[str]:
+    return list(dict.fromkeys((provider.default_model, *provider.models)))
+
+
+def _can_fetch_models(provider: ProviderConfig) -> bool:
+    """Whether a live fetch is worth attempting for ``provider``.
+
+    A provider you have no key for is one you cannot use, so we skip the request
+    rather than firing off a doomed call every time the selector opens. Local
+    servers are exempt: they usually need no key at all.
+    """
+    if get_key(provider.id):
+        return True
+    host = (urlparse(provider.base_url).hostname or "").lower()
+    return host in _LOCAL_HOSTS or host.endswith(".local")
+
+
+def _should_auto_refresh(entry: dict, now: float) -> bool:
+    """Whether a cached entry is stale enough to refetch on its own."""
+    if not entry:
+        return True
+    if now - float(entry.get("failed_at") or 0.0) < catalog.FAILURE_BACKOFF_SECONDS:
+        return False
+    if not entry.get("models"):
+        return True
+    return now - float(entry.get("fetched_at") or 0.0) >= catalog.CATALOG_TTL_SECONDS
+
+
+def get_model_catalog(
+    provider_id: str,
+    *,
+    refresh: bool = False,
+    force: bool = False,
+    keep: Sequence[str] = (),
+    timeout: float | None = None,
+    cfg: dict | None = None,
+) -> ModelCatalog:
+    """Return the models offered for a provider, newest first.
+
+    ``refresh`` asks the provider for its live listing when the cached one is
+    missing or older than :data:`catalog.CATALOG_TTL_SECONDS`; ``force`` always
+    asks. A successful fetch replaces the catalog wholesale, so models the
+    provider has retired stop being offered. Any failure (offline, bad key,
+    unsupported endpoint) falls back to the cached catalog and then to the
+    curated one, with the error reported on the result instead of raised.
+    """
+    provider = get_provider_config(provider_id, cfg)
+    curated = _curated_models(provider)
+
+    cache = load_model_cache()
+    entry = cache["providers"].get(provider_id)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    cached_models = [
+        str(model).strip() for model in entry.get("models") or [] if str(model).strip()
+    ]
+    fetched_at = float(entry.get("fetched_at") or 0.0) or None
+
+    error: str | None = None
+    now = time.time()
+    want_live = force or (refresh and _should_auto_refresh(entry, now))
+    if want_live and not _can_fetch_models(provider):
+        # Only worth saying out loud when the user asked for a refresh; the
+        # automatic path stays silent for providers they have not set up.
+        if force:
+            error = f"no API key for {provider.name} ({provider.key_env})"
+        want_live = False
+    if want_live:
+        try:
+            remote = catalog.fetch_models(
+                provider,
+                get_key(provider_id),
+                timeout=timeout if timeout is not None else catalog.FETCH_TIMEOUT,
+            )
+        except CatalogFetchError as exc:
+            error = str(exc)
+            entry["failed_at"] = now
+            cache["providers"][provider_id] = entry
+            save_model_cache(cache)
+        else:
+            models = catalog.merge_catalog(provider, remote, keep=keep)
+            # Compare against what we previously believed: the last live fetch
+            # if there was one, otherwise the curated tuple we shipped.
+            baseline = cached_models or curated
+            added = [model for model in models if model not in baseline]
+            removed = [model for model in baseline if model not in models]
+            cache["providers"][provider_id] = {"fetched_at": now, "models": models}
+            save_model_cache(cache)
+            return ModelCatalog(
+                provider_id=provider_id,
+                models=models,
+                source="live",
+                fetched_at=now,
+                added=added,
+                removed=removed,
+            )
+
+    if cached_models:
+        return ModelCatalog(
+            provider_id=provider_id,
+            models=cached_models,
+            source="cache",
+            fetched_at=fetched_at,
+            error=error,
+        )
+    return ModelCatalog(
+        provider_id=provider_id, models=curated, source="curated", error=error
+    )
+
+
+def list_visible_models(
+    provider_id: str,
+    *,
+    refresh: bool = False,
+    force: bool = False,
+    keep: Sequence[str] = (),
+) -> list[str]:
+    """Return models that should be offered in model-selection UI.
+
+    Reads the cached catalog by default — callers such as tab completion must
+    never block on the network. Pass ``refresh=True`` to let a stale catalog be
+    refetched, or ``force=True`` to refetch unconditionally.
+    """
+    model_catalog = get_model_catalog(
+        provider_id, refresh=refresh, force=force, keep=keep
+    )
+    return apply_model_filter(provider_id, model_catalog.models)
 
 
 # ---------------------------------------------------------------------------
