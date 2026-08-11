@@ -46,6 +46,26 @@ def test_env_var_overrides_stored_key(monkeypatch):
     assert config.get_key("openrouter") == "from-env"
 
 
+def test_set_key_persists_when_env_override_warns(monkeypatch):
+    """Re-setting a key stores it on disk, but warns that the env var still wins."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "from-env")
+    warning = config.set_key("openrouter", "sk-new")
+    assert warning and "OPENROUTER_API_KEY" in warning
+    assert config.load_config()["keys"]["openrouter"] == "sk-new"
+    assert config.get_key("openrouter") == "from-env"
+
+
+def test_set_key_returns_none_without_env_override():
+    assert config.set_key("openai", "sk-openai") is None
+
+
+def test_get_key_env_override(monkeypatch):
+    config.set_key("openai", "sk-stored")
+    assert config.get_key_env_override("openai") is None
+    monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+    assert config.get_key_env_override("openai") == "OPENAI_API_KEY"
+
+
 def test_empty_env_var_takes_precedence_and_disables_stored_key(monkeypatch):
     """Exported empty env var must win over stored key (returns None -> friendly no-key path)."""
     config.set_key("openrouter", "stored-key")

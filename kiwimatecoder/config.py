@@ -278,13 +278,37 @@ def get_key(provider_id: str) -> str | None:
     return load_config()["keys"].get(provider_id)
 
 
-def set_key(provider_id: str, key: str) -> None:
-    """Store an API key for a provider and persist the config."""
+def get_key_env_override(provider_id: str) -> str | None:
+    """Return the env var currently masking the stored key for ``provider_id``.
+
+    Returns the provider's ``key_env`` name when that variable is exported in
+    this process (``get_key`` will prefer it over the stored key), else None.
+    """
+    provider = get_provider_config(provider_id)
+    if provider.key_env in os.environ:
+        return provider.key_env
+    return None
+
+
+def set_key(provider_id: str, key: str) -> str | None:
+    """Store an API key for a provider and persist the config.
+
+    Returns a warning string when the provider's environment variable is set
+    (that env var still takes precedence at runtime, so the stored re-set key
+    would not take effect until it is unset); otherwise returns None.
+    """
     # Validate the provider id eagerly.
-    get_provider_config(provider_id)
+    provider = get_provider_config(provider_id)
     cfg = load_config()
     cfg["keys"][provider_id] = key
     save_config(cfg)
+    if provider.key_env in os.environ:
+        return (
+            f"Stored, but {provider.key_env} is set in the environment and "
+            f"takes precedence. Run `unset {provider.key_env}` (or export it "
+            f"empty) for this key to take effect."
+        )
+    return None
 
 
 def remove_key(provider_id: str) -> bool:

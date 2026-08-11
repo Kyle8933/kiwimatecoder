@@ -19,6 +19,7 @@ from kiwimatecoder.config import (
     add_provider,
     apply_model_filter,
     get_key,
+    get_key_env_override,
     get_model_catalog,
     get_model_filter,
     get_provider_config,
@@ -498,11 +499,16 @@ def _config_show(session: Session, console: Console) -> None:
     provider = session.provider
     key = get_key(provider.id)
     model_filter = get_model_filter(provider.id)
+    if not key:
+        key_state = "[yellow]missing[/yellow]"
+    else:
+        env_override = get_key_env_override(provider.id)
+        detail = f" (from env {env_override})" if env_override else " (stored)"
+        key_state = f"[green]configured[/green]{detail}"
     console.print(
         f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
         f"Model: [cyan]{session.model}[/cyan]\n"
-        f"Key: {'[green]configured[/green]' if key else '[yellow]missing[/yellow]'} "
-        f"({provider.key_env})\n"
+        f"Key: {key_state} ({provider.key_env})\n"
         f"Model visibility: [cyan]{model_filter['mode']}[/cyan]"
     )
     if model_filter["models"]:
@@ -602,11 +608,12 @@ def _config_keys(action_parts: list[str], console: Console) -> None:
         table.add_column("status")
         for provider in list_provider_configs():
             key = get_key(provider.id)
-            status = (
-                f"[green]configured (...{key[-4:]})[/green]"
-                if key
-                else "[dim]missing[/dim]"
-            )
+            if not key:
+                status = "[dim]missing[/dim]"
+            else:
+                env_override = get_key_env_override(provider.id)
+                tag = f" (from env {env_override})" if env_override else ""
+                status = f"[green]configured (...{key[-4:]})[/green]{tag}"
             table.add_row(provider.id, provider.key_env, status)
         console.print(table)
         return
@@ -617,11 +624,13 @@ def _config_keys(action_parts: list[str], console: Console) -> None:
             return
         provider_id, key = rest[0], rest[1]
         try:
-            set_key(provider_id, key)
+            warning = set_key(provider_id, key)
         except KeyError as exc:
             console.print(f"[red]{exc}[/red]")
             return
         console.print(f"[green]Saved API key for[/green] [cyan]{provider_id}[/cyan].")
+        if warning:
+            console.print(f"[yellow]{warning}[/yellow]")
         return
 
     if action in {"remove", "rm", "delete", "clear"}:

@@ -10,6 +10,7 @@ from kiwimatecoder.catalog import summarize_ids
 from kiwimatecoder.config import (
     apply_model_filter,
     get_key,
+    get_key_env_override,
     get_model_catalog,
     get_provider_config,
     get_selected_provider_id,
@@ -156,11 +157,13 @@ def set_key_cmd(
 ):
     """Save an API key for a provider."""
     try:
-        set_key(provider, key)
+        warning = set_key(provider, key)
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]✓ API key saved for {provider}![/green]")
+    if warning:
+        console.print(f"[yellow]{warning}[/yellow]")
 
 
 @config_app.command("set-provider")
@@ -198,12 +201,14 @@ def check():
     )
     for provider in list_provider_configs(cfg):
         key = get_key(provider.id)
-        if key:
-            console.print(
-                f"[green]✓ {provider.id}[/green] (ending in ...{key[-4:]})"
-            )
-        else:
+        if not key:
             console.print(f"[dim]✗ {provider.id} — no key[/dim]")
+            continue
+        env_override = get_key_env_override(provider.id)
+        source = (
+            f", from env {env_override}" if env_override else ", stored in config"
+        )
+        console.print(f"[green]✓ {provider.id}[/green] (ending in ...{key[-4:]}{source})")
 
 
 @config_app.command("models")
