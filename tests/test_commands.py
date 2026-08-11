@@ -400,9 +400,9 @@ def test_config_provider_edit_requires_pairs(session):
 def test_bare_config_opens_interactive_menu(session):
     prompts: list[SelectionPrompt] = []
 
-    def select(prompt: SelectionPrompt) -> str:
+    def select(prompt: SelectionPrompt) -> str | None:
         prompts.append(prompt)
-        return "keys"
+        return "help"
 
     dispatch("/config", session, _console(), selector=select)
 
@@ -414,13 +414,66 @@ def test_bare_config_opens_interactive_menu(session):
     )
 
 
-def test_bare_config_menu_selection_dispatches_section(session):
+def test_bare_config_menu_selection_lists_providers(session):
     def select(prompt: SelectionPrompt) -> str:
-        return "keys"
+        return "providers"
 
-    config.set_key("openai", "sk-openai")
     console = _console()
     dispatch("/config", session, console, selector=select)
 
+    assert "openrouter" in _output(console)
     assert "openai" in _output(console)
-    assert "configured" in _output(console)
+
+
+def test_bare_config_interactive_key_set(session):
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    selections = iter(["keys", "local", "set"])
+
+    def select(prompt: SelectionPrompt) -> str:
+        return next(selections)
+
+    console = _console()
+
+    def prompt_input(_msg: str) -> str:
+        return "sk-local-new"
+
+    dispatch("/config", session, console, selector=select, prompt_input=prompt_input)
+
+    assert config.get_key("local") == "sk-local-new"
+    assert "local" in _output(console)
+    assert "…-new" in _output(console)
+
+
+def test_bare_config_interactive_key_remove(session):
+    config.set_key("openai", "sk-openai")
+    selections = iter(["keys", "openai", "remove"])
+
+    def select(prompt: SelectionPrompt) -> str:
+        return next(selections)
+
+    console = _console()
+    dispatch("/config", session, console, selector=select)
+
+    assert config.get_key("openai") is None
+    assert "Removed stored API key" in _output(console)
+
+
+def test_bare_config_interactive_key_set_warns_on_env_override(session, monkeypatch):
+    config.set_key("openai", "old")
+    monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+    selections = iter(["keys", "openai", "set"])
+
+    def select(prompt: SelectionPrompt) -> str:
+        return next(selections)
+
+    console = _console()
+    dispatch(
+        "/config",
+        session,
+        console,
+        selector=select,
+        prompt_input=lambda _msg: "sk-new",
+    )
+
+    assert config.load_config()["keys"]["openai"] == "sk-new"
+    assert "takes precedence" in _output(console)

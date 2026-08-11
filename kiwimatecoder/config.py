@@ -341,6 +341,53 @@ def get_key_env_override(provider_id: str) -> str | None:
     return None
 
 
+def key_source(provider_id: str) -> dict:
+    """Describe where a provider's active API key comes from.
+
+    Returns one of::
+
+        {"origin": "env", "env": "OPENAI_API_KEY", "value": "<key>"}
+        {"origin": "stored", "env": None, "value": "<key>"}
+        {"origin": "legacy", "env": None, "value": "<key>"}   # ~/.kiwimatecoder/config
+        {"origin": "missing", "env": None, "value": None}
+
+    ``value`` is the raw key; callers that display it should redact.
+    """
+    provider = get_provider_config(provider_id)
+    env_key = os.environ.get(provider.key_env)
+    if env_key is not None:
+        return {"origin": "env", "env": provider.key_env, "value": env_key or None}
+    stored = load_config()["keys"].get(provider_id)
+    if stored:
+        # A key read from the flat legacy file sits in the keys map too, so
+        # distinguish it for messaging when the JSON config has never been written.
+        if not CONFIG_FILE.exists() and LEGACY_CONFIG_FILE.exists():
+            return {"origin": "legacy", "env": None, "value": stored}
+        return {"origin": "stored", "env": None, "value": stored}
+    return {"origin": "missing", "env": None, "value": None}
+
+
+def _redact(value: str) -> str:
+    if len(value) <= 4:
+        return value
+    return "…" + value[-4:]
+
+
+def describe_key(provider_id: str) -> str:
+    """Return a human-readable, secret-safe status for a provider's key."""
+    source = key_source(provider_id)
+    origin = source["origin"]
+    value = source["value"]
+    if origin == "missing":
+        return "missing"
+    redacted = _redact(value)
+    if origin == "env":
+        return f"from environment {source['env']} ({redacted}) — overrides any stored key"
+    if origin == "legacy":
+        return f"stored in legacy {LEGACY_CONFIG_FILE} ({redacted})"
+    return f"stored in {CONFIG_FILE} ({redacted})"
+
+
 def set_key(provider_id: str, key: str) -> str | None:
     """Store an API key for a provider and persist the config.
 

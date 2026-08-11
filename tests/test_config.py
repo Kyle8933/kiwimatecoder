@@ -80,6 +80,53 @@ def test_absent_env_uses_stored_key(monkeypatch):
     assert config.get_key("openai") == "sk-stored"
 
 
+def test_key_source_stored(monkeypatch):
+    config.set_key("openai", "sk-stored")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    source = config.key_source("openai")
+    assert source["origin"] == "stored"
+    assert source["value"] == "sk-stored"
+
+
+def test_key_source_env_override(monkeypatch):
+    config.set_key("openai", "sk-stored")
+    monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+    source = config.key_source("openai")
+    assert source["origin"] == "env"
+    assert source["env"] == "OPENAI_API_KEY"
+    assert source["value"] == "from-env"
+
+
+def test_key_source_missing(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert config.key_source("openai")["origin"] == "missing"
+
+
+def test_key_source_legacy(monkeypatch, tmp_path):
+    """A key that only exists in the flat legacy file is reported as legacy."""
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    (tmp_path / "config").write_text("OPENROUTER_API_KEY=sk-or-legacy\n")
+
+    source = config.key_source("openrouter")
+    assert source["origin"] == "legacy"
+    assert source["value"] == "sk-or-legacy"
+    desc = config.describe_key("openrouter")
+    assert "legacy" in desc
+    assert "sk-or-l" not in desc  # key is redacted
+
+
+def test_describe_key_redacts_and_names_source(monkeypatch):
+    config.set_key("openai", "sk-abcdefgh")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    desc = config.describe_key("openai")
+    assert "config.json" in desc
+    assert "…efgh" in desc
+    assert "sk-abcdefgh" not in desc
+
+
 def test_set_key_unknown_provider_raises():
     with pytest.raises(KeyError):
         config.set_key("nope", "x")

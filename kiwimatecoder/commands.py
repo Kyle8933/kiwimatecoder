@@ -18,9 +18,9 @@ from kiwimatecoder.catalog import ModelCatalog, summarize_ids
 from kiwimatecoder.config import (
     add_provider,
     apply_model_filter,
+    describe_key,
     get_default_mode,
     get_key,
-    get_key_env_override,
     get_model_catalog,
     get_model_filter,
     get_provider_config,
@@ -76,6 +76,7 @@ def dispatch(
     session: Session,
     console: Console,
     selector: CommandSelector | None = None,
+    prompt_input: Callable[[str], str] | None = None,
 ) -> str:
     """Run a slash command. Returns CommandResult.CONTINUE or .EXIT."""
     parts = line[1:].strip().split(maxsplit=1)
@@ -86,6 +87,9 @@ def dispatch(
     if handler is None:
         console.print(f"[yellow]Unknown command '/{name}'. Try /help.[/yellow]")
         return CommandResult.CONTINUE
+
+    if name == "config" and not arg and selector is not None:
+        return _config_interact(session, console, selector, prompt_input)
 
     if not arg and selector is not None:
         prompt = _selection_prompt(name, session, console)
@@ -509,16 +513,10 @@ def _config_show(session: Session, console: Console) -> None:
     provider = session.provider
     key = get_key(provider.id)
     model_filter = get_model_filter(provider.id)
-    if not key:
-        key_state = "[yellow]missing[/yellow]"
-    else:
-        env_override = get_key_env_override(provider.id)
-        detail = f" (from env {env_override})" if env_override else " (stored)"
-        key_state = f"[green]configured[/green]{detail}"
     console.print(
         f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
         f"Model: [cyan]{session.model}[/cyan]\n"
-        f"Key: {key_state} ({provider.key_env})\n"
+        f"Key: [cyan]{describe_key(provider.id)}[/cyan] ({provider.key_env})\n"
         f"Model visibility: [cyan]{model_filter['mode']}[/cyan]"
     )
     if model_filter["models"]:
@@ -650,7 +648,12 @@ def _config_providers(
     console.print("[yellow]Unknown provider config action. Try /config help.[/yellow]")
 
 
-def _config_keys(action_parts: list[str], console: Console) -> None:
+def _config_keys(
+    action_parts: list[str],
+    console: Console,
+    selector: CommandSelector | None = None,
+    prompt_input: Callable[[str], str] | None = None,
+) -> None:
     action = action_parts[0].lower() if action_parts else "list"
     rest = action_parts[1:]
 
@@ -660,19 +663,19 @@ def _config_keys(action_parts: list[str], console: Console) -> None:
         table.add_column("env var")
         table.add_column("status")
         for provider in list_provider_configs():
-            key = get_key(provider.id)
-            if not key:
-                status = "[dim]missing[/dim]"
-            else:
-                env_override = get_key_env_override(provider.id)
-                tag = f" (from env {env_override})" if env_override else ""
-                status = f"[green]configured (...{key[-4:]})[/green]{tag}"
-            table.add_row(provider.id, provider.key_env, status)
+            table.add_row(provider.id, provider.key_env, describe_key(provider.id))
         console.print(table)
+        console.print(
+            "[dim]Change a key with /config key set <provider> <key> or from "
+            "the /config menu.[/dim]"
+        )
         return
 
     if action in {"set", "save", "add"}:
         if len(rest) < 2:
+            if rest and selector is not None:
+                _config_key_enter(rest[0], console, selector, prompt_input)
+                return
             console.print("[yellow]Usage: /config key set <provider> <key>[/yellow]")
             return
         provider_id, key = rest[0], rest[1]
@@ -681,7 +684,10 @@ def _config_keys(action_parts: list[str], console: Console) -> None:
         except KeyError as exc:
             console.print(f"[red]{exc}[/red]")
             return
-        console.print(f"[green]Saved API key for[/green] [cyan]{provider_id}[/cyan].")
+        console.print(
+            f"[green]Saved API key for[/green] [cyan]{provider_id}[/cyan] — "
+            f"now {describe_key(provider_id)}."
+        )
         if warning:
             console.print(f"[yellow]{warning}[/yellow]")
         return
@@ -704,7 +710,80 @@ def _config_keys(action_parts: list[str], console: Console) -> None:
             console.print(f"[dim]No stored API key for {provider_id}.[/dim]")
         return
 
+    if action in {"edit", "change"}:
+        if not rest:
+            console.print(
+                "[yellow]Usage: /config key edit <provider>[/yellow]"
+            )
+            return
+        if selector is None:
+            console.print(
+                "[yellow]Key editing needs the interactive menu. "
+                "Run /config and pick Keys.[/yellow]"
+            )
+            return
+        _config_key_enter(rest[0], console, selector, prompt_input)
+        return
+
     console.print("[yellow]Unknown key config action. Try /config help.[/yellow]")
+
+
+def _config_key_enter(
+    provider_id: str,
+    console: Console,
+    selector: CommandSelector,
+    prompt_input: Callable[[str], str] | None,
+) -> None:
+    """Interactive 'change this key' flow: set or remove, then a text entry."""
+    try:
+        get_provider_config(provider_id)
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return
+
+    action_prompt = SelectionPrompt(
+        title=f"Change key for {provider_id}",
+        text=(
+            f"Current key: {describe_key(provider_id)}.\n"
+            "Set a new one, or remove the stored key."
+        ),
+        options=(
+            CommandOption("set", "Enter a new API key"),
+            CommandOption("remove", "Remove the stored API key"),
+        ),
+    )
+    selected = _run_selector(selector, action_prompt)
+    if selected is None:
+        return
+
+    if selected == "remove":
+        existed = remove_key(provider_id)
+        if existed:
+            console.print(
+                f"[green]Removed stored API key for[/green] [cyan]{provider_id}[/cyan]."
+            )
+        else:
+            console.print(f"[dim]No stored API key for {provider_id}.[/dim]")
+        return
+
+    if prompt_input is None:
+        prompt_input = console.input
+    console.print("[bold]Enter the new API key:[/bold]")
+    try:
+        new_key = prompt_input("key> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print("[yellow]Cancelled.[/yellow]")
+        return
+    if not new_key:
+        console.print("[yellow]No key entered; nothing changed.[/yellow]")
+        return
+    warning = set_key(provider_id, new_key)
+    console.print(
+        f"[green]Saved API key for[/green] [cyan]{provider_id}[/cyan] — "
+        f"now {describe_key(provider_id)}."
+    )
+    if warning:
+        console.print(f"[yellow]{warning}[/yellow]")
 
 
 def _config_model(action_parts: list[str], session: Session, console: Console) -> None:
@@ -829,7 +908,9 @@ def _config_models(action_parts: list[str], session: Session, console: Console) 
     console.print("[yellow]Unknown models config action. Try /config help.[/yellow]")
 
 
-def _config(arg: str, session: Session, console: Console) -> str:
+def _config(arg: str, session: Session, console: Console,
+            selector: CommandSelector | None = None,
+            prompt_input: Callable[[str], str] | None = None) -> str:
     try:
         parts = shlex.split(arg)
     except ValueError as exc:
@@ -847,7 +928,7 @@ def _config(arg: str, session: Session, console: Console) -> str:
     elif section in {"providers", "provider"}:
         _config_providers(rest, session, console)
     elif section in {"keys", "key", "api-key", "api-keys"}:
-        _config_keys(rest, console)
+        _config_keys(rest, console, selector, prompt_input)
     elif section == "use":
         _config_providers(["use", *rest], session, console)
     elif section == "model":
@@ -858,6 +939,72 @@ def _config(arg: str, session: Session, console: Console) -> str:
         _config_mode(rest, session, console)
     else:
         console.print("[yellow]Unknown config command. Try /config help.[/yellow]")
+    return CommandResult.CONTINUE
+
+
+def _run_selector(selector: CommandSelector, prompt: SelectionPrompt) -> str | None:
+    """Ask the interactive selector for one option, validating the reply."""
+    if selector is None:
+        return None
+    selected = selector(prompt)
+    if selected is None:
+        return None
+    if selected not in {option.value for option in prompt.options}:
+        return None
+    return selected
+
+
+def _config_interact(
+    session: Session,
+    console: Console,
+    selector: CommandSelector,
+    prompt_input: Callable[[str], str] | None,
+) -> str:
+    """Staged interactive configuration: section menu, then deeper steps."""
+    section_prompt = SelectionPrompt(
+        title="Configure KiwiMateCoder",
+        text=(
+            "Pick a setting to view or change. Keys lets you set or remove an "
+            "API key interactively."
+        ),
+        options=(
+            CommandOption("show", "Show active provider, model, key, filter"),
+            CommandOption("providers", "List providers (add/remove/use/edit)"),
+            CommandOption("keys", "Set or remove an API key"),
+            CommandOption("model", "Set or reset the default model"),
+            CommandOption("models", "Manage model visibility / refresh catalog"),
+            CommandOption("mode", "Set the default permission mode"),
+            CommandOption("help", "Show all /config commands"),
+        ),
+    )
+    section = _run_selector(selector, section_prompt)
+    if section is None:
+        return CommandResult.CONTINUE
+
+    if section == "show":
+        _config_show(session, console)
+        return CommandResult.CONTINUE
+    if section == "keys":
+        provider_prompt = SelectionPrompt(
+            title="Choose a provider",
+            text="Which provider's API key do you want to change?",
+            options=tuple(
+                CommandOption(provider.id, provider.name)
+                for provider in list_provider_configs()
+            ),
+            selected=session.provider_id,
+        )
+        provider_id = _run_selector(selector, provider_prompt)
+        if provider_id is None:
+            return CommandResult.CONTINUE
+        _config_key_enter(provider_id, console, selector, prompt_input)
+        return CommandResult.CONTINUE
+    if section in {"providers", "provider"}:
+        _config_providers([], session, console)
+        return CommandResult.CONTINUE
+    if section in {"model", "models", "mode", "help"}:
+        _config(section, session, console, selector, prompt_input)
+        return CommandResult.CONTINUE
     return CommandResult.CONTINUE
 
 
@@ -1010,24 +1157,6 @@ def _selection_prompt(
                 for value, description in _MODE_DESCRIPTIONS.items()
             ),
             selected=session.mode.value,
-        )
-
-    if name == "config":
-        return SelectionPrompt(
-            title="Configure KiwiMateCoder",
-            text=(
-                "Pick a setting to view or change. You can also type the full "
-                "command, e.g. /config key set openrouter <KEY>."
-            ),
-            options=(
-                CommandOption("show", "Show active provider, model, key, filter"),
-                CommandOption("providers", "List providers (add/remove/use/edit)"),
-                CommandOption("keys", "List API keys (set/remove here)"),
-                CommandOption("model", "Set or reset the default model"),
-                CommandOption("models", "Manage model visibility / refresh catalog"),
-                CommandOption("mode", "Set the default permission mode"),
-                CommandOption("help", "Show all /config commands"),
-            ),
         )
 
     return None

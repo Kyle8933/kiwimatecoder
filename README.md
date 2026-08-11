@@ -99,8 +99,10 @@ Config examples:
 /config provider remove local
 ```
 
-Running bare `/config` opens an interactive menu (choose providers, keys, model,
-models, mode, or help); every entry also works as a typed command as shown above.
+Running bare `/config` opens an interactive menu: pick **Keys**, choose a
+provider, then set (type a new key) or remove it. Every entry also works as a
+typed command as shown above, and `/config key set` / `/config key list` always
+show which file or environment variable the active key comes from.
 
 ## Tools
 

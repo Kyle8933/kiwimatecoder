@@ -9,8 +9,8 @@ from kiwimatecoder.ai import stream_response
 from kiwimatecoder.catalog import summarize_ids
 from kiwimatecoder.config import (
     apply_model_filter,
+    describe_key,
     get_key,
-    get_key_env_override,
     get_model_catalog,
     get_provider_config,
     get_selected_provider_id,
@@ -204,11 +204,7 @@ def check():
         if not key:
             console.print(f"[dim]✗ {provider.id} — no key[/dim]")
             continue
-        env_override = get_key_env_override(provider.id)
-        source = (
-            f", from env {env_override}" if env_override else ", stored in config"
-        )
-        console.print(f"[green]✓ {provider.id}[/green] (ending in ...{key[-4:]}{source})")
+        console.print(f"[green]✓ {provider.id}[/green] — {describe_key(provider.id)}")
 
 
 @config_app.command("models")
