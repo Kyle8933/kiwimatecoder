@@ -264,6 +264,57 @@ def remove_provider(provider_id: str) -> None:
     clear_model_cache(provider_id)
 
 
+def update_provider(
+    provider_id: str,
+    *,
+    name: str | None = None,
+    base_url: str | None = None,
+    default_model: str | None = None,
+    key_env: str | None = None,
+    compat: str | None = None,
+) -> ProviderConfig:
+    """Update fields of a user-defined provider and return its config.
+
+    Only fields given are changed; None leaves the current value alone.
+    ``name``, ``base_url``, and ``default_model`` must stay non-empty when
+    changed. ``compat`` must be 'openai' or 'anthropic'. Built-in providers
+    cannot be edited (their config lives in the registry).
+    """
+    if provider_id in REGISTRY:
+        raise ValueError(f"'{provider_id}' is built in and cannot be edited.")
+
+    cfg = load_config()
+    if provider_id not in cfg["providers"]:
+        raise ValueError(f"Unknown custom provider '{provider_id}'.")
+
+    data = dict(cfg["providers"][provider_id])
+    if name is not None:
+        if not name.strip():
+            raise ValueError("Provider name is required.")
+        data["name"] = name.strip()
+    if base_url is not None:
+        if not base_url.strip():
+            raise ValueError("Provider base_url is required.")
+        data["base_url"] = base_url.strip().rstrip("/")
+    if default_model is not None:
+        if not default_model.strip():
+            raise ValueError("Provider default_model is required.")
+        data["default_model"] = default_model.strip()
+    if key_env is not None:
+        if not key_env.strip():
+            raise ValueError("Provider key_env is required.")
+        data["key_env"] = key_env.strip()
+    if compat is not None:
+        compat = compat.strip().lower()
+        if compat not in {"openai", "anthropic"}:
+            raise ValueError("Provider compat must be 'openai' or 'anthropic'.")
+        data["compat"] = compat
+
+    cfg["providers"][provider_id] = data
+    save_config(cfg)
+    return get_provider_config(provider_id, cfg)
+
+
 def get_key(provider_id: str) -> str | None:
     """Return the API key for a provider.
 
@@ -334,6 +385,35 @@ def set_selected_model(model: str | None) -> None:
     cfg = load_config()
     cfg["selected_model"] = model
     save_config(cfg)
+
+
+def get_default_mode(cfg: dict | None = None) -> str:
+    """Return the persisted startup permission mode, never a None."""
+    cfg = cfg or load_config()
+    return str(cfg.get("default_mode") or DEFAULT_MODE)
+
+
+def set_default_mode(mode: str, cfg: dict | None = None) -> str:
+    """Persist the startup permission mode and return the effective value.
+
+    Raises ``ValueError`` for an unknown mode (aliases accepted), matching
+    ``PermissionMode.from_str`` so callers can validate eagerly.
+    """
+    from kiwimatecoder.permissions import PermissionMode
+
+    cfg = cfg or load_config()
+    effective = PermissionMode.from_str(mode).value
+    cfg["default_mode"] = effective
+    save_config(cfg)
+    return effective
+
+
+def reset_default_mode(cfg: dict | None = None) -> str:
+    """Clear a custom startup mode, returning the default mode."""
+    cfg = cfg or load_config()
+    cfg["default_mode"] = DEFAULT_MODE
+    save_config(cfg)
+    return DEFAULT_MODE
 
 
 def get_selected_provider_id(cfg: dict | None = None) -> str:

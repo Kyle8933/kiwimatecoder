@@ -301,3 +301,126 @@ def test_model_argument_completions_include_refresh(session):
     }
 
     assert {"refresh", "list"} <= values
+
+
+# ---------------------------------------------------------------------------
+# /config mode (default permission mode)
+# ---------------------------------------------------------------------------
+
+
+def test_config_mode_set_and_show_persists(session):
+    console = _console()
+
+    dispatch("/config mode set plan", session, console)
+
+    assert config.get_default_mode() == "plan"
+    assert "plan" in _output(console)
+
+    dispatch("/config mode show", session, console)
+    assert "Default mode: plan" in _output(console)
+
+
+def test_config_mode_accepts_aliases(session):
+    dispatch("/config mode set auto", session, _console())
+    assert config.get_default_mode() == "auto-accept"
+
+
+def test_config_mode_rejects_unknown(session):
+    console = _console()
+    dispatch("/config mode set bogus", session, console)
+    assert config.get_default_mode() == "ask"
+    assert "Unknown mode" in _output(console)
+
+
+def test_config_mode_reset_restores_default(session):
+    dispatch("/config mode set plan", session, _console())
+    dispatch("/config mode reset", session, _console())
+    assert config.get_default_mode() == "ask"
+
+
+# ---------------------------------------------------------------------------
+# /config provider edit
+# ---------------------------------------------------------------------------
+
+
+def test_config_provider_edit_updates_fields(session):
+    console = _console()
+    dispatch(
+        '/config provider add local "Local Models" http://localhost:1234/v1 local-code LOCAL_API_KEY',
+        session,
+        console,
+    )
+
+    dispatch(
+        "/config provider edit local "
+        'name="Local Models 2" default_model=local-fast',
+        session,
+        console,
+    )
+
+    provider = config.get_provider_config("local")
+    assert provider.name == "Local Models 2"
+    assert provider.default_model == "local-fast"
+    assert provider.base_url == "http://localhost:1234/v1"
+    assert provider.key_env == "LOCAL_API_KEY"
+
+
+def test_config_provider_edit_rejects_unknown_field(session, monkeypatch):
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    console = _console()
+
+    dispatch("/config provider edit local nope=x", session, console)
+
+    assert "Unknown provider field" in _output(console)
+    assert config.get_provider_config("local").name == "Local"
+
+
+def test_config_provider_edit_rejects_builtin(session):
+    console = _console()
+
+    dispatch("/config provider edit openai name=hi", session, console)
+
+    assert "built in" in _output(console)
+
+
+def test_config_provider_edit_requires_pairs(session):
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    console = _console()
+
+    dispatch("/config provider edit local name", session, console)
+
+    assert "Expected field=value" in _output(console)
+
+
+# ---------------------------------------------------------------------------
+# bare /config interactive menu
+# ---------------------------------------------------------------------------
+
+
+def test_bare_config_opens_interactive_menu(session):
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        prompts.append(prompt)
+        return "keys"
+
+    dispatch("/config", session, _console(), selector=select)
+
+    assert len(prompts) == 1
+    assert prompts[0].title == "Configure KiwiMateCoder"
+    values = [option.value for option in prompts[0].options]
+    assert {"show", "providers", "keys", "model", "models", "mode", "help"} <= set(
+        values
+    )
+
+
+def test_bare_config_menu_selection_dispatches_section(session):
+    def select(prompt: SelectionPrompt) -> str:
+        return "keys"
+
+    config.set_key("openai", "sk-openai")
+    console = _console()
+    dispatch("/config", session, console, selector=select)
+
+    assert "openai" in _output(console)
+    assert "configured" in _output(console)

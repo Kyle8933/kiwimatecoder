@@ -18,6 +18,7 @@ from kiwimatecoder.catalog import ModelCatalog, summarize_ids
 from kiwimatecoder.config import (
     add_provider,
     apply_model_filter,
+    get_default_mode,
     get_key,
     get_key_env_override,
     get_model_catalog,
@@ -27,10 +28,13 @@ from kiwimatecoder.config import (
     list_visible_models,
     remove_key,
     remove_provider,
+    reset_default_mode,
+    set_default_mode,
     set_key,
     set_model_filter,
     set_selected_model,
     set_selected_provider,
+    update_provider,
 )
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY
@@ -471,11 +475,17 @@ def _config_help(console: Console) -> None:
         ),
         ("/config provider remove <id>", "Remove a custom provider."),
         ("/config provider use <id>", "Persist and switch to a provider."),
+        (
+            "/config provider edit <id> name=... base_url=... default_model=... "
+            "[key_env=...] [compat=...]",
+            "Update fields of a custom provider.",
+        ),
         ("/config key set <provider> <key>", "Save an API key."),
         ("/config key remove <provider>", "Remove a stored API key."),
         ("/config key list", "Show which providers have keys configured."),
         ("/config model set <model>", "Persist the default model."),
         ("/config model reset", "Use the provider default model."),
+        ("/config mode <set|reset>", "Set or reset the default permission mode."),
         (
             "/config models allow <model> [...]",
             "Only show these models for the active provider.",
@@ -594,6 +604,49 @@ def _config_providers(
         )
         return
 
+    if action in {"edit", "update"}:
+        if len(rest) < 2:
+            console.print(
+                "[yellow]Usage: /config provider edit <id> name=... "
+                "base_url=... default_model=... key_env=... compat=...[/yellow]"
+            )
+            return
+        provider_id = rest[0]
+        kwargs: dict[str, str] = {}
+        for pair in rest[1:]:
+            if "=" not in pair:
+                console.print(
+                    f"[yellow]Expected field=value, got '{pair}'. "
+                    "Known fields: name, base_url, default_model, key_env, "
+                    "compat.[/yellow]"
+                )
+                return
+            field, _, value = pair.partition("=")
+            field = field.strip()
+            if field not in {
+                "name",
+                "base_url",
+                "default_model",
+                "key_env",
+                "compat",
+            }:
+                console.print(
+                    f"[yellow]Unknown provider field '{field}'. "
+                    "Known fields: name, base_url, default_model, key_env, "
+                    "compat.[/yellow]"
+                )
+                return
+            kwargs[field] = value
+        try:
+            provider = update_provider(provider_id, **kwargs)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Updated provider[/green] [cyan]{provider.id}[/cyan]."
+        )
+        return
+
     console.print("[yellow]Unknown provider config action. Try /config help.[/yellow]")
 
 
@@ -679,6 +732,38 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
         )
         return
     console.print("[yellow]Unknown model config action. Try /config help.[/yellow]")
+
+
+def _config_mode(action_parts: list[str], session: Session, console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "status"}:
+        console.print(f"Default mode: [cyan]{get_default_mode()}[/cyan]")
+        return
+    if action in {"set", "save"}:
+        if not rest:
+            console.print(
+                "[yellow]Usage: /config mode set <ask|auto-accept|plan>[/yellow]"
+            )
+            return
+        try:
+            effective = set_default_mode(rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Default mode set to[/green] [cyan]{effective}[/cyan]."
+            f"[dim] (affects new sessions)[/dim]"
+        )
+        return
+    if action in {"reset", "clear"}:
+        effective = reset_default_mode()
+        console.print(
+            f"[green]Default mode reset to[/green] [cyan]{effective}[/cyan]."
+        )
+        return
+    console.print("[yellow]Unknown mode config action. Try /config help.[/yellow]")
 
 
 def _config_models(action_parts: list[str], session: Session, console: Console) -> None:
@@ -769,6 +854,8 @@ def _config(arg: str, session: Session, console: Console) -> str:
         _config_model(rest, session, console)
     elif section == "models":
         _config_models(rest, session, console)
+    elif section == "mode":
+        _config_mode(rest, session, console)
     else:
         console.print("[yellow]Unknown config command. Try /config help.[/yellow]")
     return CommandResult.CONTINUE
@@ -866,6 +953,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "use": "Persist and switch provider.",
     "model": "Set or reset the default model.",
     "models": "Refresh the model catalog or manage allow/deny filters.",
+    "mode": "Set or reset the default permission mode.",
 }
 
 
@@ -922,6 +1010,24 @@ def _selection_prompt(
                 for value, description in _MODE_DESCRIPTIONS.items()
             ),
             selected=session.mode.value,
+        )
+
+    if name == "config":
+        return SelectionPrompt(
+            title="Configure KiwiMateCoder",
+            text=(
+                "Pick a setting to view or change. You can also type the full "
+                "command, e.g. /config key set openrouter <KEY>."
+            ),
+            options=(
+                CommandOption("show", "Show active provider, model, key, filter"),
+                CommandOption("providers", "List providers (add/remove/use/edit)"),
+                CommandOption("keys", "List API keys (set/remove here)"),
+                CommandOption("model", "Set or reset the default model"),
+                CommandOption("models", "Manage model visibility / refresh catalog"),
+                CommandOption("mode", "Set the default permission mode"),
+                CommandOption("help", "Show all /config commands"),
+            ),
         )
 
     return None

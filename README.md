@@ -89,13 +89,18 @@ Config examples:
 ```text
 /config
 /config provider add local "Local Models" http://localhost:1234/v1 local-code LOCAL_API_KEY
+/config provider edit local name="Local Models 2" default_model=local-fast
 /config key set local <YOUR_KEY>
 /config provider use local
 /config models allow local-code local-fast
 /config models deny noisy-model
 /config models refresh
+/config mode set plan
 /config provider remove local
 ```
+
+Running bare `/config` opens an interactive menu (choose providers, keys, model,
+models, mode, or help); every entry also works as a typed command as shown above.
 
 ## Tools
 
