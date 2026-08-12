@@ -20,7 +20,6 @@ from kiwimatecoder.config import (
     apply_model_filter,
     describe_key,
     get_default_mode,
-    get_key,
     get_model_catalog,
     get_model_filter,
     get_provider_config,
@@ -112,14 +111,19 @@ def dispatch(
 
 
 def _help(arg: str, session: Session, console: Console) -> str:
-    table = Table(title="KiwiMateCoder commands", show_header=True)
-    table.add_column("Command", style="cyan")
-    table.add_column("Description")
-    for cmd, desc in _HELP.items():
-        # Escaped: rich reads argument hints like [name|refresh] as markup tags
-        # and would drop them from the table.
-        table.add_row(escape(cmd), desc)
-    console.print(table)
+    for group, entries in _HELP_GROUPS:
+        table = Table(title=group, show_header=True, expand=False)
+        table.add_column("Command", style="cyan", no_wrap=True)
+        table.add_column("Description")
+        for cmd, desc in entries:
+            # Escaped: rich reads argument hints like [name|refresh] as markup
+            # tags and would drop them from the table.
+            table.add_row(escape(cmd), desc)
+        console.print(table)
+    console.print(
+        "[dim]Tip: no API key yet? From the shell run "
+        "`kiwimatecoder setup`.[/dim]"
+    )
     return CommandResult.CONTINUE
 
 
@@ -577,7 +581,6 @@ def _config_help(console: Console) -> None:
 
 def _config_show(session: Session, console: Console) -> None:
     provider = session.provider
-    key = get_key(provider.id)
     model_filter = get_model_filter(provider.id)
     console.print(
         f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
@@ -1099,26 +1102,55 @@ _COMMANDS = {
     "cost": _cost,
 }
 
-_HELP = {
-    "/help": "Show this help.",
-    "/exit, /quit": "Leave the session.",
-    "/clear": "Clear the conversation history.",
-    "/model [name|refresh|list|search <term>]": (
-        "Choose a model (the list is refreshed from the provider), set one by "
-        "name, refresh the list, or search the full catalog by name."
+_HELP_GROUPS = [
+    (
+        "Session",
+        [
+            ("/help", "Show this help."),
+            ("/exit, /quit", "Leave the session."),
+            ("/clear", "Clear the conversation history."),
+            ("/cost", "Show token usage for this session."),
+            ("/files", "List files changed this session."),
+            ("/tools", "List available tools."),
+        ],
     ),
-    "/provider [id]": "Choose a provider, or switch by id.",
-    "/mode [ask|auto-accept|plan]": "Choose or directly set the permission mode.",
-    "/tools": "List available tools.",
-    "/files": "List files changed this session.",
-    "/context [list|add|remove|clear]": (
-        "Manage pinned files included with each turn."
+    (
+        "Model & provider",
+        [
+            (
+                "/model [name|refresh|list|search <term>]",
+                "Choose a model (the list is refreshed from the provider), "
+                "set one by name, refresh the list, or search the full "
+                "catalog by name.",
+            ),
+            ("/provider [id]", "Choose a provider, or switch by id."),
+            (
+                "/mode [ask|auto-accept|plan]",
+                "Choose or directly set the permission mode.",
+            ),
+        ],
     ),
-    "/config": (
-        "Show or change providers, API keys, model defaults, and model filters."
+    (
+        "Context",
+        [
+            (
+                "/context [list|add|remove|clear]",
+                "Manage pinned files included with each turn.",
+            ),
+        ],
     ),
-    "/cost": "Show token usage for this session.",
-}
+    (
+        "Configuration",
+        [
+            (
+                "/config",
+                "Show or change providers, API keys, model defaults, and "
+                "model filters.",
+            ),
+            ("/config help", "List every /config command."),
+        ],
+    ),
+]
 
 _COMMAND_DESCRIPTIONS = {
     "help": "Show available commands.",

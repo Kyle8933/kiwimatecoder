@@ -15,21 +15,29 @@ For a regular (non-editable) install:
 ```bash
 pip install .
 ```
-
 ## Quick start
 
 Add an API key for at least one provider, then launch the interactive session:
 
 ```bash
-kiwimatecoder config set-key --provider openrouter <YOUR_KEY>
+kiwimatecoder setup
 kiwimatecoder
 ```
 
-Running `kiwimatecoder` with no arguments opens the interactive REPL. It keeps running
-until you exit. Type a request in plain language and KiwiMateCoder will read files,
-search the codebase, propose edits, and run commands to carry it out. For larger or
-ambiguous tasks, it starts with a short plan and gives you a few concrete options
-so you can choose the scope and tradeoffs before it proceeds.
+`kiwimatecoder setup` walks you through choosing a provider and saving its API
+key. You can also pass the arguments directly:
+
+```bash
+kiwimatecoder setup --provider openrouter
+kiwimatecoder setup --provider openai --key sk-...   # non-interactive
+```
+
+Running `kiwimatecoder` with no arguments opens the interactive REPL. It keeps
+running until you exit. Type a request in plain language and KiwiMateCoder will
+read files, search the codebase, propose edits, and run commands to carry it
+out. For larger or ambiguous tasks, it starts with a short plan and gives you a
+few concrete options so you can choose the scope and tradeoffs before it
+proceeds.
 
 ```
 kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.py
@@ -118,10 +126,11 @@ The assistant has these capabilities, all scoped to the workspace:
 ## Providers
 
 KiwiMateCoder ships a built-in registry of providers. Switch live with `/provider`,
-or set persistent defaults with `/config provider use`, `config set-provider`, and
-`config set-model`. A key can be supplied via `/config key set <provider> <key>`,
-`config set-key --provider <id>`, or the provider's environment variable. You can
-also add OpenAI-compatible custom providers with `/config provider add`.
+or set persistent defaults from the shell with `config provider use <id>` and
+`config model set <id>`. An API key can be saved interactively with
+`kiwimatecoder setup`, directly with `config key set <provider> <key>`, or via the
+provider's environment variable. You can also add OpenAI-compatible custom
+providers with `config provider add`.
 
 | Provider id | Default model | Key env var |
 |-------------|---------------|-------------|
@@ -168,14 +177,15 @@ provider itself rather than being frozen into the release.
 - **Needs a key.** A provider is only queried once it has an API key configured
   (local providers on `localhost` are queried without one).
 
-From the shell, `kiwimatecoder config models [--provider <id>] [--refresh]` shows
-or refreshes the same catalog.
+From the shell, `kiwimatecoder config models show [--provider <id>]` and
+`kiwimatecoder config models refresh [--provider <id>]` show or refresh the same
+catalog.
 
 The curated tuples in `kiwimatecoder/providers.py` remain the offline fallback,
 and custom providers can list theirs via a `"models"` array in
 `~/.kiwimatecoder/config.json`. `/config models allow|deny` reshapes what is
 offered on top of whichever catalog is in use, and `/model <name>` or
-`config set-model <name>` accepts any id, listed or not.
+`config model set <name>` accepts any id, listed or not.
 
 ## One-shot mode
 
@@ -191,11 +201,17 @@ kiwimatecoder ask "review this file" --file app.py --provider openai
 Update the CLI from the same Python environment:
 
 ```bash
-kiwimatecoder -update
+kiwimatecoder update
 ```
 
-You can also run `kiwimatecoder update`. Check the installed version before/after
-with:
+or with a flag:
+
+```bash
+kiwimatecoder --update
+```
+
+(The older `-update` form still works but is deprecated.) Check the installed
+version before/after with:
 
 ```bash
 kiwimatecoder --version
