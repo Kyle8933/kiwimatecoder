@@ -303,6 +303,57 @@ def test_model_argument_completions_include_refresh(session):
     assert {"refresh", "list"} <= values
 
 
+def test_model_search_offers_matches_and_selects(session, monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/foo", "vendor/bar", "other/baz"])
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        prompts.append(prompt)
+        return "vendor/bar"
+
+    dispatch("/model search vendor", session, _console(), selector=select)
+
+    assert session.model == "vendor/bar"
+    assert prompts[0].title == "Search: vendor"
+    assert [option.value for option in prompts[0].options] == [
+        "vendor/foo",
+        "vendor/bar",
+    ]
+
+
+def test_model_search_no_match(session, monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one"])
+    console = _console()
+
+    dispatch("/model search nope", session, console)
+
+    assert "No models matching 'nope'" in _output(console)
+    assert session.model == "test-model"
+
+
+def test_model_search_requires_a_term(session):
+    console = _console()
+
+    dispatch("/model search", session, console)
+
+    assert "Usage: /model search <term>" in _output(console)
+
+
+def test_model_search_without_selector_prints_matches(session, monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one", "vendor/two"])
+    console = _console()
+
+    dispatch("/model search vendor", session, console)
+
+    output = _output(console)
+    assert "vendor/one" in output
+    assert "vendor/two" in output
+    assert session.model == "test-model"
+
+
 # ---------------------------------------------------------------------------
 # /config mode (default permission mode)
 # ---------------------------------------------------------------------------

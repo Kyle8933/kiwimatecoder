@@ -374,6 +374,31 @@ def test_visible_models_apply_filters_to_the_live_catalog(monkeypatch):
     assert config.list_visible_models("openrouter") == ["vendor/one"]
 
 
+def test_search_model_catalog_finds_models_below_the_selector_cap(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    ids = [f"model-{i:02d}" for i in range(70)]
+    _install_fetch(monkeypatch, ids)
+
+    # With 70 models the newest 60 are kept for the selector; the oldest ten
+    # fall below the cap. Search still sees them in the full catalog.
+    assert config.search_model_catalog("openrouter", "model-68", refresh=True) == [
+        "model-68"
+    ]
+    assert "model-69" not in config.list_visible_models("openrouter")
+
+
+def test_search_model_catalog_respects_allow_and_deny_filters(monkeypatch):
+    config.set_key("openrouter", "sk-test")
+    _install_fetch(monkeypatch, ["vendor/one", "vendor/two"])
+    config.get_model_catalog("openrouter", refresh=True)
+
+    config.set_model_filter("openrouter", "deny", ["vendor/two"])
+    assert config.search_model_catalog("openrouter", "vendor") == ["vendor/one"]
+
+    config.set_model_filter("openrouter", "allow", ["vendor/two"])
+    assert config.search_model_catalog("openrouter", "vendor") == ["vendor/two"]
+
+
 def test_list_visible_models_never_fetches_by_default(monkeypatch):
     config.set_key("openrouter", "sk-test")
     _forbid_fetch(monkeypatch)

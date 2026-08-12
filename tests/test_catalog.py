@@ -251,3 +251,26 @@ def test_merge_respects_the_catalog_limit():
 
 def test_merge_of_empty_listing_is_empty():
     assert catalog.merge_catalog(_provider(), []) == []
+
+
+def test_search_models_matches_substrings_case_insensitively():
+    models = ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4-8", "openai/gpt-5.6-sol"]
+
+    assert catalog.search_models(models, "sonnet") == ["anthropic/claude-sonnet-5"]
+    assert catalog.search_models(models, "ANTHROPIC") == [
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-opus-4-8",
+    ]
+
+
+def test_search_models_requires_every_token():
+    models = ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4-8"]
+
+    assert catalog.search_models(models, "claude opus") == ["anthropic/claude-opus-4-8"]
+    assert catalog.search_models(models, "claude nope") == []
+
+
+def test_search_models_with_blank_query_returns_everything():
+    models = ["a-model", "b-model"]
+    assert catalog.search_models(models, "   ") == models
+    assert catalog.search_models(models, "") == models

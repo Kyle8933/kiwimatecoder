@@ -43,6 +43,9 @@ kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.p
   the prompt without changing anything.
 - Opening `/model` checks the provider for models released since you last looked,
   and drops any it has retired. `/model refresh` forces the check.
+- `/model search <term>` searches the provider's full catalog by name and opens
+  the selector on the matches — useful when a model is older than the newest few
+  that `/model` lists.
 - Use `/mode plan` when you only want investigation and options, with no edits or
   shell commands.
 
@@ -66,7 +69,7 @@ Reads, writes, edits, listings and searches are sandboxed to the workspace root 
 | `/help` | Show available commands. |
 | `/exit`, `/quit` | Leave the session. |
 | `/clear` | Clear the conversation history. |
-| `/model [name\|refresh\|list]` | Interactively choose a model (the list is refreshed from the provider), set one by name, or refresh/show the list. |
+| `/model [name\|refresh\|list\|search <term>]` | Interactively choose a model (the list is refreshed from the provider), set one by name, refresh/show the list, or search the full catalog by name. |
 | `/provider [id]` | Interactively choose a provider, or switch by id. |
 | `/mode [ask\|auto-accept\|plan]` | Interactively choose, or directly set, the permission mode. |
 | `/tools` | List available tools. |
@@ -149,7 +152,9 @@ provider itself rather than being frozen into the release.
 
 - **Newest first.** Opening `/model` (or running `/model refresh`) calls the
   provider's `/models` endpoint and offers what it serves today, ordered by
-  release date, with the provider default pinned first.
+  release date, with the provider default pinned first. Search
+  (`/model search <term>`) bypasses this newest-first cap and scans the whole
+  catalog by name.
 - **Deprecated ids disappear.** Anything the provider no longer lists is dropped
   from the catalog, and `/model refresh` prints what was removed. If your current
   model is one of them, it says so.

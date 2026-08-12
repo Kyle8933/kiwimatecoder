@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shlex
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from glob import has_magic
 from pathlib import Path
@@ -29,6 +29,7 @@ from kiwimatecoder.config import (
     remove_key,
     remove_provider,
     reset_default_mode,
+    search_model_catalog,
     set_default_mode,
     set_key,
     set_model_filter,
@@ -104,6 +105,9 @@ def dispatch(
                 console.print("[red]The selector returned an invalid choice.[/red]")
                 return CommandResult.CONTINUE
             arg = selected
+    if name == "model":
+        # /model search <term> needs the selector to offer a filtered picker.
+        return _model(arg, session, console, selector)
     return handler(arg, session, console)
 
 
@@ -132,6 +136,7 @@ def _clear(arg: str, session: Session, console: Console) -> str:
 
 _MODEL_REFRESH_WORDS = {"refresh", "--refresh", "-r", "update"}
 _MODEL_LIST_WORDS = {"list", "--list", "ls"}
+_MODEL_SEARCH_WORDS = {"search", "find", "--search"}
 
 
 def _format_age(seconds: float) -> str:
@@ -234,12 +239,67 @@ def _print_model_catalog(session: Session, console: Console, catalog: ModelCatal
         )
 
 
-def _model(arg: str, session: Session, console: Console) -> str:
+def _print_model_search(
+    session: Session, console: Console, models: Sequence[str], query: str
+) -> None:
+    table = Table(
+        title=f"{len(models)} match(es) for '{query}' "
+        f"({_catalog_status(get_model_catalog(session.provider_id))})",
+        show_header=True,
+    )
+    table.add_column("model", style="cyan")
+    table.add_column("")
+    for model in models:
+        table.add_row(model, "active" if model == session.model else "")
+    console.print(table)
+
+
+def _model_search(
+    session: Session,
+    console: Console,
+    query: str,
+    selector: CommandSelector | None,
+) -> None:
+    """Search the full catalog and offer the matches for selection."""
+    with console.status(f"Searching {session.provider.name} models for '{query}'…"):
+        matches = search_model_catalog(
+            session.provider_id, query, refresh=True, keep=(session.model,)
+        )
+    if not matches:
+        console.print(
+            f"[yellow]No models matching '{query}' "
+            f"for {session.provider.name} ({session.provider_id}).[/yellow]"
+        )
+        return
+
+    if selector is not None:
+        prompt = SelectionPrompt(
+            title=f"Search: {query}",
+            text=(
+                f"{len(matches)} match(es) from {session.provider.name} "
+                f"({session.provider_id}).\nCurrent model: {session.model}"
+            ),
+            options=tuple(CommandOption(model, model) for model in matches),
+            selected=session.model if session.model in matches else None,
+        )
+        selected = _run_selector(selector, prompt)
+        if selected is None:
+            return
+        session.model = selected
+        console.print(f"Model set to [cyan]{selected}[/cyan].")
+        return
+
+    _print_model_search(session, console, matches, query)
+
+
+def _model(arg: str, session: Session, console: Console, selector: CommandSelector | None = None) -> str:
     if not arg:
         console.print(f"Current model: [cyan]{session.model}[/cyan]")
         return CommandResult.CONTINUE
 
-    action = arg.strip().lower()
+    parts = arg.strip().split(maxsplit=1)
+    action = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
     if action in _MODEL_REFRESH_WORDS:
         catalog = _model_catalog_for(session, console, force=True, verbose=True)
         _print_model_catalog(session, console, catalog)
@@ -247,6 +307,12 @@ def _model(arg: str, session: Session, console: Console) -> str:
     if action in _MODEL_LIST_WORDS:
         catalog = _model_catalog_for(session, console)
         _print_model_catalog(session, console, catalog)
+        return CommandResult.CONTINUE
+    if action in _MODEL_SEARCH_WORDS:
+        if not rest:
+            console.print("[yellow]Usage: /model search <term>[/yellow]")
+            return CommandResult.CONTINUE
+        _model_search(session, console, rest, selector)
         return CommandResult.CONTINUE
 
     session.model = arg
@@ -1037,9 +1103,9 @@ _HELP = {
     "/help": "Show this help.",
     "/exit, /quit": "Leave the session.",
     "/clear": "Clear the conversation history.",
-    "/model [name|refresh|list]": (
+    "/model [name|refresh|list|search <term>]": (
         "Choose a model (the list is refreshed from the provider), set one by "
-        "name, or refresh the list now."
+        "name, refresh the list, or search the full catalog by name."
     ),
     "/provider [id]": "Choose a provider, or switch by id.",
     "/mode [ask|auto-accept|plan]": "Choose or directly set the permission mode.",
@@ -1059,7 +1125,7 @@ _COMMAND_DESCRIPTIONS = {
     "exit": "Leave the session.",
     "quit": "Leave the session.",
     "clear": "Clear the conversation history.",
-    "model": "Choose a model, set one by name, or refresh the list.",
+    "model": "Choose a model, set one by name, refresh the list, or search.",
     "provider": "Choose a provider, or switch by id.",
     "mode": "Choose or directly set the permission mode.",
     "tools": "List available tools.",
@@ -1082,6 +1148,7 @@ _CONTEXT_ACTION_DESCRIPTIONS = {
 _MODEL_ACTION_DESCRIPTIONS = {
     "refresh": "Fetch the provider's newest models now.",
     "list": "Show the models currently offered.",
+    "search": "Find models by name in the full catalog.",
 }
 
 _MODE_DESCRIPTIONS = {

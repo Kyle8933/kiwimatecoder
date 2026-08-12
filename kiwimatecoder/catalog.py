@@ -287,6 +287,24 @@ def fetch_models(
     return models
 
 
+def search_models(models: Sequence[str], query: str) -> list[str]:
+    """Filter ``models`` to ids whose name matches every token of ``query``.
+
+    Matching is a case-insensitive substring test per whitespace-separated
+    token, combined with AND — ``search claude sonnet`` matches
+    ``anthropic/claude-sonnet-5``. An empty or blank query returns everything,
+    so callers can treat it as "no filter".
+    """
+    tokens = [token for token in query.lower().split() if token]
+    if not tokens:
+        return list(models)
+    return [
+        model_id
+        for model_id in models
+        if all(token in model_id.lower() for token in tokens)
+    ]
+
+
 def summarize_ids(model_ids: Sequence[str], limit: int = 8) -> str:
     """Join model ids for display, trimming long lists to ``limit`` entries.
 

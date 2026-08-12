@@ -606,6 +606,7 @@ def get_model_catalog(
     force: bool = False,
     keep: Sequence[str] = (),
     timeout: float | None = None,
+    limit: int | None = catalog.MAX_CATALOG_MODELS,
     cfg: dict | None = None,
 ) -> ModelCatalog:
     """Return the models offered for a provider, newest first.
@@ -616,6 +617,11 @@ def get_model_catalog(
     provider has retired stop being offered. Any failure (offline, bad key,
     unsupported endpoint) falls back to the cached catalog and then to the
     curated one, with the error reported on the result instead of raised.
+
+    The **full** live listing is always cached and compared for
+    additions/removals; ``limit`` only trims the list this call returns (used by
+    the interactive selector to stay snappy). Pass ``limit=None`` to get
+    everything, e.g. for a search that must see the whole catalog.
     """
     provider = get_provider_config(provider_id, cfg)
     curated = _curated_models(provider)
@@ -650,7 +656,7 @@ def get_model_catalog(
             cache["providers"][provider_id] = entry
             save_model_cache(cache)
         else:
-            models = catalog.merge_catalog(provider, remote, keep=keep)
+            models = catalog.merge_catalog(provider, remote, keep=keep, limit=None)
             # Compare against what we previously believed: the last live fetch
             # if there was one, otherwise the curated tuple we shipped.
             baseline = cached_models or curated
@@ -660,7 +666,9 @@ def get_model_catalog(
             save_model_cache(cache)
             return ModelCatalog(
                 provider_id=provider_id,
-                models=models,
+                models=(
+                    models if limit is None else models[: max(limit, 0)]
+                ),
                 source="live",
                 fetched_at=now,
                 added=added,
@@ -670,7 +678,9 @@ def get_model_catalog(
     if cached_models:
         return ModelCatalog(
             provider_id=provider_id,
-            models=cached_models,
+            models=(
+                cached_models if limit is None else cached_models[: max(limit, 0)]
+            ),
             source="cache",
             fetched_at=fetched_at,
             error=error,
@@ -697,6 +707,29 @@ def list_visible_models(
         provider_id, refresh=refresh, force=force, keep=keep
     )
     return apply_model_filter(provider_id, model_catalog.models)
+
+
+def search_model_catalog(
+    provider_id: str,
+    query: str,
+    *,
+    refresh: bool = False,
+    force: bool = False,
+    keep: Sequence[str] = (),
+) -> list[str]:
+    """Return models for ``provider_id`` whose id matches ``query``.
+
+    Unlike :func:`list_visible_models`, the search sees the **full** catalog
+    (no :data:`catalog.MAX_CATALOG_MODELS` cap) so a model ranked low by
+    release date is still findable. The provider's allow/deny filter still
+    applies, and ``keep`` names are pinned before searching so the current
+    model survives a refresh.
+    """
+    model_catalog = get_model_catalog(
+        provider_id, refresh=refresh, force=force, keep=keep, limit=None
+    )
+    visible = apply_model_filter(provider_id, model_catalog.models)
+    return catalog.search_models(visible, query)
 
 
 # ---------------------------------------------------------------------------
