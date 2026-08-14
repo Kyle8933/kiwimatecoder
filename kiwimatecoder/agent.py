@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from rich.console import Console
 
@@ -46,6 +47,7 @@ class Agent:
         return UnifiedClient(provider, key)
 
     def _request_messages(self) -> list[dict]:
+        self.session.trim_history()
         return [build_system_prompt(self.session)] + self.session.messages
 
     async def run_turn(self, user_input: str) -> None:
@@ -122,6 +124,21 @@ class Agent:
             ]
         return assistant_msg, calls
 
+    def _format_call_summary(self, name: str, args: dict) -> str:
+        """Produce a short human-readable string summarizing the tool call arguments."""
+        if name in ("read_file", "write_file", "edit_file", "list_dir"):
+            target = args.get("path", ".")
+            return f"{name} [dim]{target}[/dim]"
+        if name == "search":
+            pat = args.get("pattern", "")
+            mode = args.get("mode", "grep")
+            return f"search [dim]{pat}[/dim] ({mode})"
+        if name == "run_bash":
+            cmd = args.get("command", "")
+            cmd_short = cmd if len(cmd) <= 40 else f"{cmd[:37]}..."
+            return f"bash [dim]`{cmd_short}`[/dim]"
+        return name
+
     def _handle_tool_call(self, call) -> None:
         """Execute one tool call (with the permission gate) and append the result."""
         tool = tools.get_tool(call.name)
@@ -137,19 +154,25 @@ class Agent:
             )
             return
 
+        summary = self._format_call_summary(call.name, args)
         preview_text = tools.preview(call.name, args, self.session)
         decision = gate(tool, args, self.session, self.confirm, preview_text)
         if not decision.allowed:
-            self.console.print(f"[yellow]• {call.name}: {decision.reason}[/yellow]")
+            self.console.print(f"[yellow]⊘ {summary}: {decision.reason}[/yellow]")
             self._append_result(call.id, decision.reason)
             return
 
+        t0 = time.perf_counter()
         try:
             result = tool.execute(args, self.session)
         except Exception as exc:
             result = ToolResult.error(f"Tool crashed: {exc!r}")
-        style = "green" if result.ok else "red"
-        self.console.print(f"[{style}]• {call.name}[/{style}]")
+        duration_ms = int((time.perf_counter() - t0) * 1000)
+
+        if result.ok:
+            self.console.print(f"[bold green]✓[/bold green] {summary} [dim]({duration_ms}ms)[/dim]")
+        else:
+            self.console.print(f"[bold red]✗[/bold red] {summary} [red](failed)[/red] [dim]({duration_ms}ms)[/dim]")
         self._append_result(call.id, result.content)
 
     def _append_result(self, tool_call_id: str, content: str) -> None:

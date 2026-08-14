@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import CompleteStyle, choice
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
+from kiwimatecoder import __version__
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
@@ -63,20 +66,53 @@ class SlashCommandCompleter(Completer):
             )
 
 
+def _git_info(root: Path) -> str | None:
+    """Read active git branch if inside a git repository."""
+    head = root / ".git" / "HEAD"
+    if head.is_file():
+        try:
+            ref = head.read_text(encoding="utf-8").strip()
+            if ref.startswith("ref: refs/heads/"):
+                return ref.split("/")[-1]
+            return ref[:7]
+        except OSError:
+            pass
+    return None
+
+
 def _banner(session: Session) -> Panel:
+    git_branch = _git_info(session.workspace_root)
+    git_badge = f" · [magenta]git:{git_branch}[/magenta]" if git_branch else ""
+    ctx_badge = (
+        f" · [cyan]{len(session.context_files)} pinned[/cyan]"
+        if session.context_files
+        else ""
+    )
+
+    content = (
+        f"[bold green]KiwiMateCoder[/bold green] [dim]v{__version__}[/dim] — "
+        f"[bold cyan]{session.provider.name}[/bold cyan] ([dim]{session.model}[/dim])\n"
+        f"[dim]📁 {session.workspace_root.name}{git_badge} · mode:[bold]{session.mode.value}[/bold]{ctx_badge}\n"
+        f"Type /help for commands · Alt+Enter for newline · Ctrl-C cancels · Ctrl-D exits[/dim]"
+    )
     return Panel(
-        "[bold green]KiwiMateCoder[/bold green] — agentic coding assistant\n"
-        "[dim]Ask for a task, or start with /mode plan for read-only planning. "
-        "Kiwi will keep plans short and offer options when choices matter.\n"
-        "Type /help for commands. Ctrl-C cancels, Ctrl-D exits.[/dim]",
-        subtitle=f"{session.provider_id}:{session.model} · {session.mode.value}",
+        content,
+        border_style="green",
+        padding=(0, 1),
     )
 
 
 def _prompt_text(session: Session) -> HTML:
+    mode_color = (
+        "ansimagenta"
+        if session.mode.value == "plan"
+        else "ansiyellow"
+        if session.mode.value == "ask"
+        else "ansigreen"
+    )
     return HTML(
-        f"<ansigreen>kiwi</ansigreen> "
-        f"<ansiblue>({session.provider_id}:{session.model} · {session.mode.value})</ansiblue> "
+        f"<ansigreen><b>kiwi</b></ansigreen> "
+        f"<{mode_color}>({session.provider_id}:{session.model} · {session.mode.value})</{mode_color}> "
         f"<ansicyan>›</ansicyan> "
     )
 
@@ -101,12 +137,45 @@ def _make_confirm(session: Session):
     def confirm(summary: str, preview_text: str | None) -> bool:
         console.print()
         if preview_text:
-            lexer = "diff" if preview_text.lstrip().startswith(("---", "+++", "@@", "+", "-")) else "bash"
+            is_diff = preview_text.lstrip().startswith(
+                ("---", "+++", "@@", "+", "-")
+            )
+            lexer = "diff" if is_diff else "bash"
+
+            if is_diff:
+                lines = preview_text.splitlines()
+                added = sum(
+                    1
+                    for l in lines
+                    if l.startswith("+") and not l.startswith("+++")
+                )
+                removed = sum(
+                    1
+                    for l in lines
+                    if l.startswith("-") and not l.startswith("---")
+                )
+                stats = (
+                    f" ([bold green]+{added}[/bold green] [bold red]-{removed}[/bold red])"
+                    if (added or removed)
+                    else ""
+                )
+                title = f"[bold yellow]Approve Change: {summary}[/bold yellow]{stats}"
+                border = "yellow"
+            else:
+                title = f"[bold magenta]Approve Shell: {summary}[/bold magenta]"
+                border = "magenta"
+
             console.print(
                 Panel(
-                    Syntax(preview_text, lexer, theme="ansi_dark", word_wrap=True),
-                    title=f"[bold]Approve: {summary}[/bold]",
-                    border_style="yellow",
+                    Syntax(
+                        preview_text,
+                        lexer,
+                        theme="ansi_dark",
+                        word_wrap=True,
+                        line_numbers=is_diff,
+                    ),
+                    title=title,
+                    border_style=border,
                 )
             )
         else:
@@ -114,14 +183,14 @@ def _make_confirm(session: Session):
 
         try:
             answer = console.input(
-                "[bold]Allow?[/bold] [y]es / [n]o / [a]lways this tool: "
+                "[bold]Allow?[/bold] ([green]y[/green]es / [red]n[/red]o / [cyan]a[/cyan]lways this tool): "
             ).strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("[yellow]Denied.[/yellow]")
             return False
 
         if answer in ("a", "always"):
-            tool_name = summary.split("(", 1)[0]
+            tool_name = summary.split("(", 1)[0].strip()
             session.allow_always(tool_name)
             return True
         return answer in ("y", "yes")
@@ -134,23 +203,61 @@ def run(session: Session) -> None:
     console.print(_banner(session))
     confirm = _make_confirm(session)
     agent = Agent(session, console, confirm)
+
+    kb = KeyBindings()
+
+    @kb.add("escape", "enter")
+    def _(event):
+        """Alt+Enter / Escape+Enter inserts newline for multi-line prompts."""
+        event.current_buffer.insert_text("\n")
+
     pt_session: PromptSession = PromptSession(
         history=InMemoryHistory(),
         completer=SlashCommandCompleter(session),
         complete_while_typing=True,
         complete_style=CompleteStyle.MULTI_COLUMN,
+        key_bindings=kb,
     )
+
+    multiline_buffer: list[str] = []
+    in_multiline_block = False
 
     while True:
         try:
-            line = pt_session.prompt(_prompt_text(session))
+            prompt_str = (
+                HTML("<ansicyan>... </ansicyan>")
+                if in_multiline_block
+                else _prompt_text(session)
+            )
+            line = pt_session.prompt(prompt_str)
         except KeyboardInterrupt:
-            # Ctrl-C at the prompt: clear the line, keep going.
+            # Ctrl-C at the prompt: clear the line / buffer, keep going.
+            multiline_buffer.clear()
+            in_multiline_block = False
             continue
         except EOFError:
             # Ctrl-D: exit.
             console.print("[dim]Goodbye![/dim]")
             break
+
+        # Check for triple-quote multiline block mode
+        stripped = line.strip()
+        if not in_multiline_block and stripped.startswith('"""') and not (
+            len(stripped) > 3 and stripped.endswith('"""')
+        ):
+            in_multiline_block = True
+            multiline_buffer.append(stripped[3:])
+            continue
+
+        if in_multiline_block:
+            if stripped.endswith('"""'):
+                in_multiline_block = False
+                multiline_buffer.append(stripped[:-3])
+                line = "\n".join(multiline_buffer).strip()
+                multiline_buffer.clear()
+            else:
+                multiline_buffer.append(line)
+                continue
 
         line = line.strip()
         if not line:
@@ -158,7 +265,9 @@ def run(session: Session) -> None:
 
         if line.startswith("/"):
             if (
-                dispatch(line, session, console, selector=_select_command_option)
+                dispatch(
+                    line, session, console, selector=_select_command_option
+                )
                 == CommandResult.EXIT
             ):
                 break

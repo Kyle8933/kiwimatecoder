@@ -437,6 +437,12 @@ def main(
         "--update",
         help="Update KiwiMateCoder in the current Python environment.",
     ),
+    resume: str | None = typer.Option(
+        None,
+        "-resume",
+        "--resume",
+        help="Resume a saved session by name or path.",
+    ),
 ):
     """Launch the interactive session when run with no subcommand."""
     if version:
@@ -451,34 +457,47 @@ def main(
 
     from kiwimatecoder import repl
 
-    cfg = load_config()
-    provider_id = get_selected_provider_id(cfg)
-    provider = get_provider_config(provider_id, cfg)
-    model = cfg.get("selected_model") or provider.default_model
+    if resume:
+        from kiwimatecoder.session import load_session
 
-    try:
-        mode = PermissionMode.from_str(cfg.get("default_mode", "ask"))
-    except ValueError:
-        mode = PermissionMode.ASK
+        try:
+            session = load_session(resume, workspace_root=Path.cwd())
+            console.print(
+                f"[bold green]Resumed session '{resume}'[/bold green] "
+                f"([dim]{len(session.messages)} messages, {session.total_tokens:,} tokens[/dim])"
+            )
+        except Exception as exc:
+            console.print(f"[red]Could not resume session '{resume}': {exc}[/red]")
+            raise typer.Exit(1)
+    else:
+        cfg = load_config()
+        provider_id = get_selected_provider_id(cfg)
+        provider = get_provider_config(provider_id, cfg)
+        model = cfg.get("selected_model") or provider.default_model
 
-    if not get_key(provider_id):
-        console.print(
-            Panel(
-                f"[yellow]No API key set for {provider.name}.[/yellow]\n"
-                f"Run [cyan]kiwimatecoder setup[/cyan] to choose a provider and "
-                f"enter a key, or export [cyan]{provider.key_env}[/cyan]."
-            ),
-            title="Quick start",
+        try:
+            mode = PermissionMode.from_str(cfg.get("default_mode", "ask"))
+        except ValueError:
+            mode = PermissionMode.ASK
+
+        if not get_key(provider_id):
+            console.print(
+                Panel(
+                    f"[yellow]No API key set for {provider.name}.[/yellow]\n"
+                    f"Run [cyan]kiwimatecoder setup[/cyan] to choose a provider and "
+                    f"enter a key, or export [cyan]{provider.key_env}[/cyan].",
+                    title="Quick start",
+                )
+            )
+            if _stdin_is_tty() and _prompt_yes_no("Run setup now?"):
+                _run_setup(provider_id, key=None)
+
+        session = Session(
+            provider_id=provider_id,
+            model=model,
+            mode=mode,
+            workspace_root=Path.cwd(),
         )
-        if _stdin_is_tty() and _prompt_yes_no("Run setup now?"):
-            _run_setup(provider_id, key=None)
-
-    session = Session(
-        provider_id=provider_id,
-        model=model,
-        mode=mode,
-        workspace_root=Path.cwd(),
-    )
     repl.run(session)
 
 

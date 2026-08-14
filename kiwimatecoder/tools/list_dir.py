@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
-from kiwimatecoder.tools.paths import PathError, resolve_in_workspace
+from kiwimatecoder.tools.paths import (
+    PathError,
+    get_workspace_ignore,
+    resolve_in_workspace,
+)
 
 MAX_ENTRIES = 500
-SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".mypy_cache"}
 
 
 def _list_dir(args: dict, session: Session) -> ToolResult:
@@ -22,11 +25,13 @@ def _list_dir(args: dict, session: Session) -> ToolResult:
     if not resolved.is_dir():
         return ToolResult.error(f"'{path}' is not a directory, use read_file")
 
+    ignore = get_workspace_ignore(session.workspace_root)
     entries = []
     for child in sorted(resolved.iterdir(), key=lambda p: (p.is_file(), p.name)):
-        if child.name in SKIP_DIRS:
+        is_dir = child.is_dir()
+        if ignore.is_ignored(child, is_dir=is_dir):
             continue
-        suffix = "/" if child.is_dir() else ""
+        suffix = "/" if is_dir else ""
         entries.append(child.name + suffix)
         if len(entries) >= MAX_ENTRIES:
             entries.append(f"... [truncated at {MAX_ENTRIES} entries]")

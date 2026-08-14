@@ -2,33 +2,65 @@
 
 from __future__ import annotations
 
+import fnmatch
+import os
 import re
 from pathlib import Path
 
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
-from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_workspace
+from kiwimatecoder.tools.paths import (
+    PathError,
+    display_path,
+    get_workspace_ignore,
+    resolve_in_workspace,
+)
 
 MAX_MATCHES = 200
-SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".mypy_cache"}
 
 
-def _iter_files(root: Path):
-    for p in root.rglob("*"):
-        if any(part in SKIP_DIRS for part in p.parts):
-            continue
-        if p.is_file():
-            yield p
+def _iter_files(root: Path, session: Session, glob_pattern: str | None = None):
+    ignore = get_workspace_ignore(session.workspace_root)
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        dir_p = Path(dirpath)
+        dirnames[:] = [
+            d for d in dirnames
+            if not ignore.is_ignored(dir_p / d, is_dir=True)
+        ]
+        dirnames.sort()
+        for f in sorted(filenames):
+            file_p = dir_p / f
+            if ignore.is_ignored(file_p, is_dir=False):
+                continue
+            if glob_pattern:
+                rel = display_path(file_p, session.workspace_root)
+                if not fnmatch.fnmatch(f, glob_pattern) and not fnmatch.fnmatch(
+                    rel, glob_pattern
+                ):
+                    continue
+            yield file_p
 
 
 def _glob_search(root: Path, pattern: str, session: Session) -> list[str]:
-    results = []
-    for p in sorted(root.rglob(pattern)):
-        if any(part in SKIP_DIRS for part in p.parts):
-            continue
-        results.append(display_path(p, session.workspace_root))
-        if len(results) >= MAX_MATCHES:
-            break
+    ignore = get_workspace_ignore(session.workspace_root)
+    results: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        dir_p = Path(dirpath)
+        dirnames[:] = [
+            d for d in dirnames
+            if not ignore.is_ignored(dir_p / d, is_dir=True)
+        ]
+        dirnames.sort()
+        for name in sorted(filenames + dirnames):
+            p = dir_p / name
+            is_dir = name in dirnames
+            if ignore.is_ignored(p, is_dir=is_dir):
+                continue
+            rel = display_path(p, session.workspace_root)
+            if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern):
+                results.append(rel)
+                if len(results) >= MAX_MATCHES:
+                    return results
     return results
 
 
@@ -41,10 +73,7 @@ def _grep_search(
         raise ValueError(f"Invalid regex: {exc}") from exc
 
     results: list[str] = []
-    files = root.rglob(glob) if glob else _iter_files(root)
-    for p in sorted(files):
-        if any(part in SKIP_DIRS for part in p.parts) or not p.is_file():
-            continue
+    for p in _iter_files(root, session, glob):
         try:
             data = p.read_bytes()
         except OSError:

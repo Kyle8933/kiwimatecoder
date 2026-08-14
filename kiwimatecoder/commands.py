@@ -38,7 +38,12 @@ from kiwimatecoder.config import (
 )
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY
-from kiwimatecoder.session import Session
+from kiwimatecoder.session import (
+    Session,
+    list_saved_sessions,
+    load_session,
+    save_session,
+)
 from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_workspace
 
 
@@ -362,13 +367,21 @@ def _mode(arg: str, session: Session, console: Console) -> str:
 
 
 def _tools(arg: str, session: Session, console: Console) -> str:
-    table = Table(title="Tools", show_header=True)
-    table.add_column("name", style="cyan")
-    table.add_column("approval")
-    table.add_column("description")
+    table = Table(title="Available Tools", show_header=True)
+    table.add_column("Tool", style="cyan bold", no_wrap=True)
+    table.add_column("Permission", no_wrap=True)
+    table.add_column("Description")
     for tool in tools.TOOLS.values():
-        approval = "needs approval" if tool.needs_approval else "auto"
-        table.add_row(tool.name, approval, tool.description.split(".")[0])
+        if tool.needs_approval:
+            perm = (
+                "[green]always allowed[/green]"
+                if session.is_always_allowed(tool.name)
+                else "[yellow]needs approval[/yellow]"
+            )
+        else:
+            perm = "[dim green]read-only[/dim green]"
+        desc = tool.description.split(". ")[0] + "."
+        table.add_row(tool.name, perm, desc)
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -377,9 +390,28 @@ def _files(arg: str, session: Session, console: Console) -> str:
     if not session.touched_files:
         console.print("[dim]No files changed this session.[/dim]")
         return CommandResult.CONTINUE
-    console.print("[bold]Files changed this session:[/bold]")
-    for path in session.touched_files:
-        console.print(f"  • {path}")
+    table = Table(title="Files Changed This Session", show_header=True)
+    table.add_column("File Path", style="cyan")
+    table.add_column("Status")
+    table.add_column("Size", justify="right")
+    for rel in session.touched_files:
+        p = session.workspace_root / rel
+        if p.exists() and p.is_file():
+            size_bytes = p.stat().st_size
+            size_str = (
+                f"{size_bytes} B"
+                if size_bytes < 1024
+                else f"{size_bytes / 1024:.1f} KB"
+            )
+            status = "[green]exists[/green]"
+        elif p.exists() and p.is_dir():
+            size_str = "-"
+            status = "[blue]directory[/blue]"
+        else:
+            size_str = "-"
+            status = "[red]deleted/missing[/red]"
+        table.add_row(rel, status, size_str)
+    console.print(table)
     return CommandResult.CONTINUE
 
 
@@ -1078,11 +1110,77 @@ def _config_interact(
 
 
 def _cost(arg: str, session: Session, console: Console) -> str:
-    console.print(
-        f"Tokens this session — prompt: [cyan]{session.prompt_tokens}[/cyan], "
-        f"completion: [cyan]{session.completion_tokens}[/cyan], "
-        f"total: [cyan]{session.prompt_tokens + session.completion_tokens}[/cyan]"
-    )
+    total = session.prompt_tokens + session.completion_tokens
+    est_cost = (session.prompt_tokens * 0.0000025) + (session.completion_tokens * 0.00001)
+    table = Table(title="Session Token & Cost Usage", show_header=True)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+    table.add_row("Prompt Tokens", f"{session.prompt_tokens:,}")
+    table.add_row("Completion Tokens", f"{session.completion_tokens:,}")
+    table.add_row("Total Tokens", f"[bold]{total:,}[/bold]")
+    table.add_row("Estimated Cost (USD)", f"~${est_cost:.4f}")
+    table.add_row("Conversation History Messages", f"{len(session.messages)}")
+    table.add_row("Estimated Context Tokens", f"{session.estimated_history_tokens:,}")
+    console.print(table)
+    return CommandResult.CONTINUE
+
+
+def _save(arg: str, session: Session, console: Console) -> str:
+    try:
+        dest = save_session(session, arg.strip() or None)
+        console.print(
+            f"[green]Session saved to [bold]{dest.name}[/bold] "
+            f"({len(session.messages)} messages, {session.total_tokens:,} tokens).[/green]"
+        )
+    except Exception as exc:
+        console.print(f"[red]Failed to save session: {exc}[/red]")
+    return CommandResult.CONTINUE
+
+
+def _load(arg: str, session: Session, console: Console) -> str:
+    if not arg.strip():
+        return _sessions("", session, console)
+    try:
+        loaded = load_session(arg.strip(), workspace_root=session.workspace_root)
+        session.messages = loaded.messages
+        session.provider_id = loaded.provider_id
+        session.model = loaded.model
+        session.mode = loaded.mode
+        session.prompt_tokens = loaded.prompt_tokens
+        session.completion_tokens = loaded.completion_tokens
+        session.touched_files = loaded.touched_files
+        session.context_files = loaded.context_files
+        console.print(
+            f"[green]Loaded session [bold]{arg.strip()}[/bold]: "
+            f"{len(session.messages)} messages, provider={session.provider_id}:{session.model}[/green]"
+        )
+    except Exception as exc:
+        console.print(f"[red]Failed to load session: {exc}[/red]")
+    return CommandResult.CONTINUE
+
+
+def _sessions(arg: str, session: Session, console: Console) -> str:
+    saved = list_saved_sessions()
+    if not saved:
+        console.print("[dim]No saved sessions found in ~/.kiwimatecoder/sessions/[/dim]")
+        return CommandResult.CONTINUE
+    table = Table(title="Saved Sessions", show_header=True)
+    table.add_column("Name", style="cyan", no_wrap=True)
+    table.add_column("Provider / Model")
+    table.add_column("Messages", justify="right")
+    table.add_column("Tokens", justify="right")
+    table.add_column("Saved At", style="dim")
+    for s in saved:
+        prov_model = f"{s['provider']}:{s['model']}" if s["model"] else s["provider"]
+        table.add_row(
+            s["name"],
+            prov_model,
+            str(s["messages"]),
+            f"{s['tokens']:,}",
+            str(s["saved_at"]).split(".")[0].replace("T", " "),
+        )
+    console.print(table)
+    console.print("[dim]Use /load <name> to resume a session.[/dim]")
     return CommandResult.CONTINUE
 
 
@@ -1100,6 +1198,9 @@ _COMMANDS = {
     "ctx": _context,
     "config": _config,
     "cost": _cost,
+    "save": _save,
+    "load": _load,
+    "sessions": _sessions,
 }
 
 _HELP_GROUPS = [
@@ -1112,6 +1213,9 @@ _HELP_GROUPS = [
             ("/cost", "Show token usage for this session."),
             ("/files", "List files changed this session."),
             ("/tools", "List available tools."),
+            ("/save [name]", "Save the active session state."),
+            ("/load <name>", "Load a previously saved session."),
+            ("/sessions", "List all saved sessions."),
         ],
     ),
     (
@@ -1168,6 +1272,9 @@ _COMMAND_DESCRIPTIONS = {
         "Show or change providers, API keys, model defaults, and model filters."
     ),
     "cost": "Show token usage for this session.",
+    "save": "Save the current session to disk.",
+    "load": "Load a saved session from disk.",
+    "sessions": "List all saved sessions.",
 }
 
 _CONTEXT_ACTION_DESCRIPTIONS = {
@@ -1295,6 +1402,11 @@ def slash_argument_completions(
         choices = {p.id: p.name for p in list_provider_configs()}
     elif command == "config":
         choices = _CONFIG_ACTION_DESCRIPTIONS
+    elif command == "load":
+        choices = {
+            s["name"]: f"{s['provider']}:{s['model']} ({s['messages']} msgs)"
+            for s in list_saved_sessions()
+        }
     else:
         return []
     return [

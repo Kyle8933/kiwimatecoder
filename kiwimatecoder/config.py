@@ -135,7 +135,7 @@ def _default_key_env(provider_id: str) -> str:
     return f"{cleaned}_API_KEY"
 
 
-def _provider_from_config(provider_id: str, data: dict) -> ProviderConfig | None:
+def _provider_from_config(provider_id: str, data: object) -> ProviderConfig | None:
     if not isinstance(data, dict):
         return None
     try:
