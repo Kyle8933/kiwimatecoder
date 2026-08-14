@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import asyncio
 import sys
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -33,6 +37,7 @@ from kiwimatecoder.config import (
     update_provider,
 )
 from kiwimatecoder.permissions import PermissionMode
+from kiwimatecoder.providers import ProviderConfig
 from kiwimatecoder.session import Session
 from kiwimatecoder.updater import run_update
 
@@ -49,7 +54,7 @@ app.add_typer(config_app, name="config")
 
 
 @config_app.callback()
-def config_main(ctx: typer.Context):
+def config_main(ctx: typer.Context) -> None:
     """Show a quick orientation when no config subcommand is given."""
     if ctx.invoked_subcommand is not None:
         return
@@ -93,9 +98,9 @@ config_app.add_typer(models_app, name="models")
 
 @key_app.command("set")
 def key_set(
-    provider: str = typer.Argument(..., help="Provider id"),
-    key: str = typer.Argument(..., help="Your API key"),
-):
+    provider: Annotated[str, typer.Argument(help="Provider id")],
+    key: Annotated[str, typer.Argument(help="Your API key")],
+) -> None:
     """Save an API key for a provider."""
     try:
         warning = set_key(provider, key)
@@ -104,14 +109,14 @@ def key_set(
         raise typer.Exit(1)
     console.print(
         f"[green]✓ API key saved for[/green] [cyan]{provider}[/cyan] "
-        f"— {describe_key(provider)}."
+        + f"— {describe_key(provider)}."
     )
     if warning:
         console.print(f"[yellow]{warning}[/yellow]")
 
 
 @key_app.command("remove")
-def key_remove(provider: str = typer.Argument(..., help="Provider id")):
+def key_remove(provider: Annotated[str, typer.Argument(help="Provider id")]) -> None:
     """Remove a stored API key for a provider."""
     try:
         existed = remove_key(provider)
@@ -127,7 +132,7 @@ def key_remove(provider: str = typer.Argument(..., help="Provider id")):
 
 
 @key_app.command("list")
-def key_list():
+def key_list() -> None:
     """List providers and the status of their API keys."""
     table = Table(title="API keys", show_header=True)
     table.add_column("provider", style="cyan")
@@ -142,7 +147,7 @@ def key_list():
 
 
 @provider_app.command("use")
-def provider_use(provider: str = typer.Argument(..., help="Provider id")):
+def provider_use(provider: Annotated[str, typer.Argument(help="Provider id")]) -> None:
     """Persist and switch to a provider as the default."""
     try:
         set_selected_provider(provider)
@@ -153,7 +158,7 @@ def provider_use(provider: str = typer.Argument(..., help="Provider id")):
 
 
 @provider_app.command("list")
-def provider_list():
+def provider_list() -> None:
     """List all built-in and custom providers."""
     table = Table(title="Providers", show_header=True)
     table.add_column("id", style="cyan")
@@ -166,14 +171,18 @@ def provider_list():
 
 @provider_app.command("add")
 def provider_add(
-    provider_id: str = typer.Argument(..., help="Unique id (no spaces)"),
-    name: str = typer.Argument(..., help="Display name"),
-    base_url: str = typer.Argument(..., help="Base URL including /v1"),
-    default_model: str = typer.Argument(..., help="Default model id"),
-    key_env: str = typer.Option(
-        None, "--key-env", help="API key environment variable (default: <ID>_API_KEY)"
-    ),
-):
+    provider_id: Annotated[str, typer.Argument(help="Unique id (no spaces)")],
+    name: Annotated[str, typer.Argument(help="Display name")],
+    base_url: Annotated[str, typer.Argument(help="Base URL including /v1")],
+    default_model: Annotated[str, typer.Argument(help="Default model id")],
+    key_env: Annotated[
+        str | None,
+        typer.Option(
+            "--key-env",
+            help="API key environment variable (default: <ID>_API_KEY)",
+        ),
+    ] = None,
+) -> None:
     """Add an OpenAI-compatible custom provider."""
     try:
         provider = add_provider(provider_id, name, base_url, default_model, key_env)
@@ -186,7 +195,7 @@ def provider_add(
 
 
 @provider_app.command("remove")
-def provider_remove(provider: str = typer.Argument(..., help="Provider id")):
+def provider_remove(provider: Annotated[str, typer.Argument(help="Provider id")]) -> None:
     """Remove a custom provider."""
     try:
         remove_provider(provider)
@@ -198,13 +207,19 @@ def provider_remove(provider: str = typer.Argument(..., help="Provider id")):
 
 @provider_app.command("edit")
 def provider_edit(
-    provider: str = typer.Argument(..., help="Provider id"),
-    name: str = typer.Option(None, "--name", help="New display name"),
-    base_url: str = typer.Option(None, "--base-url", help="New base URL"),
-    default_model: str = typer.Option(None, "--default-model", help="New default model"),
-    key_env: str = typer.Option(None, "--key-env", help="New key environment variable"),
-    compat: str = typer.Option(None, "--compat", help="'openai' or 'anthropic'"),
-):
+    provider: Annotated[str, typer.Argument(help="Provider id")],
+    name: Annotated[str | None, typer.Option("--name", help="New display name")] = None,
+    base_url: Annotated[str | None, typer.Option("--base-url", help="New base URL")] = None,
+    default_model: Annotated[
+        str | None, typer.Option("--default-model", help="New default model")
+    ] = None,
+    key_env: Annotated[
+        str | None, typer.Option("--key-env", help="New key environment variable")
+    ] = None,
+    compat: Annotated[
+        str | None, typer.Option("--compat", help="'openai' or 'anthropic'")
+    ] = None,
+) -> None:
     """Update fields of a custom provider."""
     try:
         update_provider(
@@ -225,14 +240,14 @@ def provider_edit(
 
 
 @model_app.command("set")
-def model_set(model: str = typer.Argument(..., help="Model id")):
+def model_set(model: Annotated[str, typer.Argument(help="Model id")]) -> None:
     """Set the default model (overrides the provider default)."""
     set_selected_model(model)
     console.print(f"[green]✓ Default model set to [cyan]{model}[/cyan].[/green]")
 
 
 @model_app.command("reset")
-def model_reset():
+def model_reset() -> None:
     """Use the provider's default model again."""
     set_selected_model(None)
     console.print("[green]✓ Default model reset (using provider default).[/green]")
@@ -243,10 +258,11 @@ def model_reset():
 
 @mode_app.command("set")
 def mode_set(
-    mode: str = typer.Argument(
-        ..., help="Permission mode: ask, auto-accept, or plan"
-    )
-):
+    mode: Annotated[
+        str,
+        typer.Argument(help="Permission mode: ask, auto-accept, or plan"),
+    ]
+) -> None:
     """Set the default permission mode for new sessions."""
     try:
         effective = set_default_mode(mode)
@@ -257,7 +273,7 @@ def mode_set(
 
 
 @mode_app.command("reset")
-def mode_reset():
+def mode_reset() -> None:
     """Reset the default permission mode to 'ask'."""
     effective = reset_default_mode()
     console.print(f"[green]✓ Default mode reset to [cyan]{effective}[/cyan].[/green]")
@@ -268,52 +284,67 @@ def mode_reset():
 
 @models_app.command("show")
 def models_show(
-    provider: str = typer.Option(
-        None, "--provider", "-p", help="Provider id (default: configured provider)"
-    ),
-):
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider", "-p", help="Provider id (default: configured provider)"
+        ),
+    ] = None,
+) -> None:
     """List the models offered for a provider, newest first."""
     _print_models(provider, refresh=False)
 
 
 @models_app.command("refresh")
 def models_refresh(
-    provider: str = typer.Option(
-        None, "--provider", "-p", help="Provider id (default: configured provider)"
-    ),
-):
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider", "-p", help="Provider id (default: configured provider)"
+        ),
+    ] = None,
+) -> None:
     """Fetch the provider's live model list, dropping deprecated ids."""
     _print_models(provider, refresh=True)
 
 
 @models_app.command("allow")
 def models_allow(
-    models: list[str] = typer.Argument(..., help="Model ids to show"),
-    provider: str = typer.Option(
-        None, "--provider", "-p", help="Provider id (default: configured provider)"
-    ),
-):
+    models: Annotated[list[str], typer.Argument(help="Model ids to show")],
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider", "-p", help="Provider id (default: configured provider)"
+        ),
+    ] = None,
+) -> None:
     """Only show these models for a provider."""
     _set_filter(provider, "allow", models)
 
 
 @models_app.command("deny")
 def models_deny(
-    models: list[str] = typer.Argument(..., help="Model ids to hide"),
-    provider: str = typer.Option(
-        None, "--provider", "-p", help="Provider id (default: configured provider)"
-    ),
-):
+    models: Annotated[list[str], typer.Argument(help="Model ids to hide")],
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider", "-p", help="Provider id (default: configured provider)"
+        ),
+    ] = None,
+) -> None:
     """Hide these models for a provider."""
     _set_filter(provider, "deny", models)
 
 
 @models_app.command("clear")
 def models_clear(
-    provider: str = typer.Option(
-        None, "--provider", "-p", help="Provider id (default: configured provider)"
-    ),
-):
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider", "-p", help="Provider id (default: configured provider)"
+        ),
+    ] = None,
+) -> None:
     """Clear model visibility for a provider."""
     pid = provider or get_selected_provider_id()
     _resolve_provider(pid)
@@ -325,17 +356,17 @@ def models_clear(
 
 
 @config_app.command("show")
-def config_show():
+def config_show() -> None:
     """Show the active provider, model, key, and model filter."""
     cfg = load_config()
     provider_id = get_selected_provider_id(cfg)
     provider = get_provider_config(provider_id, cfg)
     console.print(
         f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
-        f"Model: [cyan]{cfg.get('selected_model') or provider.default_model}[/cyan]\n"
-        f"Mode: [cyan]{get_default_mode(cfg)}[/cyan]\n"
-        f"Key: [cyan]{describe_key(provider_id)}[/cyan] ({provider.key_env})\n"
-        f"Model visibility: [cyan]{get_model_filter(provider_id)['mode']}[/cyan]"
+        + f"Model: [cyan]{cfg.get('selected_model') or provider.default_model}[/cyan]\n"
+        + f"Mode: [cyan]{get_default_mode(cfg)}[/cyan]\n"
+        + f"Key: [cyan]{describe_key(provider_id)}[/cyan] ({provider.key_env})\n"
+        + f"Model visibility: [cyan]{get_model_filter(provider_id)['mode']}[/cyan]"
     )
 
 
@@ -388,35 +419,38 @@ def _set_filter(provider: str | None, mode: str, models: list[str]) -> None:
 
 @config_app.command("set-key", hidden=True, deprecated=True)
 def set_key_cmd(
-    key: str = typer.Argument(..., help="Your API key"),
-    provider: str = typer.Option(
-        "openrouter", "--provider", "-p", help="Provider id this key belongs to"
-    ),
-):
+    key: Annotated[str, typer.Argument(help="Your API key")],
+    provider: Annotated[
+        str,
+        typer.Option("--provider", "-p", help="Provider id this key belongs to"),
+    ] = "openrouter",
+) -> None:
     """Deprecated: use `config key set <provider> <key>`."""
     key_set(provider, key)
 
 
 @config_app.command("set-provider", hidden=True, deprecated=True)
-def set_provider_cmd(provider: str = typer.Argument(..., help="Provider id")):
+def set_provider_cmd(
+    provider: Annotated[str, typer.Argument(help="Provider id")]
+) -> None:
     """Deprecated: use `config provider use <id>`."""
     provider_use(provider)
 
 
 @config_app.command("set-model", hidden=True, deprecated=True)
-def set_model_cmd(model: str = typer.Argument(..., help="Model id")):
+def set_model_cmd(model: Annotated[str, typer.Argument(help="Model id")]) -> None:
     """Deprecated: use `config model set <id>`."""
     model_set(model)
 
 
 @config_app.command("check", hidden=True, deprecated=True)
-def check():
+def check() -> None:
     """Deprecated: use `config show`."""
     config_show()
 
 
 @config_app.command("list", hidden=True, deprecated=True)
-def list_cmd():
+def list_cmd() -> None:
     """Deprecated: use `config provider list`."""
     provider_list()
 
@@ -424,26 +458,32 @@ def list_cmd():
 @app.callback()
 def main(
     ctx: typer.Context,
-    version: bool = typer.Option(
-        False,
-        "--version",
-        "-V",
-        help="Show the installed KiwiMateCoder version and exit.",
-        is_eager=True,
-    ),
-    update: bool = typer.Option(
-        False,
-        "-update",
-        "--update",
-        help="Update KiwiMateCoder in the current Python environment.",
-    ),
-    resume: str | None = typer.Option(
-        None,
-        "-resume",
-        "--resume",
-        help="Resume a saved session by name or path.",
-    ),
-):
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            "-V",
+            help="Show the installed KiwiMateCoder version and exit.",
+            is_eager=True,
+        ),
+    ] = False,
+    update: Annotated[
+        bool,
+        typer.Option(
+            "-update",
+            "--update",
+            help="Update KiwiMateCoder in the current Python environment.",
+        ),
+    ] = False,
+    resume: Annotated[
+        str | None,
+        typer.Option(
+            "-resume",
+            "--resume",
+            help="Resume a saved session by name or path.",
+        ),
+    ] = None,
+) -> None:
     """Launch the interactive session when run with no subcommand."""
     if version:
         console.print(f"kiwimatecoder {__version__}")
@@ -464,7 +504,7 @@ def main(
             session = load_session(resume, workspace_root=Path.cwd())
             console.print(
                 f"[bold green]Resumed session '{resume}'[/bold green] "
-                f"([dim]{len(session.messages)} messages, {session.total_tokens:,} tokens[/dim])"
+                + f"([dim]{len(session.messages)} messages, {session.total_tokens:,} tokens[/dim])"
             )
         except Exception as exc:
             console.print(f"[red]Could not resume session '{resume}': {exc}[/red]")
@@ -473,10 +513,10 @@ def main(
         cfg = load_config()
         provider_id = get_selected_provider_id(cfg)
         provider = get_provider_config(provider_id, cfg)
-        model = cfg.get("selected_model") or provider.default_model
+        model = str(cfg.get("selected_model") or provider.default_model)
 
         try:
-            mode = PermissionMode.from_str(cfg.get("default_mode", "ask"))
+            mode = PermissionMode.from_str(str(cfg.get("default_mode", "ask")))
         except ValueError:
             mode = PermissionMode.ASK
 
@@ -484,8 +524,8 @@ def main(
             console.print(
                 Panel(
                     f"[yellow]No API key set for {provider.name}.[/yellow]\n"
-                    f"Run [cyan]kiwimatecoder setup[/cyan] to choose a provider and "
-                    f"enter a key, or export [cyan]{provider.key_env}[/cyan].",
+                    + "Run [cyan]kiwimatecoder setup[/cyan] to choose a provider and "
+                    + f"enter a key, or export [cyan]{provider.key_env}[/cyan].",
                     title="Quick start",
                 )
             )
@@ -498,6 +538,7 @@ def main(
             mode=mode,
             workspace_root=Path.cwd(),
         )
+
     repl.run(session)
 
 
@@ -519,7 +560,9 @@ def _prompt_yes_no(question: str) -> bool:
     return answer in ("y", "yes")
 
 
-def _interactive_select_provider(providers, selected: str) -> str | None:
+def _interactive_select_provider(
+    providers: Sequence[ProviderConfig], selected: str
+) -> str | None:
     """Keyboard-driven provider picker, matching the REPL's selector style."""
     from prompt_toolkit.shortcuts import choice
 
@@ -575,7 +618,7 @@ def _run_setup(provider_id: str, key: str | None) -> bool:
     set_selected_provider(provider_id)
     console.print(
         f"[green]✓ API key saved for {provider_id}[/green] "
-        f"— {describe_key(provider_id)}."
+        + f"— {describe_key(provider_id)}."
     )
     if warning:
         console.print(f"[yellow]{warning}[/yellow]")
@@ -585,13 +628,17 @@ def _run_setup(provider_id: str, key: str | None) -> bool:
 
 @app.command("setup")
 def setup(
-    provider: str = typer.Option(
-        None, "--provider", "-p", help="Provider id (default: configured provider)"
-    ),
-    key: str = typer.Option(
-        None, "--key", "-k", help="API key (skips the interactive prompt)"
-    ),
-):
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider", "-p", help="Provider id (default: configured provider)"
+        ),
+    ] = None,
+    key: Annotated[
+        str | None,
+        typer.Option("--key", "-k", help="API key (skips the interactive prompt)"),
+    ] = None,
+) -> None:
     """Choose a provider and save its API key — the quick-start guide."""
     cfg = load_config()
     provider_id = provider or get_selected_provider_id(cfg)
@@ -609,15 +656,20 @@ def setup(
 
 @app.command()
 def ask(
-    prompt: str = typer.Argument(..., help="Your coding question"),
-    file: Path = typer.Option(
-        None, "--file", "-f", help="Path to a code file to include"
-    ),
-    model: str = typer.Option(None, "--model", "-m", help="Override the default model"),
-    provider: str = typer.Option(
-        None, "--provider", "-p", help="Provider id (default: configured provider)"
-    ),
-):
+    prompt: Annotated[str, typer.Argument(help="Your coding question")],
+    file: Annotated[
+        Path | None, typer.Option("--file", "-f", help="Path to a code file to include")
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", "-m", help="Override the default model")
+    ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider", "-p", help="Provider id (default: configured provider)"
+        ),
+    ] = None,
+) -> None:
     """Ask KiwiMateCoder a one-shot coding question."""
     cfg = load_config()
     provider_id = provider or get_selected_provider_id(cfg)
@@ -631,7 +683,7 @@ def ask(
     if not api_key:
         console.print(
             f"[red]No API key for {provider_cfg.name}. "
-            f"Run: kiwimatecoder setup --provider {provider_id}[/red]"
+            + f"Run: kiwimatecoder setup --provider {provider_id}[/red]"
         )
         raise typer.Exit(1)
 
@@ -646,7 +698,7 @@ def ask(
         stream_response(
             full_prompt,
             api_key,
-            model=model or cfg.get("selected_model"),
+            model=model or str(cfg.get("selected_model") or ""),
             provider=provider_cfg,
         )
     )
@@ -654,12 +706,12 @@ def ask(
 
 
 @app.command("update")
-def update_cmd():
+def update_cmd() -> None:
     """Update KiwiMateCoder in the current Python environment."""
     raise typer.Exit(run_update(console))
 
 
 @app.command("version")
-def version_cmd():
+def version_cmd() -> None:
     """Show the installed KiwiMateCoder version."""
     console.print(f"kiwimatecoder {__version__}")

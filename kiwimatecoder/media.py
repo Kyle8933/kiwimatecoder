@@ -11,8 +11,9 @@ It is intentionally not wired into the tool registry yet.
 from __future__ import annotations
 
 
-def generate_media(*args, **kwargs):  # pragma: no cover - placeholder
+def generate_media(*args: object, **kwargs: object) -> None:  # pragma: no cover - placeholder
+    _ = (args, kwargs)
     raise NotImplementedError(
         "Media generation is not implemented yet. This is a planned feature; "
-        "see kiwimatecoder/media.py for the intended design."
+        + "see kiwimatecoder/media.py for the intended design."
     )

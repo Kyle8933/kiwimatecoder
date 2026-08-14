@@ -1,4 +1,4 @@
-from kiwimatecoder.permissions import Decision, PermissionMode, gate
+from kiwimatecoder.permissions import PermissionMode, gate
 from kiwimatecoder.tools.read_file import read_file_tool
 from kiwimatecoder.tools.write_file import write_file_tool
 

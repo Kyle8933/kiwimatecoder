@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
-from typing import AsyncIterator
+from dataclasses import dataclass
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -75,18 +75,19 @@ class AssembledToolCall:
     name: str
     arguments: str  # raw JSON string as emitted by the model
 
-    def parse_arguments(self) -> dict:
+    def parse_arguments(self) -> dict[str, Any]:
         """Parse ``arguments`` as JSON, returning ``{}`` for an empty string."""
         if not self.arguments.strip():
             return {}
-        return json.loads(self.arguments)
+        result: dict[str, Any] = json.loads(self.arguments)
+        return result
 
 
 class ToolCallAssembler:
     """Reassembles indexed tool-call fragments from a streamed completion."""
 
     def __init__(self) -> None:
-        self._calls: dict[int, dict] = {}
+        self._calls: dict[int, dict[str, Any]] = {}
         self._order: list[int] = []
 
     def add(self, delta: ToolCallDelta) -> None:
@@ -100,7 +101,7 @@ class ToolCallAssembler:
         if delta.name is not None:
             slot["name"] = delta.name
         if delta.args_fragment:
-            slot["arguments"] += delta.args_fragment
+            slot["arguments"] = str(slot.get("arguments") or "") + delta.args_fragment
 
     def finalize(self) -> list[AssembledToolCall]:
         """Return the assembled calls in the order they first appeared."""
@@ -111,9 +112,9 @@ class ToolCallAssembler:
                 continue
             result.append(
                 AssembledToolCall(
-                    id=slot["id"] or f"call_{index}",
-                    name=slot["name"],
-                    arguments=slot["arguments"],
+                    id=str(slot["id"] or f"call_{index}"),
+                    name=str(slot["name"]),
+                    arguments=str(slot["arguments"]),
                 )
             )
         return result
@@ -162,10 +163,10 @@ def parse_sse_chunk(data: str) -> list[StreamEvent]:
     return events
 
 
-def format_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
+def format_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """Convert OpenAI-format message list to Anthropic (system_prompt, messages)."""
     system_parts: list[str] = []
-    converted: list[dict] = []
+    converted: list[dict[str, Any]] = []
 
     for msg in messages:
         role = msg.get("role")
@@ -183,7 +184,7 @@ def format_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
         elif role == "assistant":
             tool_calls = msg.get("tool_calls")
             if tool_calls:
-                blocks: list[dict] = []
+                blocks: list[dict[str, Any]] = []
                 if content:
                     blocks.append({"type": "text", "text": str(content)})
                 for idx, tc in enumerate(tool_calls):
@@ -230,11 +231,11 @@ def format_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
     return system_prompt, converted
 
 
-def format_anthropic_tools(tools: list[dict] | None) -> list[dict] | None:
+def format_anthropic_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
     """Convert OpenAI tool schemas to Anthropic tools format."""
     if not tools:
         return None
-    anthropic_tools: list[dict] = []
+    anthropic_tools: list[dict[str, Any]] = []
     for t in tools:
         fn = t.get("function", {})
         anthropic_tools.append(
@@ -369,12 +370,12 @@ class UnifiedClient:
         return headers
 
     def _payload(
-        self, messages: list[dict], tools: list[dict] | None, model: str
-    ) -> dict:
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, model: str
+    ) -> dict[str, Any]:
         if self.is_anthropic:
             system_prompt, anthropic_msgs = format_anthropic_messages(messages)
             anthropic_tools = format_anthropic_tools(tools)
-            payload: dict = {
+            payload: dict[str, Any] = {
                 "model": model,
                 "messages": anthropic_msgs,
                 "max_tokens": 8192,
@@ -386,19 +387,19 @@ class UnifiedClient:
                 payload["tools"] = anthropic_tools
             return payload
 
-        payload: dict = {
+        openai_payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
         if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        return payload
+            openai_payload["tools"] = tools
+            openai_payload["tool_choice"] = "auto"
+        return openai_payload
 
     async def stream_chat(
-        self, messages: list[dict], tools: list[dict] | None, model: str
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, model: str
     ) -> AsyncIterator[StreamEvent]:
         """Yield :class:`StreamEvent` objects for one completion, with retry on transient errors."""
         payload = self._payload(messages, tools, model)

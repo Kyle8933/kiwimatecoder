@@ -50,16 +50,20 @@ def _patch_git_helpers(monkeypatch, *, root, behind, shas, branch="main"):
     monkeypatch.setattr(updater, "_get_short_sha", lambda source_root: next(sha_iter))
 
 
+def _record_run(calls: list[list[str]]):
+    def fake_run(command: list[str], console: object) -> int:
+        calls.append(command)
+        return 0
+
+    return fake_run
+
+
 def test_run_update_uses_git_source_checkout(monkeypatch):
-    calls = []
+    calls: list[list[str]] = []
     root = Path("/tmp/kiwimatecoder")
 
     _patch_git_helpers(monkeypatch, root=root, behind=2, shas=["abc1234", "def5678"])
-    monkeypatch.setattr(
-        updater,
-        "_run",
-        lambda command, console: calls.append(command) or 0,
-    )
+    monkeypatch.setattr(updater, "_run", _record_run(calls))
 
     code = updater.run_update(Console(record=True))
 
@@ -71,14 +75,10 @@ def test_run_update_uses_git_source_checkout(monkeypatch):
 
 
 def test_run_update_falls_back_to_git_url(monkeypatch):
-    calls = []
+    calls: list[list[str]] = []
 
     monkeypatch.setattr(updater, "find_source_root", lambda: None)
-    monkeypatch.setattr(
-        updater,
-        "_run",
-        lambda command, console: calls.append(command) or 0,
-    )
+    monkeypatch.setattr(updater, "_run", _record_run(calls))
 
     code = updater.run_update(Console(record=True))
 
@@ -92,12 +92,12 @@ def test_run_update_falls_back_to_git_url(monkeypatch):
 
 
 def test_run_update_stops_when_git_pull_fails(monkeypatch):
-    calls = []
+    calls: list[list[str]] = []
     root = Path("/tmp/kiwimatecoder")
 
     _patch_git_helpers(monkeypatch, root=root, behind=2, shas=["abc1234", "abc1234"])
 
-    def fake_run(command, console):
+    def fake_run(command: list[str], console: object) -> int:
         calls.append(command)
         return 7
 
@@ -110,15 +110,11 @@ def test_run_update_stops_when_git_pull_fails(monkeypatch):
 
 
 def test_run_update_already_up_to_date_skips_reinstall(monkeypatch):
-    calls = []
+    calls: list[list[str]] = []
     root = Path("/tmp/kiwimatecoder")
 
     _patch_git_helpers(monkeypatch, root=root, behind=0, shas=["abc1234"])
-    monkeypatch.setattr(
-        updater,
-        "_run",
-        lambda command, console: calls.append(command) or 0,
-    )
+    monkeypatch.setattr(updater, "_run", _record_run(calls))
 
     console = Console(record=True)
     code = updater.run_update(console)
@@ -131,15 +127,11 @@ def test_run_update_already_up_to_date_skips_reinstall(monkeypatch):
 
 
 def test_run_update_reports_old_to_new_sha(monkeypatch):
-    calls = []
+    calls: list[list[str]] = []
     root = Path("/tmp/kiwimatecoder")
 
     _patch_git_helpers(monkeypatch, root=root, behind=3, shas=["abc1234", "def5678"])
-    monkeypatch.setattr(
-        updater,
-        "_run",
-        lambda command, console: calls.append(command) or 0,
-    )
+    monkeypatch.setattr(updater, "_run", _record_run(calls))
 
     console = Console(record=True)
     code = updater.run_update(console)
@@ -153,16 +145,12 @@ def test_run_update_reports_old_to_new_sha(monkeypatch):
 
 
 def test_run_update_skips_reinstall_when_pull_changes_nothing(monkeypatch):
-    calls = []
+    calls: list[list[str]] = []
     root = Path("/tmp/kiwimatecoder")
 
     # behind unknown (fetch failed) -> proceed to pull, but sha unchanged afterwards.
     _patch_git_helpers(monkeypatch, root=root, behind=None, shas=["abc1234", "abc1234"])
-    monkeypatch.setattr(
-        updater,
-        "_run",
-        lambda command, console: calls.append(command) or 0,
-    )
+    monkeypatch.setattr(updater, "_run", _record_run(calls))
 
     console = Console(record=True)
     code = updater.run_update(console)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
 from kiwimatecoder.tools.paths import PathError, resolve_in_workspace
@@ -13,8 +15,8 @@ def _is_binary(sample: bytes) -> bool:
     return b"\x00" in sample
 
 
-def _read_file(args: dict, session: Session) -> ToolResult:
-    path = args.get("path")
+def _read_file(args: dict[str, Any], session: Session) -> ToolResult:
+    path = str(args.get("path") or "")
     if not path:
         return ToolResult.error("'path' is required")
     try:

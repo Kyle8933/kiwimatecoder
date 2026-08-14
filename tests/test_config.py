@@ -321,6 +321,7 @@ def test_forced_refresh_without_a_key_says_why(monkeypatch):
     result = config.get_model_catalog("openrouter", force=True)
 
     assert result.source == "curated"
+    assert result.error is not None
     assert "no API key" in result.error
     assert "OPENROUTER_API_KEY" in result.error
 
@@ -362,6 +363,7 @@ def test_failed_refresh_keeps_serving_the_cached_catalog(monkeypatch):
 
     assert result.source == "cache"
     assert result.models == ["vendor/one"]
+    assert result.error is not None
     assert "offline" in result.error
 
 

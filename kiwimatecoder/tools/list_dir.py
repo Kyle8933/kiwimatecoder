@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
 from kiwimatecoder.tools.paths import (
@@ -13,8 +15,8 @@ from kiwimatecoder.tools.paths import (
 MAX_ENTRIES = 500
 
 
-def _list_dir(args: dict, session: Session) -> ToolResult:
-    path = args.get("path", ".") or "."
+def _list_dir(args: dict[str, Any], session: Session) -> ToolResult:
+    path = str(args.get("path", ".") or ".")
     try:
         resolved = resolve_in_workspace(path, session.workspace_root)
     except PathError as exc:
@@ -26,7 +28,7 @@ def _list_dir(args: dict, session: Session) -> ToolResult:
         return ToolResult.error(f"'{path}' is not a directory, use read_file")
 
     ignore = get_workspace_ignore(session.workspace_root)
-    entries = []
+    entries: list[str] = []
     for child in sorted(resolved.iterdir(), key=lambda p: (p.is_file(), p.name)):
         is_dir = child.is_dir()
         if ignore.is_ignored(child, is_dir=is_dir):
@@ -50,8 +52,10 @@ list_dir_tool = FunctionTool(
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Directory path relative to the workspace root. "
-                "Defaults to the workspace root.",
+                "description": (
+                    "Directory path relative to the workspace root. "
+                    + "Defaults to the workspace root."
+                ),
             },
         },
     },

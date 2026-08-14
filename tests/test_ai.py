@@ -3,7 +3,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-from rich.console import Console
 
 from kiwimatecoder.ai import stream_response
 from kiwimatecoder.client import Done, ProviderError, TextDelta

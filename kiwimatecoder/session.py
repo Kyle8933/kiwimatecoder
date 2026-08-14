@@ -7,8 +7,9 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from kiwimatecoder.config import get_provider_config
+from kiwimatecoder.config import ensure_config_dir, get_provider_config
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import ProviderConfig
 
@@ -21,7 +22,7 @@ class Session:
     model: str
     mode: PermissionMode = PermissionMode.ASK
     workspace_root: Path = field(default_factory=Path.cwd)
-    messages: list[dict] = field(default_factory=list)
+    messages: list[dict[str, Any]] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
     touched_files: list[str] = field(default_factory=list)
@@ -106,8 +107,8 @@ class Session:
         if current_tokens <= max_tokens:
             return 0
 
-        turns: list[list[dict]] = []
-        current_turn: list[dict] = []
+        turns: list[list[dict[str, Any]]] = []
+        current_turn: list[dict[str, Any]] = []
         for msg in self.messages:
             if msg.get("role") == "user" and not (
                 isinstance(msg.get("content"), list)
@@ -136,13 +137,13 @@ class Session:
             )
             current_tokens -= dropped_tokens
 
-        new_messages: list[dict] = []
+        new_messages: list[dict[str, Any]] = []
         for turn in turns:
             new_messages.extend(turn)
         self.messages = new_messages
         return original_count - len(new_messages)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize session state for persistence."""
         return {
             "provider_id": self.provider_id,
@@ -157,13 +158,13 @@ class Session:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> Session:
+    def from_dict(cls, data: dict[str, Any]) -> Session:
         """Deserialize session state."""
         return cls(
             provider_id=str(data.get("provider_id", "openrouter")),
             model=str(data.get("model", "")),
-            mode=PermissionMode.from_str(data.get("mode", "ask")),
-            workspace_root=Path(data.get("workspace_root", ".")),
+            mode=PermissionMode.from_str(str(data.get("mode", "ask"))),
+            workspace_root=Path(str(data.get("workspace_root", "."))),
             messages=list(data.get("messages", [])),
             prompt_tokens=int(data.get("prompt_tokens", 0)),
             completion_tokens=int(data.get("completion_tokens", 0)),
@@ -173,9 +174,7 @@ class Session:
 
 
 def _sessions_dir() -> Path:
-    from kiwimatecoder.config import _ensure_config_dir
-
-    s_dir = _ensure_config_dir() / "sessions"
+    s_dir = ensure_config_dir() / "sessions"
     s_dir.mkdir(mode=0o700, exist_ok=True)
     return s_dir
 
@@ -204,20 +203,20 @@ def load_session(name_or_path: str, workspace_root: Path | None = None) -> Sessi
     if not target.is_file():
         raise FileNotFoundError(f"Session '{name_or_path}' not found.")
 
-    data = json.loads(target.read_text(encoding="utf-8"))
+    data: dict[str, Any] = json.loads(target.read_text(encoding="utf-8"))
     sess = Session.from_dict(data)
     if workspace_root is not None:
         sess.workspace_root = workspace_root
     return sess
 
 
-def list_saved_sessions() -> list[dict]:
+def list_saved_sessions() -> list[dict[str, Any]]:
     """List all saved sessions sorted newest first."""
     s_dir = _sessions_dir()
-    results = []
+    results: list[dict[str, Any]] = []
     for p in s_dir.glob("*.json"):
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            data: dict[str, Any] = json.loads(p.read_text(encoding="utf-8"))
             results.append(
                 {
                     "name": p.stem,

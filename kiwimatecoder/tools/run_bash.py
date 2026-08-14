@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+from typing import Any
 
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
@@ -20,9 +21,9 @@ MAX_TIMEOUT = 3600
 MAX_OUTPUT = 30_000
 
 
-def preview(args: dict, session: Session) -> str:
+def preview(args: dict[str, Any], session: Session) -> str:
     """Return the command text for the approval prompt."""
-    return args.get("command", "")
+    return str(args.get("command", ""))
 
 
 def _truncate(text: str) -> str:
@@ -31,8 +32,8 @@ def _truncate(text: str) -> str:
     return text
 
 
-def _run_bash(args: dict, session: Session) -> ToolResult:
-    command = args.get("command")
+def _run_bash(args: dict[str, Any], session: Session) -> ToolResult:
+    command = str(args.get("command") or "")
     if not command:
         return ToolResult.error("'command' is required")
     try:

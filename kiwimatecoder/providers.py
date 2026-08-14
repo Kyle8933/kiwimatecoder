@@ -150,7 +150,7 @@ def get_provider(provider_id: str) -> ProviderConfig:
     except KeyError:
         raise UnknownProviderError(
             f"Unknown provider '{provider_id}'. "
-            f"Known providers: {', '.join(sorted(REGISTRY))}"
+            + f"Known providers: {', '.join(sorted(REGISTRY))}"
         ) from None
 
 

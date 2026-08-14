@@ -7,7 +7,7 @@ second line of defense).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
 from kiwimatecoder.tools.edit_file import edit_file_tool
@@ -35,7 +35,7 @@ _ALL_TOOLS: list[FunctionTool] = [
 TOOLS: dict[str, FunctionTool] = {t.name: t for t in _ALL_TOOLS}
 
 # Preview functions used by the permission gate to render what an action will do.
-_PREVIEWS: dict[str, Callable[[dict, "Session"], str]] = {
+_PREVIEWS: dict[str, Callable[[dict[str, Any], Any], str]] = {
     "write_file": _write_preview,
     "edit_file": _edit_preview,
     "run_bash": _bash_preview,
@@ -46,7 +46,7 @@ def read_only_tools() -> list[FunctionTool]:
     return [t for t in _ALL_TOOLS if not t.needs_approval]
 
 
-def tool_schemas(read_only: bool = False) -> list[dict]:
+def tool_schemas(read_only: bool = False) -> list[dict[str, Any]]:
     """Return OpenAI tool schemas, optionally restricted to read-only tools."""
     tools = read_only_tools() if read_only else _ALL_TOOLS
     return [t.schema() for t in tools]
@@ -56,13 +56,13 @@ def get_tool(name: str) -> FunctionTool | None:
     return TOOLS.get(name)
 
 
-def preview(name: str, args: dict, session: "Session") -> str | None:
+def preview(name: str, args: dict[str, Any], session: Session) -> str | None:
     """Return a human-readable preview of a tool action, or None if not previewable."""
     fn = _PREVIEWS.get(name)
     return fn(args, session) if fn else None
 
 
-def dispatch(name: str, args: dict, session: "Session") -> ToolResult:
+def dispatch(name: str, args: dict[str, Any], session: Session) -> ToolResult:
     """Execute a tool by name."""
     tool = TOOLS.get(name)
     if tool is None:

@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
-from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.shortcuts import CompleteStyle, choice
 from rich.console import Console
 from rich.panel import Panel
@@ -33,10 +34,14 @@ console = Console()
 class SlashCommandCompleter(Completer):
     """Prompt-toolkit completer for KiwiMate slash commands."""
 
-    def __init__(self, session: Session | None = None):
+    session: Session | None
+
+    def __init__(self, session: Session | None = None) -> None:
         self.session = session
 
-    def get_completions(self, document: Document, complete_event):
+    def get_completions(
+        self, document: Document, complete_event: CompleteEvent
+    ) -> Iterable[Completion]:
         text = document.text_before_cursor
         if "\n" in text or not text.startswith("/"):
             return
@@ -146,13 +151,13 @@ def _make_confirm(session: Session):
                 lines = preview_text.splitlines()
                 added = sum(
                     1
-                    for l in lines
-                    if l.startswith("+") and not l.startswith("+++")
+                    for line in lines
+                    if line.startswith("+") and not line.startswith("+++")
                 )
                 removed = sum(
                     1
-                    for l in lines
-                    if l.startswith("-") and not l.startswith("---")
+                    for line in lines
+                    if line.startswith("-") and not line.startswith("---")
                 )
                 stats = (
                     f" ([bold green]+{added}[/bold green] [bold red]-{removed}[/bold red])"
@@ -207,11 +212,11 @@ def run(session: Session) -> None:
     kb = KeyBindings()
 
     @kb.add("escape", "enter")
-    def _(event):
+    def _(event: KeyPressEvent) -> None:
         """Alt+Enter / Escape+Enter inserts newline for multi-line prompts."""
         event.current_buffer.insert_text("\n")
 
-    pt_session: PromptSession = PromptSession(
+    pt_session: PromptSession[str] = PromptSession(
         history=InMemoryHistory(),
         completer=SlashCommandCompleter(session),
         complete_while_typing=True,

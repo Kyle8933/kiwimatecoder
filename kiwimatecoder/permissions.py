@@ -14,11 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Callable
-
-if TYPE_CHECKING:
-    from kiwimatecoder.session import Session
-    from kiwimatecoder.tools.base import FunctionTool
+from typing import Any, Callable, Protocol
 
 
 class PermissionMode(str, Enum):
@@ -51,14 +47,27 @@ class Decision:
     reason: str = ""
 
 
+class SessionLike(Protocol):
+    mode: PermissionMode
+
+    def is_always_allowed(self, tool_name: str) -> bool: ...
+
+
+class ToolLike(Protocol):
+    name: str
+
+    @property
+    def needs_approval(self) -> bool: ...
+
+
 # A confirm callable receives (action_summary, preview_text) and returns True to allow.
 ConfirmFn = Callable[[str, str | None], bool]
 
 
 def gate(
-    tool: "FunctionTool",
-    args: dict,
-    session: "Session",
+    tool: ToolLike,
+    args: dict[str, Any],
+    session: SessionLike,
     confirm: ConfirmFn,
     preview_text: str | None = None,
 ) -> Decision:
@@ -88,7 +97,7 @@ def gate(
     return Decision(allowed=False, reason="Denied by user.")
 
 
-def _summarize_args(args: dict) -> str:
+def _summarize_args(args: dict[str, Any]) -> str:
     parts = []
     for key in ("path", "command"):
         if key in args:

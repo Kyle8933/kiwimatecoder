@@ -5,7 +5,9 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
@@ -19,7 +21,7 @@ from kiwimatecoder.tools.paths import (
 MAX_MATCHES = 200
 
 
-def _iter_files(root: Path, session: Session, glob_pattern: str | None = None):
+def _iter_files(root: Path, session: Session, glob_pattern: str | None = None) -> Iterator[Path]:
     ignore = get_workspace_ignore(session.workspace_root)
     for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         dir_p = Path(dirpath)
@@ -89,12 +91,12 @@ def _grep_search(
     return results
 
 
-def _search(args: dict, session: Session) -> ToolResult:
-    pattern = args.get("pattern")
+def _search(args: dict[str, Any], session: Session) -> ToolResult:
+    pattern = str(args.get("pattern") or "")
     if not pattern:
         return ToolResult.error("'pattern' is required")
-    mode = args.get("mode", "grep")
-    path = args.get("path", ".") or "."
+    mode = str(args.get("mode", "grep") or "grep")
+    path = str(args.get("path", ".") or ".")
     try:
         root = resolve_in_workspace(path, session.workspace_root)
     except PathError as exc:
@@ -106,7 +108,9 @@ def _search(args: dict, session: Session) -> ToolResult:
         if mode == "glob":
             results = _glob_search(root, pattern, session)
         else:
-            results = _grep_search(root, pattern, args.get("glob"), session)
+            glob_arg = args.get("glob")
+            glob_val = str(glob_arg) if glob_arg is not None else None
+            results = _grep_search(root, pattern, glob_val, session)
     except ValueError as exc:
         return ToolResult.error(str(exc))
 

@@ -29,6 +29,7 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 import httpx
 
@@ -163,7 +164,7 @@ def normalize_model_id(raw: object) -> str:
     return model_id
 
 
-def is_chat_model(entry: dict, model_id: str) -> bool:
+def is_chat_model(entry: dict[str, Any], model_id: str) -> bool:
     """Return whether a listed model is a text chat model this CLI can drive.
 
     Provider metadata wins when present; otherwise the id is matched against
@@ -219,7 +220,7 @@ def parse_models_response(payload: object) -> list[RemoteModel]:
     models: dict[str, RemoteModel] = {}
     for raw_entry in entries:
         if isinstance(raw_entry, str):
-            entry: dict = {"id": raw_entry}
+            entry: dict[str, Any] = {"id": raw_entry}
         elif isinstance(raw_entry, dict):
             entry = raw_entry
         else:

@@ -28,13 +28,16 @@ DEFAULT_SKIP_DIRS: set[str] = {
 class WorkspaceIgnore:
     """Evaluates whether paths should be ignored based on default skip dirs and .gitignore."""
 
+    workspace_root: Path
+    rules: list[tuple[bool, str, bool]]
+
     def __init__(
         self,
         workspace_root: Path,
         rules: list[tuple[bool, str, bool]] | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
-        self.rules: list[tuple[bool, str, bool]] = (
+        self.rules = (
             rules if rules is not None else self._load_rules()
         )
 
@@ -186,7 +189,7 @@ def resolve_in_workspace(path: str, workspace_root: Path) -> Path:
     if resolved != root and not resolved.is_relative_to(root):
         raise PathError(
             f"Path '{path}' is outside the workspace root ({root}). "
-            "Access is restricted to the current project directory."
+            + "Access is restricted to the current project directory."
         )
     return resolved
 

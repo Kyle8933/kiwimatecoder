@@ -30,3 +30,27 @@ where = ["."]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.pyright]
+include = ["kiwimatecoder", "tests"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+
+[tool.basedpyright]
+include = ["kiwimatecoder"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+reportMissingTypeArgument = true
+reportImportCycles = true
+reportExplicitAny = false
+reportUnusedCallResult = false
+reportImplicitStringConcatenation = false
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+check_untyped_defs = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100

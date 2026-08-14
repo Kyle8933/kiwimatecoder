@@ -1,3 +1,5 @@
+from typing import Any
+
 import httpx
 import pytest
 
@@ -188,8 +190,8 @@ def test_fetch_models_raises_when_nothing_usable_is_listed():
 # ---------------------------------------------------------------------------
 
 
-def _provider(**overrides) -> ProviderConfig:
-    base = {
+def _provider(**overrides: Any) -> ProviderConfig:
+    kwargs: dict[str, Any] = {
         "id": "demo",
         "name": "Demo",
         "base_url": "https://demo.test/v1",
@@ -197,8 +199,8 @@ def _provider(**overrides) -> ProviderConfig:
         "key_env": "DEMO_API_KEY",
         "models": ("demo-default", "demo-old"),
     }
-    base.update(overrides)
-    return ProviderConfig(**base)
+    kwargs.update(overrides)
+    return ProviderConfig(**kwargs)
 
 
 def test_merge_orders_default_first_then_newest():

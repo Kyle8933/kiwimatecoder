@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from kiwimatecoder.tools.list_dir import _list_dir
 from kiwimatecoder.tools.paths import WorkspaceIgnore, get_workspace_ignore
-from kiwimatecoder.tools.search import _glob_search, _grep_search, _search
+from kiwimatecoder.tools.search import _glob_search, _grep_search
 
 
 def test_workspace_ignore_skip_dirs(tmp_path):

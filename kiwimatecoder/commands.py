@@ -50,8 +50,8 @@ from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_worksp
 class CommandResult:
     """Sentinel results a command can return."""
 
-    CONTINUE = "continue"
-    EXIT = "exit"
+    CONTINUE: str = "continue"
+    EXIT: str = "exit"
 
 
 @dataclass(frozen=True)
@@ -1043,7 +1043,7 @@ def _config(arg: str, session: Session, console: Console,
     return CommandResult.CONTINUE
 
 
-def _run_selector(selector: CommandSelector, prompt: SelectionPrompt) -> str | None:
+def _run_selector(selector: CommandSelector | None, prompt: SelectionPrompt) -> str | None:
     """Ask the interactive selector for one option, validating the reply."""
     if selector is None:
         return None

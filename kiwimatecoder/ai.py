@@ -8,6 +8,8 @@ benefits from the full provider registry while keeping the original behavior
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.console import Console
 
 from kiwimatecoder.client import ProviderError, TextDelta, UnifiedClient
@@ -17,7 +19,7 @@ console = Console()
 
 SYSTEM_PROMPT = (
     "You are KiwiMateCoder, an expert coding assistant. Give clear, concise, and "
-    "accurate coding help. Prefer showing code over lengthy explanations."
+    + "accurate coding help. Prefer showing code over lengthy explanations."
 )
 
 
@@ -32,7 +34,7 @@ async def stream_response(
     model = model or provider.default_model
     client = UnifiedClient(provider, api_key)
 
-    messages = [
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]

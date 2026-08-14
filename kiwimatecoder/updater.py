@@ -153,15 +153,15 @@ def run_update(console: Console | None = None) -> int:
 
         if behind == 0:
             console.print(
-                f"[green]Already on the latest version "
-                f"(commit {old_sha or 'unknown'}).[/green]"
+                "[green]Already on the latest version "
+                + f"(commit {old_sha or 'unknown'}).[/green]"
             )
             return 0
 
         if old_sha and behind and branch:
             console.print(
                 f"[cyan]Updating from {old_sha} "
-                f"({behind} commit(s) behind origin/{branch})…[/cyan]"
+                + f"({behind} commit(s) behind origin/{branch})…[/cyan]"
             )
         else:
             console.print(
@@ -172,16 +172,16 @@ def run_update(console: Console | None = None) -> int:
         if pull_code != 0:
             console.print(
                 "[red]Update failed while pulling from Git.[/red] "
-                "[yellow]Commit/stash local changes or resolve Git errors, "
-                "then try again.[/yellow]"
+                + "[yellow]Commit/stash local changes or resolve Git errors, "
+                + "then try again.[/yellow]"
             )
             return pull_code
 
         new_sha = _get_short_sha(source_root)
         if new_sha == old_sha:
             console.print(
-                f"[green]Already on the latest version "
-                f"(commit {old_sha or 'unknown'}).[/green]"
+                "[green]Already on the latest version "
+                + f"(commit {old_sha or 'unknown'}).[/green]"
             )
             return 0
 
@@ -194,9 +194,9 @@ def run_update(console: Console | None = None) -> int:
         if code != 0:
             console.print(
                 f"[red]Update failed with exit code {code}.[/red] "
-                "[yellow]KiwiMateCoder is not on PyPI; install from a source "
-                f"checkout or run: pip install --upgrade --force-reinstall "
-                f"git+{GITHUB_REPO_URL}[/yellow]"
+                + "[yellow]KiwiMateCoder is not on PyPI; install from a source "
+                + "checkout or run: pip install --upgrade --force-reinstall "
+                + f"git+{GITHUB_REPO_URL}[/yellow]"
             )
             return code
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from html import escape
 import platform
+from typing import Any
 
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import Session
@@ -111,7 +112,7 @@ def _context_section(session: Session) -> str:
     return "\n\n" + "\n\n".join(rendered)
 
 
-def build_system_prompt(session: Session) -> dict:
+def build_system_prompt(session: Session) -> dict[str, Any]:
     """Return the system message tailored to the current session state."""
     context = _context_section(session)
     content = f"""You are KiwiMateCoder, an expert agentic coding assistant that works \

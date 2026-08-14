@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 from rich.console import Console
 
 from kiwimatecoder import tools
 from kiwimatecoder.client import (
+    AssembledToolCall,
     Done,
     ProviderError,
     TextDelta,
@@ -28,7 +30,11 @@ MAX_TOOL_ROUNDS = 25
 class Agent:
     """Drives one conversational turn, including any tool calls it triggers."""
 
-    def __init__(self, session: Session, console: Console, confirm: ConfirmFn):
+    session: Session
+    console: Console
+    confirm: ConfirmFn
+
+    def __init__(self, session: Session, console: Console, confirm: ConfirmFn) -> None:
         self.session = session
         self.console = console
         self.confirm = confirm
@@ -41,12 +47,12 @@ class Agent:
         if not key:
             raise ProviderError(
                 f"No API key for {provider.name}. Set one with "
-                f"`config set-key --provider {provider.id} <KEY>` or the "
-                f"{provider.key_env} environment variable."
+                + f"`config set-key --provider {provider.id} <KEY>` or the "
+                + f"{provider.key_env} environment variable."
             )
         return UnifiedClient(provider, key)
 
-    def _request_messages(self) -> list[dict]:
+    def _request_messages(self) -> list[dict[str, Any]]:
         self.session.trim_history()
         return [build_system_prompt(self.session)] + self.session.messages
 
@@ -77,14 +83,14 @@ class Agent:
                     )
                 self.console.print(
                     f"\n[yellow]Reached the {MAX_TOOL_ROUNDS}-step limit "
-                    "for this turn.[/yellow]"
+                    + "for this turn.[/yellow]"
                 )
                 return
 
             for call in tool_calls:
                 self._handle_tool_call(call)
 
-    async def _stream_once(self) -> tuple[dict, list]:
+    async def _stream_once(self) -> tuple[dict[str, Any], list[AssembledToolCall]]:
         """Stream one assistant response, rendering text and collecting tool calls."""
         client = self._client()
         read_only = self.session.mode is PermissionMode.PLAN
@@ -112,7 +118,7 @@ class Agent:
             self.console.print()
 
         calls = assembler.finalize()
-        assistant_msg: dict = {"role": "assistant", "content": "".join(text_parts) or None}
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts) or None}
         if calls:
             assistant_msg["tool_calls"] = [
                 {
@@ -124,7 +130,7 @@ class Agent:
             ]
         return assistant_msg, calls
 
-    def _format_call_summary(self, name: str, args: dict) -> str:
+    def _format_call_summary(self, name: str, args: dict[str, Any]) -> str:
         """Produce a short human-readable string summarizing the tool call arguments."""
         if name in ("read_file", "write_file", "edit_file", "list_dir"):
             target = args.get("path", ".")
@@ -134,12 +140,12 @@ class Agent:
             mode = args.get("mode", "grep")
             return f"search [dim]{pat}[/dim] ({mode})"
         if name == "run_bash":
-            cmd = args.get("command", "")
+            cmd = str(args.get("command", "") or "")
             cmd_short = cmd if len(cmd) <= 40 else f"{cmd[:37]}..."
             return f"bash [dim]`{cmd_short}`[/dim]"
         return name
 
-    def _handle_tool_call(self, call) -> None:
+    def _handle_tool_call(self, call: AssembledToolCall) -> None:
         """Execute one tool call (with the permission gate) and append the result."""
         tool = tools.get_tool(call.name)
         if tool is None:

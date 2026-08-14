@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+from typing import Any
 
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
@@ -27,8 +28,7 @@ def compute_edit(text: str, old: str, new: str, replace_all: bool) -> str:
         raise EditError("old_string not found in file")
     if count > 1 and not replace_all:
         raise EditError(
-            f"old_string is not unique ({count} matches); add surrounding "
-            "context to disambiguate or set replace_all=true"
+            f"old_string is not unique ({count} matches); add surrounding context to disambiguate or set replace_all=true"
         )
     if replace_all:
         return text.replace(old, new)
@@ -47,9 +47,9 @@ def _diff(old_text: str, new_text: str, rel: str) -> str:
     )
 
 
-def preview(args: dict, session: Session) -> str:
+def preview(args: dict[str, Any], session: Session) -> str:
     """Return a unified diff for the approval prompt."""
-    path = args.get("path", "")
+    path = str(args.get("path") or "")
     try:
         resolved = resolve_in_workspace(path, session.workspace_root)
     except PathError as exc:
@@ -61,8 +61,8 @@ def preview(args: dict, session: Session) -> str:
     try:
         new_text = compute_edit(
             old_text,
-            args.get("old_string", ""),
-            args.get("new_string", ""),
+            str(args.get("old_string") or ""),
+            str(args.get("new_string") or ""),
             bool(args.get("replace_all")),
         )
     except EditError as exc:
@@ -70,8 +70,8 @@ def preview(args: dict, session: Session) -> str:
     return _diff(old_text, new_text, rel) or "(no changes)"
 
 
-def _edit_file(args: dict, session: Session) -> ToolResult:
-    path = args.get("path")
+def _edit_file(args: dict[str, Any], session: Session) -> ToolResult:
+    path = str(args.get("path") or "")
     if not path:
         return ToolResult.error("'path' is required")
     try:
@@ -85,8 +85,8 @@ def _edit_file(args: dict, session: Session) -> ToolResult:
     try:
         new_text = compute_edit(
             old_text,
-            args.get("old_string", ""),
-            args.get("new_string", ""),
+            str(args.get("old_string") or ""),
+            str(args.get("new_string") or ""),
             bool(args.get("replace_all")),
         )
     except EditError as exc:

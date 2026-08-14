@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+from typing import Any
 
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
@@ -14,10 +15,10 @@ from kiwimatecoder.tools.paths import (
 )
 
 
-def preview(args: dict, session: Session) -> str:
+def preview(args: dict[str, Any], session: Session) -> str:
     """Return a human-readable preview (diff) for the approval prompt."""
-    path = args.get("path", "")
-    content = args.get("content", "")
+    path = str(args.get("path", "") or "")
+    content = str(args.get("content", "") or "")
     try:
         resolved = resolve_in_workspace(path, session.workspace_root)
     except PathError as exc:
@@ -35,11 +36,11 @@ def preview(args: dict, session: Session) -> str:
     )
 
 
-def _write_file(args: dict, session: Session) -> ToolResult:
-    path = args.get("path")
+def _write_file(args: dict[str, Any], session: Session) -> ToolResult:
+    path = str(args.get("path") or "")
     if not path:
         return ToolResult.error("'path' is required")
-    content = args.get("content", "")
+    content = str(args.get("content", "") or "")
     try:
         resolved = resolve_in_workspace(path, session.workspace_root)
     except PathError as exc:

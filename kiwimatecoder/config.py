@@ -32,10 +32,12 @@ import os
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from kiwimatecoder import catalog
 from kiwimatecoder.catalog import CatalogFetchError, ModelCatalog
+from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import (
     DEFAULT_PROVIDER_ID,
     REGISTRY,
@@ -55,7 +57,20 @@ MODEL_CACHE_VERSION = 1
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
 
 
-def _empty_config() -> dict:
+def ensure_config_dir() -> Path:
+    """Ensure ~/.kiwimatecoder exists with owner-only permissions and return it."""
+    CONFIG_DIR.mkdir(exist_ok=True)
+    try:
+        os.chmod(CONFIG_DIR, 0o700)
+    except OSError:
+        pass
+    return CONFIG_DIR
+
+
+_ensure_config_dir = ensure_config_dir
+
+
+def _empty_config() -> dict[str, Any]:
     return {
         "keys": {},
         "providers": {},
@@ -75,13 +90,13 @@ def _read_legacy_key() -> str | None:
     return None
 
 
-def load_config() -> dict:
+def load_config() -> dict[str, Any]:
     """Load configuration, migrating from the legacy format when needed.
 
     The returned dict always has the full set of keys (with defaults filled in).
     Migration is non-destructive: the legacy file is left in place.
     """
-    cfg = _empty_config()
+    cfg: dict[str, Any] = _empty_config()
     if CONFIG_FILE.exists():
         try:
             stored = json.loads(CONFIG_FILE.read_text())
@@ -112,17 +127,13 @@ def load_config() -> dict:
     return cfg
 
 
-def save_config(cfg: dict) -> None:
+def save_config(cfg: dict[str, Any]) -> None:
     """Persist configuration to the JSON config file.
 
     The file (and its directory) are tightened to owner-only permissions since
     they may contain API keys.
     """
-    CONFIG_DIR.mkdir(exist_ok=True)
-    try:
-        os.chmod(CONFIG_DIR, 0o700)
-    except OSError:
-        pass
+    ensure_config_dir()
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n")
     try:
         os.chmod(CONFIG_FILE, 0o600)
@@ -173,13 +184,13 @@ def _provider_from_config(provider_id: str, data: object) -> ProviderConfig | No
     )
 
 
-def _known_provider_ids(cfg: dict | None = None) -> list[str]:
+def _known_provider_ids(cfg: dict[str, Any] | None = None) -> list[str]:
     cfg = cfg or load_config()
     custom_ids = sorted(str(pid) for pid in cfg.get("providers", {}))
     return sorted(set(REGISTRY) | set(custom_ids))
 
 
-def get_provider_config(provider_id: str, cfg: dict | None = None) -> ProviderConfig:
+def get_provider_config(provider_id: str, cfg: dict[str, Any] | None = None) -> ProviderConfig:
     """Return a built-in or user-defined provider config."""
     if provider_id in REGISTRY:
         return REGISTRY[provider_id]
@@ -197,7 +208,7 @@ def get_provider_config(provider_id: str, cfg: dict | None = None) -> ProviderCo
     )
 
 
-def list_provider_configs(cfg: dict | None = None) -> list[ProviderConfig]:
+def list_provider_configs(cfg: dict[str, Any] | None = None) -> list[ProviderConfig]:
     """Return built-in providers plus valid user-defined providers."""
     cfg = cfg or load_config()
     providers = list(REGISTRY.values())
@@ -341,7 +352,7 @@ def get_key_env_override(provider_id: str) -> str | None:
     return None
 
 
-def key_source(provider_id: str) -> dict:
+def key_source(provider_id: str) -> dict[str, Any]:
     """Describe where a provider's active API key comes from.
 
     Returns one of::
@@ -434,20 +445,18 @@ def set_selected_model(model: str | None) -> None:
     save_config(cfg)
 
 
-def get_default_mode(cfg: dict | None = None) -> str:
+def get_default_mode(cfg: dict[str, Any] | None = None) -> str:
     """Return the persisted startup permission mode, never a None."""
     cfg = cfg or load_config()
     return str(cfg.get("default_mode") or DEFAULT_MODE)
 
 
-def set_default_mode(mode: str, cfg: dict | None = None) -> str:
+def set_default_mode(mode: str, cfg: dict[str, Any] | None = None) -> str:
     """Persist the startup permission mode and return the effective value.
 
     Raises ``ValueError`` for an unknown mode (aliases accepted), matching
     ``PermissionMode.from_str`` so callers can validate eagerly.
     """
-    from kiwimatecoder.permissions import PermissionMode
-
     cfg = cfg or load_config()
     effective = PermissionMode.from_str(mode).value
     cfg["default_mode"] = effective
@@ -455,7 +464,7 @@ def set_default_mode(mode: str, cfg: dict | None = None) -> str:
     return effective
 
 
-def reset_default_mode(cfg: dict | None = None) -> str:
+def reset_default_mode(cfg: dict[str, Any] | None = None) -> str:
     """Clear a custom startup mode, returning the default mode."""
     cfg = cfg or load_config()
     cfg["default_mode"] = DEFAULT_MODE
@@ -463,7 +472,7 @@ def reset_default_mode(cfg: dict | None = None) -> str:
     return DEFAULT_MODE
 
 
-def get_selected_provider_id(cfg: dict | None = None) -> str:
+def get_selected_provider_id(cfg: dict[str, Any] | None = None) -> str:
     """Return the configured selected_provider if valid in the registry, else DEFAULT_PROVIDER_ID.
 
     Used by the bare launch (forgiving fallback) and ``config check`` (accurate display
@@ -479,7 +488,7 @@ def get_selected_provider_id(cfg: dict | None = None) -> str:
         return DEFAULT_PROVIDER_ID
 
 
-def get_model_filter(provider_id: str) -> dict:
+def get_model_filter(provider_id: str) -> dict[str, Any]:
     """Return the model visibility filter for a provider."""
     get_provider_config(provider_id)
     cfg = load_config()
@@ -537,7 +546,7 @@ def _model_cache_file() -> Path:
     return CONFIG_DIR / MODEL_CACHE_NAME
 
 
-def load_model_cache() -> dict:
+def load_model_cache() -> dict[str, Any]:
     """Load the cached provider catalogs, tolerating a missing/corrupt file."""
     path = _model_cache_file()
     if path.exists():
@@ -552,7 +561,7 @@ def load_model_cache() -> dict:
     return {"version": MODEL_CACHE_VERSION, "providers": {}}
 
 
-def save_model_cache(cache: dict) -> None:
+def save_model_cache(cache: dict[str, Any]) -> None:
     """Persist the model cache, ignoring write failures (it is only a cache)."""
     try:
         CONFIG_DIR.mkdir(exist_ok=True)
@@ -588,7 +597,7 @@ def _can_fetch_models(provider: ProviderConfig) -> bool:
     return host in _LOCAL_HOSTS or host.endswith(".local")
 
 
-def _should_auto_refresh(entry: dict, now: float) -> bool:
+def _should_auto_refresh(entry: dict[str, Any], now: float) -> bool:
     """Whether a cached entry is stale enough to refetch on its own."""
     if not entry:
         return True
@@ -607,7 +616,7 @@ def get_model_catalog(
     keep: Sequence[str] = (),
     timeout: float | None = None,
     limit: int | None = catalog.MAX_CATALOG_MODELS,
-    cfg: dict | None = None,
+    cfg: dict[str, Any] | None = None,
 ) -> ModelCatalog:
     """Return the models offered for a provider, newest first.
 

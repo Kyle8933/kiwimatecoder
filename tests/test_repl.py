@@ -1,3 +1,4 @@
+from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
 from kiwimatecoder.commands import CommandOption, SelectionPrompt
@@ -8,7 +9,7 @@ def _completion_texts(text: str) -> list[str]:
     completer = SlashCommandCompleter()
     return [
         completion.text
-        for completion in completer.get_completions(Document(text), None)
+        for completion in completer.get_completions(Document(text), CompleteEvent())
     ]
 
 

@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Protocol
+from pathlib import Path
+from typing import Any, Callable, Protocol
 
-if TYPE_CHECKING:
-    from kiwimatecoder.session import Session
+
+class SessionProtocol(Protocol):
+    """Protocol representing the session interface required by tools."""
+
+    workspace_root: Path
+
+    def record_touched(self, path: str) -> None: ...
 
 
 @dataclass
@@ -26,11 +32,11 @@ class Tool(Protocol):
 
     name: str
     description: str
-    parameters: dict  # JSON Schema for the function arguments
+    parameters: dict[str, Any]  # JSON Schema for the function arguments
     writes: bool  # mutates the filesystem
     runs: bool  # executes commands
 
-    def execute(self, args: dict, session: "Session") -> ToolResult: ...
+    def execute(self, args: dict[str, Any], session: Any) -> ToolResult: ...
 
 
 @dataclass
@@ -39,15 +45,15 @@ class FunctionTool:
 
     name: str
     description: str
-    parameters: dict
-    func: Callable[[dict, "Session"], ToolResult]
+    parameters: dict[str, Any]
+    func: Callable[[dict[str, Any], Any], ToolResult]
     writes: bool = False
     runs: bool = False
 
-    def execute(self, args: dict, session: "Session") -> ToolResult:
+    def execute(self, args: dict[str, Any], session: Any) -> ToolResult:
         return self.func(args, session)
 
-    def schema(self) -> dict:
+    def schema(self) -> dict[str, Any]:
         """Return the OpenAI tool/function schema for this tool."""
         return {
             "type": "function",

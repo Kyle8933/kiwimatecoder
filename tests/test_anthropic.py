@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from kiwimatecoder.client import (
@@ -15,7 +17,7 @@ from kiwimatecoder.client import (
 
 
 def test_format_anthropic_messages():
-    messages = [
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": "You are Kiwi."},
         {"role": "user", "content": "Check file"},
         {
