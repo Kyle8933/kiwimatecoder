@@ -9,7 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kiwimatecoder.config import ensure_config_dir, get_provider_config
+from kiwimatecoder.config import (
+    ensure_config_dir,
+    get_provider_config,
+    resolve_default_model,
+)
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import ProviderConfig
 
@@ -44,10 +48,14 @@ class Session:
         )
 
     def set_provider(self, provider_id: str, model: str | None = None) -> None:
-        """Switch provider; reset to the provider default model unless given."""
+        """Switch provider; reset to the provider default model unless given.
+
+        Local providers have no static default — their model is resolved from
+        the running server's catalog (see ``config.resolve_default_model``).
+        """
         provider = get_provider_config(provider_id)
         self.provider_id = provider_id
-        self.model = model or provider.default_model
+        self.model = model or resolve_default_model(provider)
         # Tool/command approvals don't carry across providers.
         self.always_allowed.clear()
 

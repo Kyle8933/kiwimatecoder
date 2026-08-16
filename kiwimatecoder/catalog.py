@@ -43,6 +43,8 @@ FAILURE_BACKOFF_SECONDS = 30 * 60
 # Model listings are small; a short timeout keeps a hung provider from blocking
 # the selector.
 FETCH_TIMEOUT = 8.0
+# Server-detection probes (setup wizard) should feel instant.
+PROBE_TIMEOUT = 0.75
 # Gateways such as OpenRouter serve hundreds of models. Offer the newest slice
 # in the selector — any id can still be set by name with `/model <id>`.
 MAX_CATALOG_MODELS = 60
@@ -286,6 +288,32 @@ def fetch_models(
     if not models:
         raise CatalogFetchError(f"{provider.name} listed no usable chat models")
     return models
+
+
+def probe(
+    provider: ProviderConfig,
+    *,
+    timeout: float = PROBE_TIMEOUT,
+    transport: httpx.BaseTransport | None = None,
+) -> bool:
+    """Return whether ``provider``'s server answers a listing request right now.
+
+    Used to annotate local providers in the setup wizard; never raises. Any
+    200 counts as "running", even when no models are loaded yet — that is a
+    server the user can still pull models into.
+    """
+    try:
+        with httpx.Client(
+            timeout=timeout, transport=transport, follow_redirects=True
+        ) as client:
+            response = client.get(
+                models_url(provider),
+                headers=request_headers(provider, None),
+                params=request_params(provider),
+            )
+    except httpx.HTTPError:
+        return False
+    return response.status_code == 200
 
 
 def search_models(models: Sequence[str], query: str) -> list[str]:

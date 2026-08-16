@@ -188,3 +188,64 @@ def test_legacy_check_alias_still_works():
 
     assert result.exit_code == 0
     assert "Provider:" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Local providers
+# ---------------------------------------------------------------------------
+
+
+def test_setup_local_provider_needs_no_key(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setattr(main, "probe", lambda provider: False)
+    config.set_selected_model("stale-model")
+
+    result = CliRunner().invoke(main.app, ["setup", "--provider", "ollama"])
+
+    assert result.exit_code == 0
+    assert "needs no API key" in result.output
+    assert config.get_selected_provider_id() == "ollama"
+    # A stale model from another provider must not carry over.
+    assert config.load_config()["selected_model"] is None
+    assert config.get_key("ollama") is None
+
+
+def test_setup_local_provider_warns_when_server_not_detected(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setattr(main, "probe", lambda provider: False)
+
+    result = CliRunner().invoke(main.app, ["setup", "--provider", "ollama"])
+
+    assert result.exit_code == 0
+    assert "No server answered" in result.output
+
+
+def test_setup_local_provider_with_explicit_key_uses_the_key_path(monkeypatch):
+    result = CliRunner().invoke(
+        main.app, ["setup", "--provider", "ollama", "--key", "optional-key"]
+    )
+
+    assert result.exit_code == 0
+    assert config.get_key("ollama") == "optional-key"
+
+
+def test_ask_with_local_provider_and_no_key(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    captured = {}
+
+    async def fake_stream(prompt, api_key, model=None, provider=None):
+        captured["api_key"] = api_key
+        captured["model"] = model
+        captured["provider"] = provider
+
+    monkeypatch.setattr(main, "stream_response", fake_stream)
+    monkeypatch.setattr(
+        main, "resolve_default_model", lambda provider: "llama3.1:8b"
+    )
+
+    result = CliRunner().invoke(main.app, ["ask", "hi", "--provider", "ollama"])
+
+    assert result.exit_code == 0
+    assert captured["api_key"] == ""
+    assert captured["model"] == "llama3.1:8b"
+    assert captured["provider"].id == "ollama"

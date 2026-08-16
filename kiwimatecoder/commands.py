@@ -337,7 +337,7 @@ def _provider(arg: str, session: Session, console: Console) -> str:
         table.add_column("default model")
         for p in list_provider_configs():
             marker = " (active)" if p.id == session.provider_id else ""
-            table.add_row(p.id + marker, p.name, p.default_model)
+            table.add_row(p.id + marker, p.name, p.default_model or "(from server)")
         console.print(table)
         return CommandResult.CONTINUE
     try:
@@ -639,12 +639,15 @@ def _config_providers(
         table.add_column("base URL")
         for provider in list_provider_configs():
             marker = " (active)" if provider.id == session.provider_id else ""
-            kind = "built-in" if provider.id in REGISTRY else "custom"
+            if provider.is_local:
+                kind = "local"
+            else:
+                kind = "built-in" if provider.id in REGISTRY else "custom"
             table.add_row(
                 provider.id + marker,
                 kind,
                 provider.name,
-                provider.default_model,
+                provider.default_model or "(from server)",
                 provider.base_url,
             )
         console.print(table)
@@ -1347,7 +1350,7 @@ def _selection_prompt(
             options=tuple(
                 CommandOption(
                     provider.id,
-                    f"{provider.name} — {provider.default_model}",
+                    f"{provider.name} — {provider.default_model or 'no key needed (local)'}",
                 )
                 for provider in providers
             ),

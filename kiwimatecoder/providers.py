@@ -14,11 +14,20 @@ released ids are offered and retired ones disappear (see
 provider at runtime with ``/model`` (typing any id works, listed or not) or
 persist a choice via ``config set-model``, and can reshape the offered list with
 ``/config models allow|deny``.
+
+Local providers (Ollama, LM Studio) need no API key and serve whatever models
+are loaded, so they ship no static ``default_model`` — the session model is
+resolved live from the running server (see ``config.resolve_default_model``).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
+
+# Hosts that serve the local machine and therefore need no API key (LM Studio,
+# Ollama, llama.cpp, ...). ``*.local`` hosts are treated the same way.
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
 
 
 @dataclass(frozen=True)
@@ -28,13 +37,19 @@ class ProviderConfig:
     id: str
     name: str
     base_url: str  # includes /v1, never a trailing /chat/completions
-    default_model: str
+    default_model: str  # may be "" for local providers (resolved live)
     key_env: str
     compat: str = "openai"  # "openai" | "anthropic" (reserved; native paths not yet implemented)
     extra_headers: dict[str, str] = field(default_factory=dict)
     # Curated catalog offered by /model; not exhaustive, and any id can still
     # be set by name. The default model is always offered even if absent here.
     models: tuple[str, ...] = ()
+
+    @property
+    def is_local(self) -> bool:
+        """Whether the provider serves the local machine (no API key needed)."""
+        host = (urlparse(self.base_url).hostname or "").lower()
+        return host in _LOCAL_HOSTS or host.endswith(".local")
 
 
 class UnknownProviderError(KeyError):
@@ -137,6 +152,24 @@ REGISTRY: dict[str, ProviderConfig] = {
             "mistralai/devstral-2512",
             "z-ai/glm-5.2",
         ),
+    ),
+    "ollama": ProviderConfig(
+        id="ollama",
+        name="Ollama (local)",
+        base_url="http://localhost:11434/v1",
+        # No static default: the model is resolved live from the running
+        # server. The curated tuple is only the offline fallback for /model.
+        default_model="",
+        key_env="OLLAMA_API_KEY",  # optional; only if the server enforces auth
+        models=("llama3.1:8b", "qwen3:8b", "deepseek-r1:8b"),
+    ),
+    "lmstudio": ProviderConfig(
+        id="lmstudio",
+        name="LM Studio (local)",
+        base_url="http://localhost:1234/v1",
+        default_model="",
+        key_env="LMSTUDIO_API_KEY",  # optional; only if the server enforces auth
+        models=("qwen2.5-coder-7b-instruct", "llama-3.1-8b-instruct"),
     ),
 }
 

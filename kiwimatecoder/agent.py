@@ -44,13 +44,13 @@ class Agent:
 
         provider = self.session.provider
         key = get_key(provider.id)
-        if not key:
+        if not key and not provider.is_local:
             raise ProviderError(
                 f"No API key for {provider.name}. Set one with "
                 + f"`config set-key --provider {provider.id} <KEY>` or the "
                 + f"{provider.key_env} environment variable."
             )
-        return UnifiedClient(provider, key)
+        return UnifiedClient(provider, key or "")
 
     def _request_messages(self) -> list[dict[str, Any]]:
         self.session.trim_history()

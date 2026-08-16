@@ -13,7 +13,7 @@ from rich.table import Table
 
 from kiwimatecoder import __version__
 from kiwimatecoder.ai import stream_response
-from kiwimatecoder.catalog import summarize_ids
+from kiwimatecoder.catalog import probe, summarize_ids
 from kiwimatecoder.config import (
     add_provider,
     apply_model_filter,
@@ -29,6 +29,7 @@ from kiwimatecoder.config import (
     remove_key,
     remove_provider,
     reset_default_mode,
+    resolve_default_model,
     set_default_mode,
     set_key,
     set_model_filter,
@@ -165,7 +166,9 @@ def provider_list() -> None:
     table.add_column("name")
     table.add_column("default model")
     for provider in list_provider_configs():
-        table.add_row(provider.id, provider.name, provider.default_model)
+        table.add_row(
+            provider.id, provider.name, provider.default_model or "(from server)"
+        )
     console.print(table)
 
 
@@ -363,7 +366,7 @@ def config_show() -> None:
     provider = get_provider_config(provider_id, cfg)
     console.print(
         f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
-        + f"Model: [cyan]{cfg.get('selected_model') or provider.default_model}[/cyan]\n"
+        + f"Model: [cyan]{cfg.get('selected_model') or provider.default_model or '(from server)'}[/cyan]\n"
         + f"Mode: [cyan]{get_default_mode(cfg)}[/cyan]\n"
         + f"Key: [cyan]{describe_key(provider_id)}[/cyan] ({provider.key_env})\n"
         + f"Model visibility: [cyan]{get_model_filter(provider_id)['mode']}[/cyan]"
@@ -513,14 +516,14 @@ def main(
         cfg = load_config()
         provider_id = get_selected_provider_id(cfg)
         provider = get_provider_config(provider_id, cfg)
-        model = str(cfg.get("selected_model") or provider.default_model)
+        model = str(cfg.get("selected_model") or "") or resolve_default_model(provider)
 
         try:
             mode = PermissionMode.from_str(str(cfg.get("default_mode", "ask")))
         except ValueError:
             mode = PermissionMode.ASK
 
-        if not get_key(provider_id):
+        if not get_key(provider_id) and not provider.is_local:
             console.print(
                 Panel(
                     f"[yellow]No API key set for {provider.name}.[/yellow]\n"
@@ -561,18 +564,29 @@ def _prompt_yes_no(question: str) -> bool:
 
 
 def _interactive_select_provider(
-    providers: Sequence[ProviderConfig], selected: str
+    providers: Sequence[ProviderConfig],
+    selected: str,
+    local_status: dict[str, bool] | None = None,
 ) -> str | None:
     """Keyboard-driven provider picker, matching the REPL's selector style."""
     from prompt_toolkit.shortcuts import choice
 
+    def _label(p: ProviderConfig) -> str:
+        if p.is_local:
+            status = (local_status or {}).get(p.id)
+            if status is None:
+                note = "no key needed"
+            elif status:
+                note = "running"
+            else:
+                note = "not detected"
+            return f"{p.name} — {note} ({p.base_url})"
+        return f"{p.name} — {p.default_model}"
+
     try:
         return choice(
             message="Choose a provider to configure",
-            options=[
-                (p.id, f"{p.name} — {p.default_model}")
-                for p in providers
-            ],
+            options=[(p.id, _label(p)) for p in providers],
             default=selected,
             show_frame=True,
             bottom_toolbar="↑/↓ move • Enter select • Ctrl-C cancel",
@@ -598,10 +612,26 @@ def _run_setup(provider_id: str, key: str | None) -> bool:
     entry was cancelled/empty. Callers decide how to treat a failure.
     """
     try:
-        get_provider_config(provider_id)
+        provider = get_provider_config(provider_id)
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         return False
+    if key is None and provider.is_local:
+        # Local servers need no key — just select the provider and let the
+        # session model resolve from whatever the server has loaded.
+        set_selected_provider(provider_id)
+        set_selected_model(None)  # don't carry a stale model across providers
+        console.print(
+            f"[green]✓ {provider.name} needs no API key[/green] — "
+            + f"models are read from the server at {provider.base_url}."
+        )
+        if not probe(provider):
+            console.print(
+                f"[yellow]No server answered at {provider.base_url} — "
+                + "start it before chatting.[/yellow]"
+            )
+        console.print("Ready to go. Run [cyan]kiwimatecoder[/cyan] to start a session.")
+        return True
     if key is None:
         key = _interactive_api_key()
         if key is None:
@@ -643,9 +673,11 @@ def setup(
     cfg = load_config()
     provider_id = provider or get_selected_provider_id(cfg)
     if provider is None and key is None and _stdin_is_tty():
-        chosen = _interactive_select_provider(
-            list_provider_configs(cfg), provider_id
-        )
+        providers = list_provider_configs(cfg)
+        # Detect which local servers are actually up; localhost refuses fast,
+        # so this costs ~nothing when they are not running.
+        local_status = {p.id: probe(p) for p in providers if p.is_local}
+        chosen = _interactive_select_provider(providers, provider_id, local_status)
         if chosen is None:
             console.print("[yellow]Setup cancelled.[/yellow]")
             raise typer.Exit(1)
@@ -680,7 +712,7 @@ def ask(
         raise typer.Exit(1)
 
     api_key = get_key(provider_id)
-    if not api_key:
+    if not api_key and not provider_cfg.is_local:
         console.print(
             f"[red]No API key for {provider_cfg.name}. "
             + f"Run: kiwimatecoder setup --provider {provider_id}[/red]"
@@ -697,8 +729,10 @@ def ask(
     asyncio.run(
         stream_response(
             full_prompt,
-            api_key,
-            model=model or str(cfg.get("selected_model") or ""),
+            api_key or "",
+            model=model
+            or str(cfg.get("selected_model") or "")
+            or resolve_default_model(provider_cfg),
             provider=provider_cfg,
         )
     )

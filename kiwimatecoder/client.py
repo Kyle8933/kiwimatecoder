@@ -355,17 +355,15 @@ class UnifiedClient:
         return f"{base}/chat/completions"
 
     def _headers(self) -> dict[str, str]:
+        # Auth headers are only sent when there is a key — local servers
+        # (Ollama, LM Studio) accept keyless requests.
+        headers = {"Content-Type": "application/json"}
         if self.is_anthropic:
-            headers = {
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            }
-        else:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
+            headers["anthropic-version"] = "2023-06-01"
+            if self.api_key:
+                headers["x-api-key"] = self.api_key
+        elif self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         headers.update(self.provider.extra_headers)
         return headers
 
@@ -395,7 +393,9 @@ class UnifiedClient:
         }
         if tools:
             openai_payload["tools"] = tools
-            openai_payload["tool_choice"] = "auto"
+            # Ollama rejects tool_choice; "auto" is the default behavior anyway.
+            if not self.provider.is_local:
+                openai_payload["tool_choice"] = "auto"
         return openai_payload
 
     async def stream_chat(

@@ -210,3 +210,34 @@ async def test_agent_step_limit_reached(agent_session):
     last_tool_msg = agent_session.messages[-1]
     assert last_tool_msg["role"] == "tool"
     assert "step limit" in last_tool_msg["content"].lower()
+
+
+def test_agent_client_allows_keyless_local_provider(agent_session):
+    agent_session.provider_id = "ollama"
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+
+    with patch("kiwimatecoder.config.get_key", return_value=None):
+        client = agent._client()
+
+    assert client.provider.id == "ollama"
+    assert client.api_key == ""
+
+
+def test_agent_client_prefers_a_key_when_one_is_set_for_local(agent_session):
+    agent_session.provider_id = "ollama"
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+
+    with patch("kiwimatecoder.config.get_key", return_value="optional-key"):
+        client = agent._client()
+
+    assert client.api_key == "optional-key"
+
+
+def test_agent_client_requires_key_for_cloud_provider(agent_session):
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value=None),
+        pytest.raises(ProviderError, match="No API key"),
+    ):
+        agent._client()

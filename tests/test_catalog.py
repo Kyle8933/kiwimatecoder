@@ -276,3 +276,46 @@ def test_search_models_with_blank_query_returns_everything():
     models = ["a-model", "b-model"]
     assert catalog.search_models(models, "   ") == models
     assert catalog.search_models(models, "") == models
+
+
+# ---------------------------------------------------------------------------
+# Server probes
+# ---------------------------------------------------------------------------
+
+
+def test_probe_true_on_200_even_with_no_models_loaded():
+    transport = _json_transport({"data": []})
+    assert catalog.probe(REGISTRY["ollama"], transport=transport)
+
+
+def test_probe_false_on_http_error():
+    transport = _json_transport({"error": "boom"}, status_code=500)
+    assert not catalog.probe(REGISTRY["ollama"], transport=transport)
+
+
+def test_probe_false_on_connection_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    assert not catalog.probe(REGISTRY["ollama"], transport=_transport(handler))
+
+
+def test_probe_sends_no_authorization_header_without_a_key():
+    seen: list[httpx.Request] = []
+    transport = _json_transport({"data": []}, seen=seen)
+    catalog.probe(REGISTRY["lmstudio"], transport=transport)
+    assert "authorization" not in seen[0].headers
+
+
+def test_parse_ollama_style_listing_drops_embedding_models():
+    models = catalog.parse_models_response(
+        {
+            "data": [
+                {"id": "llama3.1:8b", "created": 200, "owned_by": "library"},
+                {"id": "nomic-embed-text", "created": 300, "owned_by": "library"},
+                {"id": "qwen3:8b", "created": 100, "owned_by": "library"},
+            ]
+        }
+    )
+
+    assert [model.id for model in models] == ["llama3.1:8b", "qwen3:8b"]

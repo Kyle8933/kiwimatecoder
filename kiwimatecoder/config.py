@@ -33,7 +33,6 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from kiwimatecoder import catalog
 from kiwimatecoder.catalog import CatalogFetchError, ModelCatalog
@@ -52,9 +51,6 @@ MODEL_CACHE_NAME = "model_cache.json"
 
 DEFAULT_MODE = "ask"
 MODEL_CACHE_VERSION = 1
-# Hosts we treat as "no key needed" — local model servers (LM Studio, Ollama,
-# llama.cpp) serve /v1/models without auth.
-_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
 
 
 def ensure_config_dir() -> Path:
@@ -390,6 +386,8 @@ def describe_key(provider_id: str) -> str:
     origin = source["origin"]
     value = source["value"]
     if origin == "missing":
+        if get_provider_config(provider_id).is_local:
+            return "not required (local server)"
         return "missing"
     redacted = _redact(value)
     if origin == "env":
@@ -581,7 +579,7 @@ def clear_model_cache(provider_id: str | None = None) -> None:
 
 
 def _curated_models(provider: ProviderConfig) -> list[str]:
-    return list(dict.fromkeys((provider.default_model, *provider.models)))
+    return list(dict.fromkeys(m for m in (provider.default_model, *provider.models) if m))
 
 
 def _can_fetch_models(provider: ProviderConfig) -> bool:
@@ -593,8 +591,7 @@ def _can_fetch_models(provider: ProviderConfig) -> bool:
     """
     if get_key(provider.id):
         return True
-    host = (urlparse(provider.base_url).hostname or "").lower()
-    return host in _LOCAL_HOSTS or host.endswith(".local")
+    return provider.is_local
 
 
 def _should_auto_refresh(entry: dict[str, Any], now: float) -> bool:
@@ -739,6 +736,21 @@ def search_model_catalog(
     )
     visible = apply_model_filter(provider_id, model_catalog.models)
     return catalog.search_models(visible, query)
+
+
+def resolve_default_model(provider: ProviderConfig, *, timeout: float = 2.0) -> str:
+    """Return the model to start with for ``provider`` when none was chosen.
+
+    Cloud providers ship a curated ``default_model``. Local providers serve
+    whatever is currently loaded, so the model is resolved from the server's
+    catalog (via the TTL cache, falling back to the curated tuple when the
+    server is offline). A short timeout keeps provider switching snappy against
+    a hung local server.
+    """
+    if provider.default_model:
+        return provider.default_model
+    models = get_model_catalog(provider.id, refresh=True, timeout=timeout).models
+    return models[0] if models else ""
 
 
 # ---------------------------------------------------------------------------

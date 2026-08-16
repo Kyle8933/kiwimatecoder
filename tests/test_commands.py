@@ -528,3 +528,54 @@ def test_bare_config_interactive_key_set_warns_on_env_override(session, monkeypa
 
     assert config.load_config()["keys"]["openai"] == "sk-new"
     assert "takes precedence" in _output(console)
+
+
+# ---------------------------------------------------------------------------
+# Local providers
+# ---------------------------------------------------------------------------
+
+
+def test_switch_to_local_provider_without_key(session, monkeypatch):
+    _install_fetch(monkeypatch, ["qwen3:8b", "llama3.1:8b"])
+    console = _console()
+
+    assert dispatch("/provider ollama", session, console) == CommandResult.CONTINUE
+
+    assert session.provider_id == "ollama"
+    # The model was resolved live from the server, not from a static default.
+    assert session.model == "qwen3:8b"
+    assert "qwen3:8b" in _output(console)
+
+
+def test_switch_to_offline_local_provider_uses_curated_fallback(session, monkeypatch):
+    def fake_fetch(provider, api_key=None, **kwargs):
+        raise catalog.CatalogFetchError("connection refused")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+    console = _console()
+
+    dispatch("/provider ollama", session, console)
+
+    assert session.provider_id == "ollama"
+    assert session.model == REGISTRY["ollama"].models[0]
+
+
+def test_provider_table_shows_local_default_as_from_server(session):
+    console = _console()
+
+    dispatch("/provider", session, console)
+
+    output = _output(console)
+    assert "Ollama (local)" in output
+    assert "(from server)" in output
+
+
+def test_config_provider_list_marks_local_kind(session):
+    console = _console()
+
+    dispatch("/config provider list", session, console)
+
+    output = _output(console)
+    assert "Ollama (local)" in output
+    assert "LM Studio (local)" in output
+    assert "local" in output  # the type column

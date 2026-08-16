@@ -3,9 +3,11 @@ from kiwimatecoder.client import (
     TextDelta,
     ToolCallAssembler,
     ToolCallDelta,
+    UnifiedClient,
     Usage,
     parse_sse_chunk,
 )
+from kiwimatecoder.providers import REGISTRY
 
 
 def test_parse_text_delta():
@@ -65,3 +67,23 @@ def test_parse_tool_call_delta():
     )
     events = parse_sse_chunk(chunk)
     assert any(isinstance(e, ToolCallDelta) and e.name == "read_file" for e in events)
+
+
+def test_headers_omit_authorization_when_keyless():
+    keyless = UnifiedClient(REGISTRY["ollama"], "")
+    assert "Authorization" not in keyless._headers()
+
+    keyed = UnifiedClient(REGISTRY["openai"], "sk-test")
+    assert keyed._headers()["Authorization"] == "Bearer sk-test"
+
+
+def test_payload_omits_tool_choice_for_local_providers():
+    tools = [{"type": "function", "function": {"name": "read_file"}}]
+
+    local = UnifiedClient(REGISTRY["ollama"], "")
+    local_payload = local._payload([], tools, "llama3.1:8b")
+    assert local_payload["tools"] == tools
+    assert "tool_choice" not in local_payload
+
+    cloud = UnifiedClient(REGISTRY["openai"], "sk-test")
+    assert cloud._payload([], tools, "gpt-5.6-sol")["tool_choice"] == "auto"

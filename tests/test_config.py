@@ -188,7 +188,9 @@ def test_model_filters_control_visible_models():
 def test_visible_models_default_to_full_provider_catalog():
     for provider_id, provider in REGISTRY.items():
         visible = config.list_visible_models(provider_id)
-        assert visible[0] == provider.default_model
+        # Local providers ship no static default; the curated tuple leads.
+        expected_first = provider.default_model or provider.models[0]
+        assert visible[0] == expected_first
         assert set(provider.models) <= set(visible)
         assert len(visible) == len(set(visible))
         assert len(visible) > 1, f"{provider_id} should offer more than one model"
@@ -438,3 +440,61 @@ def test_corrupt_model_cache_is_ignored(monkeypatch):
 
     assert config.load_model_cache() == {"version": 1, "providers": {}}
     assert config.get_model_catalog("openrouter").source == "curated"
+
+
+# ---------------------------------------------------------------------------
+# Local providers
+# ---------------------------------------------------------------------------
+
+
+def test_builtin_local_provider_fetches_without_key(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    calls = _install_fetch(monkeypatch, ["llama3.1:8b", "qwen3:8b"])
+
+    result = config.get_model_catalog("ollama", refresh=True)
+
+    assert calls == ["ollama"]
+    assert result.source == "live"
+    assert result.models == ["llama3.1:8b", "qwen3:8b"]
+
+
+def test_offline_local_server_falls_back_to_curated(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    _install_fetch(monkeypatch, error="connection refused")
+
+    result = config.get_model_catalog("ollama", refresh=True)
+
+    assert result.source == "curated"
+    assert result.error == "connection refused"
+    assert result.models[0] == REGISTRY["ollama"].models[0]
+    assert "" not in result.models  # the empty static default never leaks
+
+
+def test_describe_key_for_local_provider_without_key(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    assert config.describe_key("ollama") == "not required (local server)"
+    assert config.describe_key("openai") == "missing"
+
+
+def test_resolve_default_model_returns_static_default_without_network(monkeypatch):
+    _forbid_fetch(monkeypatch)
+    provider = config.get_provider_config("openai")
+    assert config.resolve_default_model(provider) == provider.default_model
+
+
+def test_resolve_default_model_local_picks_first_live_model(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    _install_fetch(monkeypatch, ["qwen3:8b", "llama3.1:8b"])
+
+    provider = config.get_provider_config("ollama")
+
+    assert config.resolve_default_model(provider) == "qwen3:8b"
+
+
+def test_resolve_default_model_local_falls_back_to_curated_when_offline(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    _install_fetch(monkeypatch, error="offline")
+
+    provider = config.get_provider_config("ollama")
+
+    assert config.resolve_default_model(provider) == REGISTRY["ollama"].models[0]
