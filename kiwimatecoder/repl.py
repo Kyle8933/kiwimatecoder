@@ -3,16 +3,44 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import TypeVar
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import Application
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.filters import (
+    Condition,
+    is_done,
+    renderer_height_is_known,
+    to_filter,
+)
+from prompt_toolkit.formatted_text import (
+    AnyFormattedText,
+    HTML,
+    StyleAndTextTuples,
+    to_formatted_text,
+)
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-from prompt_toolkit.shortcuts import CompleteStyle, checkboxlist_dialog, choice
+from prompt_toolkit.layout.containers import (
+    AnyContainer,
+    ConditionalContainer,
+    HSplit,
+    Window,
+)
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.layout import Layout
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
+from prompt_toolkit.shortcuts import CompleteStyle, choice
+from prompt_toolkit.shortcuts.choice_input import create_default_choice_input_style
+from prompt_toolkit.styles import BaseStyle, Style, merge_styles
+from prompt_toolkit.widgets import Box, Frame, Label
+from prompt_toolkit.widgets.base import _DialogList
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -148,20 +176,188 @@ def _select_command_option(prompt: SelectionPrompt) -> str | None:
         return None
 
 
+_T = TypeVar("_T")
+
+
+class _CheckboxChoiceList(_DialogList[_T]):
+    """Inline checklist widget with keyboard navigation and checkbox toggles."""
+
+    def __init__(
+        self,
+        values: Sequence[tuple[_T, AnyFormattedText]],
+        default_values: Sequence[_T] | None = None,
+    ) -> None:
+        super().__init__(
+            values=values,
+            default_values=default_values,
+            multiple_selection=True,
+            show_scrollbar=False,
+            show_cursor=False,
+            show_numbers=False,
+        )
+
+    def _get_text_fragments(self) -> StyleAndTextTuples:
+        def mouse_handler(mouse_event: MouseEvent) -> None:
+            if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                self._selected_index = mouse_event.position.y
+                self._handle_enter()
+
+        result: StyleAndTextTuples = []
+        for i, value in enumerate(self.values):
+            checked = value[0] in self.current_values
+            selected = i == self._selected_index
+
+            cursor = "> " if selected else "  "
+            box = "[*] " if checked else "[ ] "
+
+            cursor_style = "class:cursor" if selected else ""
+            box_style = (
+                "class:checkbox-checked" if checked else "class:checkbox-unchecked"
+            )
+            text_style = "class:option"
+            if checked:
+                text_style += " class:selected-option"
+            if selected:
+                text_style += " class:focused-option"
+
+            result.append((cursor_style, cursor))
+            if selected:
+                result.append(("[SetCursorPosition]", ""))
+            result.append((box_style, box))
+            result.extend(to_formatted_text(value[1], style=text_style))
+            result.append(("", "\n"))
+
+        for i in range(len(result)):
+            result[i] = (result[i][0], result[i][1], mouse_handler)
+
+        if result:
+            result.pop()
+        return result
+
+
+def checkbox_choice(
+    message: AnyFormattedText,
+    *,
+    options: Sequence[tuple[_T, AnyFormattedText]],
+    default_values: Sequence[_T] | None = None,
+    bottom_toolbar: AnyFormattedText = None,
+    show_frame: bool = True,
+    mouse_support: bool = False,
+    style: BaseStyle | None = None,
+    input: Input | None = None,
+) -> list[_T]:
+    """Inline multiple-choice checkbox prompt matching the style of ``choice``."""
+    if not options:
+        return []
+
+    cb_list = _CheckboxChoiceList(options, default_values=default_values)
+    container: AnyContainer = HSplit(
+        [
+            Box(
+                Label(text=message, dont_extend_height=True),
+                padding_top=0,
+                padding_left=1,
+                padding_right=1,
+                padding_bottom=0,
+            ),
+            Box(
+                cb_list,
+                padding_top=0,
+                padding_left=1,
+                padding_right=1,
+                padding_bottom=0,
+            ),
+        ]
+    )
+
+    @Condition
+    def show_frame_filter() -> bool:
+        return to_filter(show_frame)()
+
+    show_bottom_toolbar = (
+        Condition(lambda: bottom_toolbar is not None)
+        & ~is_done
+        & renderer_height_is_known
+    )
+
+    framed_container = ConditionalContainer(
+        Frame(container),
+        alternative_content=container,
+        filter=show_frame_filter,
+    )
+
+    toolbar_container = ConditionalContainer(
+        Window(
+            FormattedTextControl(
+                lambda: bottom_toolbar, style="class:bottom-toolbar.text"
+            ),
+            style="class:bottom-toolbar",
+            dont_extend_height=True,
+            height=Dimension(min=1),
+        ),
+        filter=show_bottom_toolbar,
+    )
+
+    layout = Layout(
+        HSplit(
+            [
+                framed_container,
+                ConditionalContainer(Window(), filter=show_bottom_toolbar),
+                toolbar_container,
+            ]
+        ),
+        focused_element=cb_list,
+    )
+
+    kb = KeyBindings()
+
+    @kb.add("enter", eager=True)
+    def _accept_input(event: KeyPressEvent) -> None:
+        event.app.exit(result=list(cb_list.current_values), style="class:accepted")
+
+    @kb.add("c-c", eager=True)
+    @kb.add("<sigint>", eager=True)
+    def _keyboard_interrupt(event: KeyPressEvent) -> None:
+        event.app.exit(exception=KeyboardInterrupt(), style="class:aborting")
+
+    effective_style = merge_styles(
+        [
+            create_default_choice_input_style(),
+            Style.from_dict(
+                {
+                    "cursor": "bold cyan",
+                    "checkbox-checked": "bold green",
+                    "checkbox-unchecked": "dim",
+                    "focused-option": "bold",
+                }
+            ),
+            style if style is not None else Style([]),
+        ]
+    )
+
+    app: Application[list[_T]] = Application(
+        layout=layout,
+        full_screen=False,
+        mouse_support=mouse_support,
+        key_bindings=kb,
+        style=effective_style,
+        input=input,
+    )
+    return app.run()
+
+
 def _select_command_options(prompt: MultiSelectionPrompt) -> list[str] | None:
     """Render a keyboard-driven checklist for multi-select slash commands."""
     try:
-        selected = checkboxlist_dialog(
-            title=prompt.title,
-            text=prompt.text,
-            values=[(option.value, option.label) for option in prompt.options],
-            default_values=list(prompt.selected),
-        ).run()
+        return checkbox_choice(
+            message=f"{prompt.title}\n{prompt.text}",
+            options=[(option.value, option.label) for option in prompt.options],
+            default_values=prompt.selected,
+            show_frame=True,
+            bottom_toolbar="↑/↓ move • Space toggle • Enter confirm • Ctrl-C cancel",
+        )
     except (EOFError, KeyboardInterrupt):
         return None
-    if selected is None:
-        return None
-    return list(selected)
 
 
 def _make_confirm(session: Session):
