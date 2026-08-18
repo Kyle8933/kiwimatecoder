@@ -21,6 +21,25 @@ def test_system_prompt_prefers_simple_plans_with_options():
     assert "recommended" in prompt
 
 
+def test_system_prompt_lists_current_provider_and_fallback_ids(tmp_path, monkeypatch):
+    def boom(provider, **_kwargs):
+        raise AssertionError(f"should not resolve fallback model for {provider.id}")
+
+    monkeypatch.setattr("kiwimatecoder.session.resolve_default_model", boom)
+    session = Session(
+        provider_id="openrouter",
+        model="test-model",
+        mode=PermissionMode.ASK,
+        workspace_root=tmp_path,
+        active_provider_ids=["openrouter", "ollama"],
+    )
+
+    prompt = build_system_prompt(session)["content"]
+
+    assert "Provider/model: openrouter / test-model" in prompt
+    assert "fallbacks: ollama" in prompt
+
+
 def test_system_prompt_includes_pinned_context_file(tmp_path):
     (tmp_path / "app.py").write_text("print('kiwi')\n")
     session = Session(

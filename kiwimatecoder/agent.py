@@ -24,8 +24,6 @@ from kiwimatecoder.prompts import build_system_prompt
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import ToolResult
 
-MAX_TOOL_ROUNDS = 25
-
 
 class Agent:
     """Drives one conversational turn, including any tool calls it triggers."""
@@ -39,10 +37,10 @@ class Agent:
         self.console = console
         self.confirm = confirm
 
-    def _client(self) -> UnifiedClient:
-        from kiwimatecoder.config import get_key
+    def _client(self, provider_id: str | None = None) -> UnifiedClient:
+        from kiwimatecoder.config import get_key, get_provider_config
 
-        provider = self.session.provider
+        provider = get_provider_config(provider_id) if provider_id else self.session.provider
         key = get_key(provider.id)
         if not key and not provider.is_local:
             raise ProviderError(
@@ -60,7 +58,7 @@ class Agent:
         """Process one user message, looping over tool calls until the model stops."""
         self.session.messages.append({"role": "user", "content": user_input})
 
-        for round_num in range(MAX_TOOL_ROUNDS):
+        while True:
             try:
                 assistant_msg, tool_calls = await self._stream_once()
             except ProviderError as exc:
@@ -72,37 +70,69 @@ class Agent:
             if not tool_calls:
                 return
 
-            # On the final allowed round, don't execute the model's new tool
-            # calls — instead record synthetic results so the conversation
-            # history stays valid (every tool_call id has a matching result)
-            # and the model can wrap up on the next turn.
-            if round_num == MAX_TOOL_ROUNDS - 1:
-                for call in tool_calls:
-                    self._append_result(
-                        call.id, "Reached the step limit for this turn."
-                    )
-                self.console.print(
-                    f"\n[yellow]Reached the {MAX_TOOL_ROUNDS}-step limit "
-                    + "for this turn.[/yellow]"
-                )
-                return
-
             for call in tool_calls:
                 self._handle_tool_call(call)
 
     async def _stream_once(self) -> tuple[dict[str, Any], list[AssembledToolCall]]:
-        """Stream one assistant response, rendering text and collecting tool calls."""
-        client = self._client()
+        """Stream one assistant response, rendering text and collecting tool calls.
+
+        Tries each active provider in order (primary first); when a provider
+        fails with a :class:`ProviderError`, the next active provider is tried
+        with its own default model. Only when every active provider fails is the
+        error surfaced.
+        """
         read_only = self.session.mode is PermissionMode.PLAN
         schemas = tools.tool_schemas(read_only=read_only)
 
+        errors: list[ProviderError] = []
+        providers = self.session.active_providers
+        for index, provider in enumerate(providers):
+            try:
+                client = self._client(provider.id)
+            except ProviderError as exc:
+                errors.append(exc)
+                self._announce_failover(provider.name, exc, providers[index + 1 :])
+                continue
+            model = self.session.model_for(provider.id)
+            try:
+                return await self._stream_from(client, schemas, model)
+            except ProviderError as exc:
+                errors.append(exc)
+                self._announce_failover(provider.name, exc, providers[index + 1 :])
+                continue
+
+        if errors:
+            raise ProviderError(
+                "All active providers failed: "
+                + "; ".join(str(exc) for exc in errors)
+            )
+        raise ProviderError("No active providers are configured.")
+
+    def _announce_failover(
+        self,
+        provider_name: str,
+        exc: ProviderError,
+        remaining: list[Any],
+    ) -> None:
+        if not remaining:
+            return
+        self.console.print(
+            f"\n[yellow]{provider_name} failed ({exc}); "
+            f"trying {remaining[0].name}.[/yellow]"
+        )
+
+    async def _stream_from(
+        self,
+        client: UnifiedClient,
+        schemas: list[dict[str, Any]],
+        model: str,
+    ) -> tuple[dict[str, Any], list[AssembledToolCall]]:
+        """Stream from one client, rendering text and collecting tool calls."""
         text_parts: list[str] = []
         assembler = ToolCallAssembler()
         printed_any = False
 
-        async for event in client.stream_chat(
-            self._request_messages(), schemas, self.session.model
-        ):
+        async for event in client.stream_chat(self._request_messages(), schemas, model):
             if isinstance(event, TextDelta):
                 self.console.print(event.text, end="", markup=False, highlight=False)
                 text_parts.append(event.text)

@@ -29,6 +29,7 @@ from kiwimatecoder.config import (
     remove_provider,
     reset_default_mode,
     search_model_catalog,
+    set_active_providers,
     set_default_mode,
     set_key,
     set_model_filter,
@@ -37,7 +38,7 @@ from kiwimatecoder.config import (
     update_provider,
 )
 from kiwimatecoder.permissions import PermissionMode
-from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY
+from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY, ProviderConfig
 from kiwimatecoder.session import (
     Session,
     list_saved_sessions,
@@ -73,7 +74,19 @@ class SelectionPrompt:
     empty_message: str = "No choices are available."
 
 
+@dataclass(frozen=True)
+class MultiSelectionPrompt:
+    """Terminal-agnostic description of an interactive checklist prompt."""
+
+    title: str
+    text: str
+    options: tuple[CommandOption, ...]
+    selected: tuple[str, ...] = ()
+    empty_message: str = "No choices are available."
+
+
 CommandSelector = Callable[[SelectionPrompt], str | None]
+CommandMultiSelector = Callable[[MultiSelectionPrompt], list[str] | None]
 
 
 def dispatch(
@@ -82,6 +95,7 @@ def dispatch(
     console: Console,
     selector: CommandSelector | None = None,
     prompt_input: Callable[[str], str] | None = None,
+    multi_selector: CommandMultiSelector | None = None,
 ) -> str:
     """Run a slash command. Returns CommandResult.CONTINUE or .EXIT."""
     parts = line[1:].strip().split(maxsplit=1)
@@ -95,6 +109,22 @@ def dispatch(
 
     if name == "config" and not arg and selector is not None:
         return _config_interact(session, console, selector, prompt_input)
+
+    if name == "provider" and not arg and multi_selector is not None:
+        checklist = _multi_selection_prompt(session)
+        if checklist is not None:
+            if not checklist.options:
+                console.print(f"[yellow]{checklist.empty_message}[/yellow]")
+                return CommandResult.CONTINUE
+            chosen = multi_selector(checklist)
+            if chosen is None:
+                return CommandResult.CONTINUE
+            valid = {option.value for option in checklist.options}
+            if not chosen or any(pid not in valid for pid in chosen):
+                console.print("[red]The selector returned an invalid choice.[/red]")
+                return CommandResult.CONTINUE
+            _apply_provider_checklist(session, console, chosen)
+            return CommandResult.CONTINUE
 
     if not arg and selector is not None:
         prompt = _selection_prompt(name, session, console)
@@ -331,12 +361,16 @@ def _model(arg: str, session: Session, console: Console, selector: CommandSelect
 
 def _provider(arg: str, session: Session, console: Console) -> str:
     if not arg:
+        active = {p.id for p in session.active_providers}
         table = Table(title="Providers", show_header=True)
         table.add_column("id", style="cyan")
         table.add_column("name")
         table.add_column("default model")
         for p in list_provider_configs():
-            marker = " (active)" if p.id == session.provider_id else ""
+            if p.id in active:
+                marker = " (primary)" if p.id == session.provider_id else " (active)"
+            else:
+                marker = ""
             table.add_row(p.id + marker, p.name, p.default_model or "(from server)")
         console.print(table)
         return CommandResult.CONTINUE
@@ -345,12 +379,70 @@ def _provider(arg: str, session: Session, console: Console) -> str:
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         return CommandResult.CONTINUE
-    session.set_provider(arg)
+    session.set_active_providers(set_active_providers([arg]))
     console.print(
         f"Provider set to [cyan]{session.provider_id}[/cyan] "
         f"(model: [cyan]{session.model}[/cyan])."
     )
     return CommandResult.CONTINUE
+
+
+def _apply_provider_checklist(
+    session: Session, console: Console, provider_ids: list[str]
+) -> None:
+    """Persist and apply a checked list of active providers."""
+    try:
+        ids = set_active_providers(provider_ids)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        return
+    session.set_active_providers(ids)
+    primary = ids[0]
+    fallbacks = ids[1:]
+    summary = (
+        f"Active providers: [cyan]{', '.join(ids)}[/cyan] "
+        f"(primary: [cyan]{primary}[/cyan], model: [cyan]{session.model}[/cyan])."
+    )
+    if fallbacks:
+        summary += f"\n[dim]Fallbacks in order: {', '.join(fallbacks)}[/dim]"
+    console.print(summary)
+
+
+def _multi_selection_prompt(session: Session) -> MultiSelectionPrompt | None:
+    """Build the checklist shown for a bare ``/provider``."""
+    providers = list_provider_configs()
+    by_id = {provider.id: provider for provider in providers}
+    roster = [
+        pid
+        for pid in (session.active_provider_ids or [session.provider_id])
+        if pid in by_id
+    ]
+    ordered = [by_id[pid] for pid in roster]
+    seen = set(roster)
+    ordered.extend(provider for provider in providers if provider.id not in seen)
+
+    def _label(provider: ProviderConfig) -> str:
+        default = provider.default_model or "no key needed (local)"
+        if roster and provider.id == roster[0]:
+            role = " (primary)"
+        elif provider.id in roster:
+            role = f" (fallback {roster.index(provider.id)})"
+        else:
+            role = ""
+        return f"{provider.name} — {default}{role}"
+
+    return MultiSelectionPrompt(
+        title="Select active providers",
+        text=(
+            "Check every provider you want on the failover roster. The first "
+            "checked provider is the primary; later checks are fallbacks "
+            "tried in that order if the primary fails."
+        ),
+        options=tuple(
+            CommandOption(provider.id, _label(provider)) for provider in ordered
+        ),
+        selected=tuple(roster),
+    )
 
 
 def _mode(arg: str, session: Session, console: Console) -> str:
@@ -573,7 +665,7 @@ def _config_help(console: Console) -> None:
     table.add_column("Command", style="cyan")
     table.add_column("Description")
     rows = [
-        ("/config", "Show active provider, model, key, and model filter."),
+        ("/config", "Show active providers, model, key, and model filter."),
         ("/config providers", "List built-in and custom providers."),
         (
             "/config provider add <id> <name> <base_url> <default_model> [key_env]",
@@ -614,8 +706,13 @@ def _config_help(console: Console) -> None:
 def _config_show(session: Session, console: Console) -> None:
     provider = session.provider
     model_filter = get_model_filter(provider.id)
+    active = [item.id for item in session.active_providers]
+    active_line = ", ".join(
+        f"[cyan]{pid}[/cyan]" + (" (primary)" if pid == active[0] else "")
+        for pid in active
+    )
     console.print(
-        f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
+        f"Active providers: {active_line}\n"
         f"Model: [cyan]{session.model}[/cyan]\n"
         f"Key: [cyan]{describe_key(provider.id)}[/cyan] ({provider.key_env})\n"
         f"Model visibility: [cyan]{model_filter['mode']}[/cyan]"
@@ -637,8 +734,12 @@ def _config_providers(
         table.add_column("name")
         table.add_column("default model")
         table.add_column("base URL")
+        active = {item.id for item in session.active_providers}
         for provider in list_provider_configs():
-            marker = " (active)" if provider.id == session.provider_id else ""
+            if provider.id in active:
+                marker = " (primary)" if provider.id == session.provider_id else " (active)"
+            else:
+                marker = ""
             if provider.is_local:
                 kind = "local"
             else:
@@ -678,14 +779,16 @@ def _config_providers(
             console.print("[yellow]Usage: /config provider remove <id>[/yellow]")
             return
         provider_id = rest[0]
-        was_active = provider_id == session.provider_id
+        roster = session.active_provider_ids or [session.provider_id]
+        was_in_roster = provider_id in roster
         try:
             remove_provider(provider_id)
         except (KeyError, ValueError) as exc:
             console.print(f"[red]{exc}[/red]")
             return
-        if was_active:
-            session.set_provider(DEFAULT_PROVIDER_ID)
+        if was_in_roster:
+            remaining = [pid for pid in roster if pid != provider_id]
+            session.set_active_providers(remaining or [DEFAULT_PROVIDER_ID])
         console.print(f"[green]Removed provider[/green] [cyan]{provider_id}[/cyan].")
         return
 
@@ -696,7 +799,7 @@ def _config_providers(
         provider_id = rest[0]
         try:
             set_selected_provider(provider_id)
-            session.set_provider(provider_id)
+            session.set_active_providers([provider_id])
         except KeyError as exc:
             console.print(f"[red]{exc}[/red]")
             return
@@ -1072,7 +1175,7 @@ def _config_interact(
             "API key interactively."
         ),
         options=(
-            CommandOption("show", "Show active provider, model, key, filter"),
+            CommandOption("show", "Show active providers, model, key, filter"),
             CommandOption("providers", "List providers (add/remove/use/edit)"),
             CommandOption("keys", "Set or remove an API key"),
             CommandOption("model", "Set or reset the default model"),
@@ -1153,6 +1256,8 @@ def _load(arg: str, session: Session, console: Console) -> str:
         session.completion_tokens = loaded.completion_tokens
         session.touched_files = loaded.touched_files
         session.context_files = loaded.context_files
+        session.active_provider_ids = loaded.active_provider_ids
+        session.models = loaded.models
         console.print(
             f"[green]Loaded session [bold]{arg.strip()}[/bold]: "
             f"{len(session.messages)} messages, provider={session.provider_id}:{session.model}[/green]"
@@ -1230,7 +1335,10 @@ _HELP_GROUPS = [
                 "set one by name, refresh the list, or search the full "
                 "catalog by name.",
             ),
-            ("/provider [id]", "Choose a provider, or switch by id."),
+            (
+                "/provider [id]",
+                "Choose a failover roster (checklist), or replace it with one provider by id.",
+            ),
             (
                 "/mode [ask|auto-accept|plan]",
                 "Choose or directly set the permission mode.",
@@ -1265,7 +1373,7 @@ _COMMAND_DESCRIPTIONS = {
     "quit": "Leave the session.",
     "clear": "Clear the conversation history.",
     "model": "Choose a model, set one by name, refresh the list, or search.",
-    "provider": "Choose a provider, or switch by id.",
+    "provider": "Choose a failover roster (checklist), or replace it with one provider by id.",
     "mode": "Choose or directly set the permission mode.",
     "tools": "List available tools.",
     "files": "List files changed this session.",

@@ -6,6 +6,7 @@ from rich.console import Console
 from kiwimatecoder import catalog, config
 from kiwimatecoder.commands import (
     CommandResult,
+    MultiSelectionPrompt,
     SelectionPrompt,
     dispatch,
     slash_argument_completions,
@@ -140,6 +141,125 @@ def test_explicit_choice_does_not_open_selector(session):
     dispatch("/model custom-model", session, _console(), selector=fail_if_called)
 
     assert session.model == "custom-model"
+
+
+def test_bare_provider_command_opens_multi_checklist(session):
+    prompts: list[MultiSelectionPrompt] = []
+
+    def select(prompt: MultiSelectionPrompt) -> list[str]:
+        prompts.append(prompt)
+        return ["openai", "deepseek"]
+
+    result = dispatch("/provider", session, _console(), multi_selector=select)
+
+    assert result == CommandResult.CONTINUE
+    assert prompts[0].title == "Select active providers"
+    assert "openrouter" in {option.value for option in prompts[0].options}
+    assert session.provider_id == "openai"
+    assert session.model == REGISTRY["openai"].default_model
+    assert session.active_provider_ids == ["openai", "deepseek"]
+    assert config.get_active_provider_ids() == ["openai", "deepseek"]
+
+
+def test_bare_provider_checklist_marks_current_selection(session):
+    config.set_active_providers(["openrouter", "openai"])
+    session.set_active_providers(["openrouter", "openai"])
+    prompts: list[MultiSelectionPrompt] = []
+
+    def select(prompt: MultiSelectionPrompt) -> list[str]:
+        prompts.append(prompt)
+        return list(prompt.selected)
+
+    dispatch("/provider", session, _console(), multi_selector=select)
+
+    assert list(prompts[0].selected) == ["openrouter", "openai"]
+
+
+def test_bare_provider_checklist_rejects_empty_selection(session):
+    console = _console()
+    result = dispatch(
+        "/provider", session, console, multi_selector=lambda prompt: []
+    )
+
+    assert result == CommandResult.CONTINUE
+    assert "invalid choice" in _output(console).lower()
+
+
+def test_provider_command_with_id_resets_roster_to_single(session):
+    console = _console()
+    config.set_active_providers(["openrouter", "openai"])
+
+    dispatch("/provider deepseek", session, console)
+
+    assert session.provider_id == "deepseek"
+    assert config.get_active_provider_ids() == ["deepseek"]
+
+
+def test_explicit_provider_id_does_not_open_checklist(session):
+    def fail_if_called(prompt: MultiSelectionPrompt) -> list[str]:
+        raise AssertionError("checklist should not be called")
+
+    dispatch("/provider openai", session, _console(), multi_selector=fail_if_called)
+
+    assert session.provider_id == "openai"
+
+
+def test_reapplying_provider_checklist_keeps_current_model(session):
+    session.model = "my-custom-model"
+    session.allow_always("run_bash")
+
+    dispatch(
+        "/provider",
+        session,
+        _console(),
+        multi_selector=lambda prompt: ["openrouter", "openai"],
+    )
+
+    assert session.provider_id == "openrouter"
+    assert session.model == "my-custom-model"
+    assert session.is_always_allowed("run_bash")
+    assert session.active_provider_ids == ["openrouter", "openai"]
+
+
+def test_provider_checklist_lists_current_roster_first(session):
+    config.set_active_providers(["openrouter", "openai"])
+    session.set_active_providers(["openrouter", "openai"])
+    prompts: list[MultiSelectionPrompt] = []
+
+    def select(prompt: MultiSelectionPrompt) -> list[str]:
+        prompts.append(prompt)
+        return list(prompt.selected)
+
+    dispatch("/provider", session, _console(), multi_selector=select)
+
+    values = [option.value for option in prompts[0].options]
+    assert values[:2] == ["openrouter", "openai"]
+    assert "(primary)" in prompts[0].options[0].label
+    assert "fallback" in prompts[0].options[1].label.lower()
+
+
+def test_config_provider_remove_updates_session_fallback_roster(session):
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    config.set_active_providers(["openrouter", "local"])
+    session.set_active_providers(["openrouter", "local"])
+    session.model = "keep-me"
+
+    dispatch("/config provider remove local", session, _console())
+
+    assert session.provider_id == "openrouter"
+    assert session.active_provider_ids == ["openrouter"]
+    assert session.model == "keep-me"
+
+
+def test_config_show_uses_session_roster(session):
+    session.set_active_providers(["openai", "deepseek"])
+    console = _console()
+
+    dispatch("/config", session, console)
+
+    output = _output(console)
+    assert "openai" in output
+    assert "deepseek" in output
 
 
 def test_config_provider_key_and_model_filter_workflow(session):

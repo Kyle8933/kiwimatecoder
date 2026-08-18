@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import io
 from unittest.mock import MagicMock, patch
 
 import pytest
 from rich.console import Console
 
-from kiwimatecoder.agent import MAX_TOOL_ROUNDS, Agent
+from kiwimatecoder.agent import Agent
 from kiwimatecoder.client import Done, ProviderError, TextDelta, ToolCallDelta
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import Session
@@ -176,24 +177,25 @@ async def test_agent_provider_error_handled(agent_session):
 
 
 @pytest.mark.anyio
-async def test_agent_step_limit_reached(agent_session):
+async def test_agent_continues_past_former_step_limit(agent_session):
     console = Console(quiet=True)
     confirm = MagicMock(return_value=True)
     agent = Agent(agent_session, console, confirm)
-
-    tool_call_stream = [
-        ToolCallDelta(
-            index=0,
-            id="call_inf",
-            name="search",
-            args_fragment='{"pattern": "test"}',
-        ),
-        Done(finish_reason="tool_calls"),
-    ]
+    rounds = {"n": 0}
 
     async def mock_stream(*args, **kwargs):
-        for event in tool_call_stream:
-            yield event
+        rounds["n"] += 1
+        if rounds["n"] <= 30:
+            yield ToolCallDelta(
+                index=0,
+                id=f"call_{rounds['n']}",
+                name="search",
+                args_fragment='{"pattern": "test"}',
+            )
+            yield Done(finish_reason="tool_calls")
+            return
+        yield TextDelta(text="done")
+        yield Done(finish_reason="stop")
 
     with (
         patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
@@ -202,14 +204,14 @@ async def test_agent_step_limit_reached(agent_session):
             side_effect=mock_stream,
         ),
     ):
-        await agent.run_turn("Loop forever")
+        await agent.run_turn("Keep going")
 
-    # The agent should stop at MAX_TOOL_ROUNDS (25 rounds)
-    # 1 user message + 25 rounds * (1 assistant + 1 tool) = 51 messages
-    assert len(agent_session.messages) == 1 + (MAX_TOOL_ROUNDS * 2)
-    last_tool_msg = agent_session.messages[-1]
-    assert last_tool_msg["role"] == "tool"
-    assert "step limit" in last_tool_msg["content"].lower()
+    assert rounds["n"] == 31
+    assert agent_session.messages[-1]["content"] == "done"
+    assert not any(
+        "step limit" in str(message.get("content") or "").lower()
+        for message in agent_session.messages
+    )
 
 
 def test_agent_client_allows_keyless_local_provider(agent_session):
@@ -241,3 +243,107 @@ def test_agent_client_requires_key_for_cloud_provider(agent_session):
         pytest.raises(ProviderError, match="No API key"),
     ):
         agent._client()
+
+
+# ---------------------------------------------------------------------------
+# Active-provider failover
+# ---------------------------------------------------------------------------
+
+
+class _FakeStream:
+    """A UnifiedClient stand-in recording the provider id and model it got."""
+
+    def __init__(self, provider_id: str, fail: bool = False):
+        self.provider_id = provider_id
+        self.fail = fail
+
+    async def stream_chat(self, messages, tools, model):
+        if self.fail:
+            raise ProviderError(f"{self.provider_id} down")
+        yield TextDelta(text=f"hi from {self.provider_id}")
+        yield Done(finish_reason="stop")
+
+
+@pytest.mark.anyio
+async def test_agent_stream_once_falls_back_to_next_provider(agent_session):
+    agent_session.set_active_providers(["openrouter", "openai"])
+    agent_session.models["openai"] = "gpt-5.6-sol"
+    agent = Agent(agent_session, Console(quiet=True), MagicMock(return_value=True))
+
+    attempts: list[tuple[str, str]] = []
+
+    def fake_client(provider_id: str | None = None):
+        attempts.append((provider_id, ""))
+        return _FakeStream(provider_id, fail=(provider_id == "openrouter"))
+
+    with patch("kiwimatecoder.agent.Agent._client", side_effect=fake_client):
+        msg, calls = await agent._stream_once()
+
+    assert msg["content"] == "hi from openai"
+    assert [pid for pid, _ in attempts] == ["openrouter", "openai"]
+
+
+@pytest.mark.anyio
+async def test_agent_stream_once_announces_primary_failure(agent_session):
+    agent_session.set_active_providers(["openrouter", "openai"])
+    buf = io.StringIO()
+    agent = Agent(
+        agent_session, Console(file=buf, force_terminal=False, width=120), MagicMock()
+    )
+
+    def fake_client(provider_id: str | None = None):
+        return _FakeStream(provider_id, fail=(provider_id == "openrouter"))
+
+    with patch("kiwimatecoder.agent.Agent._client", side_effect=fake_client):
+        msg, _calls = await agent._stream_once()
+
+    output = buf.getvalue().lower()
+    assert msg["content"] == "hi from openai"
+    assert "openrouter" in output
+    assert "trying" in output
+    assert "openai" in output
+
+
+@pytest.mark.anyio
+async def test_agent_stream_once_raises_when_all_providers_fail(agent_session):
+    agent_session.set_active_providers(["openrouter", "openai"])
+    agent = Agent(agent_session, Console(quiet=True), MagicMock(return_value=True))
+
+    def fake_client(provider_id: str | None = None):
+        return _FakeStream(provider_id, fail=True)
+
+    with (
+        patch("kiwimatecoder.agent.Agent._client", side_effect=fake_client),
+        pytest.raises(ProviderError, match="openrouter down") as caught,
+    ):
+        await agent._stream_once()
+
+    assert "openai down" in str(caught.value)
+
+
+@pytest.mark.anyio
+async def test_agent_stream_once_skips_provider_without_key(agent_session):
+    agent_session.set_active_providers(["openrouter", "openai"])
+    agent = Agent(agent_session, Console(quiet=True), MagicMock(return_value=True))
+
+    attempts: list[str] = []
+
+    def fake_client(provider_id: str | None = None):
+        attempts.append(provider_id)
+        if provider_id == "openrouter":
+            raise ProviderError("No API key for OpenAI")
+        return _FakeStream(provider_id)
+
+    with patch("kiwimatecoder.agent.Agent._client", side_effect=fake_client):
+        msg, calls = await agent._stream_once()
+
+    assert msg["content"] == "hi from openai"
+    assert attempts == ["openrouter", "openai"]
+
+
+def test_session_model_for_uses_override_for_fallback(agent_session):
+    agent_session.set_active_providers(["openrouter", "openai"])
+    agent_session.models["openai"] = "custom-openai-model"
+
+    assert agent_session.model_for("openrouter") == agent_session.model
+    assert agent_session.model_for("openai") == "custom-openai-model"

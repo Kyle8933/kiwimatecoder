@@ -22,6 +22,8 @@ def test_session_serialization_roundtrip(tmp_path):
         completion_tokens=50,
         touched_files=["main.py"],
         context_files=["README.md"],
+        active_provider_ids=["openai", "openrouter"],
+        models={"openrouter": "anthropic/claude-sonnet-5"},
     )
 
     data = sess.to_dict()
@@ -36,6 +38,67 @@ def test_session_serialization_roundtrip(tmp_path):
     assert restored.total_tokens == 150
     assert restored.touched_files == ["main.py"]
     assert restored.context_files == ["README.md"]
+    assert restored.active_provider_ids == ["openai", "openrouter"]
+    assert restored.models == {"openrouter": "anthropic/claude-sonnet-5"}
+
+
+def test_session_from_dict_seeds_roster_from_provider_id():
+    restored = Session.from_dict(
+        {
+            "provider_id": "openai",
+            "model": "gpt-5.6-sol",
+            "mode": "ask",
+            "workspace_root": ".",
+        }
+    )
+
+    assert restored.active_provider_ids == ["openai"]
+    assert restored.models == {}
+
+
+def test_legacy_session_uses_its_own_provider_not_live_config(tmp_path, monkeypatch):
+    """A pre-feature session must not pick up today's config roster."""
+    from kiwimatecoder import config
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
+    config.set_active_providers(["openrouter", "anthropic"])
+
+    restored = Session.from_dict(
+        {
+            "provider_id": "openai",
+            "model": "gpt-5.6-sol",
+            "mode": "ask",
+            "workspace_root": ".",
+        }
+    )
+
+    assert [provider.id for provider in restored.active_providers] == ["openai"]
+    assert restored.model_for(restored.active_providers[0].id) == "gpt-5.6-sol"
+
+
+def test_set_active_providers_keeps_model_when_primary_unchanged():
+    sess = Session(provider_id="openrouter", model="my-custom-model")
+    sess.allow_always("run_bash")
+
+    sess.set_active_providers(["openrouter", "openai"])
+
+    assert sess.provider_id == "openrouter"
+    assert sess.model == "my-custom-model"
+    assert sess.is_always_allowed("run_bash")
+    assert sess.active_provider_ids == ["openrouter", "openai"]
+
+
+def test_set_active_providers_switches_model_when_primary_changes():
+    sess = Session(provider_id="openrouter", model="my-custom-model")
+    sess.allow_always("run_bash")
+
+    sess.set_active_providers(["openai", "openrouter"])
+
+    assert sess.provider_id == "openai"
+    assert sess.model != "my-custom-model"
+    assert not sess.is_always_allowed("run_bash")
 
 
 def test_session_save_and_load(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ Configuration lives in ``~/.kiwimatecoder/config.json`` with this shape::
         "providers": {"local": {"name": "...", "base_url": "..."}},
         "model_filters": {"openai": {"mode": "allow", "models": ["gpt-5"]}},
         "selected_provider": "openrouter",
+        "active_providers": ["openrouter", "openai"],
         "selected_model": null,
         "default_mode": "ask"
     }
@@ -72,6 +73,7 @@ def _empty_config() -> dict[str, Any]:
         "providers": {},
         "model_filters": {},
         "selected_provider": DEFAULT_PROVIDER_ID,
+        "active_providers": [DEFAULT_PROVIDER_ID],
         "selected_model": None,
         "default_mode": DEFAULT_MODE,
     }
@@ -93,12 +95,15 @@ def load_config() -> dict[str, Any]:
     Migration is non-destructive: the legacy file is left in place.
     """
     cfg: dict[str, Any] = _empty_config()
+    stored: dict[str, Any] = {}
     if CONFIG_FILE.exists():
         try:
             stored = json.loads(CONFIG_FILE.read_text())
         except (json.JSONDecodeError, OSError):
             stored = {}
-        if isinstance(stored, dict):
+        if not isinstance(stored, dict):
+            stored = {}
+        if stored:
             cfg.update(
                 {
                     k: v
@@ -118,9 +123,30 @@ def load_config() -> dict[str, Any]:
     cfg.setdefault("providers", {})
     cfg.setdefault("model_filters", {})
     cfg.setdefault("selected_provider", DEFAULT_PROVIDER_ID)
+    cfg.setdefault("active_providers", [DEFAULT_PROVIDER_ID])
     cfg.setdefault("selected_model", None)
     cfg.setdefault("default_mode", DEFAULT_MODE)
+    # Active-provider roster. Configs written before this feature lack the key;
+    # migrate by seeding it from the single selected provider. An explicitly
+    # stored empty list, a non-list, or a list of junk is seeded the same way.
+    cfg["active_providers"] = _normalized_active_providers(
+        stored, str(cfg.get("selected_provider") or DEFAULT_PROVIDER_ID)
+    )
     return cfg
+
+
+def _normalized_active_providers(stored: dict[str, Any], selected: str) -> list[str]:
+    """Return a usable roster from stored config, or seed from ``selected``."""
+    raw = stored.get("active_providers") if stored else None
+    if isinstance(raw, list):
+        cleaned = [
+            item.strip()
+            for item in raw
+            if isinstance(item, str) and item.strip()
+        ]
+        if cleaned:
+            return cleaned
+    return [selected or DEFAULT_PROVIDER_ID]
 
 
 def save_config(cfg: dict[str, Any]) -> None:
@@ -264,8 +290,21 @@ def remove_provider(provider_id: str) -> None:
     del cfg["providers"][provider_id]
     cfg["keys"].pop(provider_id, None)
     cfg["model_filters"].pop(provider_id, None)
-    if cfg.get("selected_provider") == provider_id:
-        cfg["selected_provider"] = DEFAULT_PROVIDER_ID
+    # Drop the provider from the active roster; the first remaining id becomes
+    # the primary. selected_provider stays aligned with that roster.
+    active = [
+        pid for pid in (cfg.get("active_providers") or []) if pid != provider_id
+    ]
+    if not active:
+        fallback = cfg.get("selected_provider")
+        active = [
+            DEFAULT_PROVIDER_ID
+            if not fallback or fallback == provider_id
+            else str(fallback)
+        ]
+    cfg["active_providers"] = active
+    if cfg.get("selected_provider") != active[0]:
+        cfg["selected_provider"] = active[0]
         cfg["selected_model"] = None
     save_config(cfg)
     clear_model_cache(provider_id)
@@ -429,10 +468,16 @@ def remove_key(provider_id: str) -> bool:
 
 
 def set_selected_provider(provider_id: str) -> None:
-    """Persist the default provider."""
+    """Persist the default (primary) provider and reset the active roster to it.
+
+    Choosing a single provider explicitly makes it the only active one; the
+    checklist (``/provider``) or :func:`set_active_providers` is how a user opts
+    back into a multi-provider roster.
+    """
     get_provider_config(provider_id)
     cfg = load_config()
     cfg["selected_provider"] = provider_id
+    cfg["active_providers"] = [provider_id]
     save_config(cfg)
 
 
@@ -471,19 +516,77 @@ def reset_default_mode(cfg: dict[str, Any] | None = None) -> str:
 
 
 def get_selected_provider_id(cfg: dict[str, Any] | None = None) -> str:
-    """Return the configured selected_provider if valid in the registry, else DEFAULT_PROVIDER_ID.
+    """Return the primary provider: first valid active-roster id.
 
-    Used by the bare launch (forgiving fallback) and ``config check`` (accurate display
-    instead of advertising a stale/unknown value from the on-disk JSON).
+    ``selected_provider`` on disk is a backward-compatible alias for that
+    primary. Callers that used to read it directly should go through here so a
+    drifted selected/roster pair cannot point the UI at one vendor and the
+    agent at another.
+    """
+    return get_active_provider_ids(cfg)[0]
+
+
+def get_active_provider_ids(cfg: dict[str, Any] | None = None) -> list[str]:
+    """Return the ordered list of active provider ids, validated and de-duplicated.
+
+    The first id is the primary provider (the one the session chats with by
+    default); the rest are fallbacks tried in order when the primary fails.
+    Invalid ids and duplicates are dropped. The roster is the source of truth;
+    ``selected_provider`` is only used when the stored roster is empty.
     """
     if cfg is None:
         cfg = load_config()
-    pid = cfg.get("selected_provider") or DEFAULT_PROVIDER_ID
+    raw = cfg.get("active_providers")
+    if not isinstance(raw, list):
+        raw = []
+    seen: set[str] = set()
+    ids: list[str] = []
+    for pid in raw:
+        pid = str(pid).strip() if pid is not None else ""
+        if not pid or pid in seen:
+            continue
+        try:
+            get_provider_config(pid, cfg)
+        except KeyError:
+            continue
+        seen.add(pid)
+        ids.append(pid)
+    if ids:
+        return ids
+    fallback = str(cfg.get("selected_provider") or DEFAULT_PROVIDER_ID)
     try:
-        get_provider_config(pid, cfg)
-        return pid
+        get_provider_config(fallback, cfg)
+        return [fallback]
     except KeyError:
-        return DEFAULT_PROVIDER_ID
+        return [DEFAULT_PROVIDER_ID]
+
+
+def set_active_providers(provider_ids: Sequence[str]) -> list[str]:
+    """Persist the active-provider roster and return the validated ordered ids.
+
+    ``provider_ids`` must be a non-empty sequence of known provider ids (order
+    is significant: the first is the primary). The single ``selected_provider``
+    is kept in sync with the primary for backward compatibility.
+    """
+    if not provider_ids:
+        raise ValueError("At least one active provider is required.")
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for pid in provider_ids:
+        pid = str(pid).strip()
+        if not pid or pid in seen:
+            continue
+        get_provider_config(pid)  # raises UnknownProviderError (a KeyError)
+        seen.add(pid)
+        cleaned.append(pid)
+    if not cleaned:
+        raise ValueError("At least one active provider is required.")
+
+    cfg = load_config()
+    cfg["active_providers"] = cleaned
+    cfg["selected_provider"] = cleaned[0]
+    save_config(cfg)
+    return cleaned
 
 
 def get_model_filter(provider_id: str) -> dict[str, Any]:

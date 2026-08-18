@@ -115,13 +115,17 @@ def _context_section(session: Session) -> str:
 def build_system_prompt(session: Session) -> dict[str, Any]:
     """Return the system message tailored to the current session state."""
     context = _context_section(session)
+    fallbacks = [provider.id for provider in session.active_providers[1:]]
+    provider_line = f"{session.provider_id} / {session.model}"
+    if fallbacks:
+        provider_line += f" (fallbacks: {', '.join(fallbacks)})"
     content = f"""You are KiwiMateCoder, an expert agentic coding assistant that works \
 directly in the user's project from the command line.
 
 Environment:
 - Workspace root: {session.workspace_root}
 - Operating system: {platform.system()} ({platform.release()})
-- Provider/model: {session.provider_id} / {session.model}
+- Provider/model: {provider_line}
 - Permission mode: {session.mode.value}
 {context}
 

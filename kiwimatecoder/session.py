@@ -32,10 +32,49 @@ class Session:
     touched_files: list[str] = field(default_factory=list)
     context_files: list[str] = field(default_factory=list)
     always_allowed: set[str] = field(default_factory=set)
+    active_provider_ids: list[str] = field(default_factory=list)
+    # Per-provider model overrides; empty value means "use the provider default".
+    models: dict[str, str] = field(default_factory=dict)
 
     @property
     def provider(self) -> ProviderConfig:
         return get_provider_config(self.provider_id)
+
+    @property
+    def active_providers(self) -> list[ProviderConfig]:
+        """The active provider roster, primary first.
+
+        Falls back to the session's own provider when the roster is empty so a
+        resumed pre-feature session cannot pick up a different vendor from
+        today's config. Always resolves to at least one provider.
+        """
+        ids = self.active_provider_ids or [self.provider_id]
+        providers: list[ProviderConfig] = []
+        seen: set[str] = set()
+        for pid in ids:
+            if pid in seen:
+                continue
+            seen.add(pid)
+            try:
+                providers.append(get_provider_config(pid))
+            except KeyError:
+                continue
+        return providers or [self.provider]
+
+    def model_for(self, provider_id: str) -> str:
+        """Return the model to use for ``provider_id``.
+
+        The primary provider uses ``session.model``; fallback providers use any
+        per-provider override, otherwise their default model (resolved live for
+        local servers).
+        """
+        if provider_id == self.provider_id:
+            return self.model
+        override = self.models.get(provider_id)
+        if override:
+            return override
+        provider = get_provider_config(provider_id)
+        return resolve_default_model(provider)
 
     @property
     def total_tokens(self) -> int:
@@ -58,6 +97,30 @@ class Session:
         self.model = model or resolve_default_model(provider)
         # Tool/command approvals don't carry across providers.
         self.always_allowed.clear()
+
+    def set_active_providers(self, provider_ids: list[str]) -> None:
+        """Set the active-provider roster; the first id becomes the primary.
+
+        ``provider_ids`` must be a non-empty list of known providers. The
+        primary's model is resolved (or kept when unchanged), and fallback
+        providers fall back to their default models.
+        """
+        if not provider_ids:
+            raise ValueError("At least one active provider is required.")
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for pid in provider_ids:
+            if pid in seen:
+                continue
+            get_provider_config(pid)  # raises UnknownProviderError (a KeyError)
+            seen.add(pid)
+            cleaned.append(pid)
+        if not cleaned:
+            raise ValueError("At least one active provider is required.")
+        previous_primary = self.provider_id
+        self.active_provider_ids = cleaned
+        if cleaned[0] != previous_primary:
+            self.set_provider(cleaned[0])
 
     def record_touched(self, path: str) -> None:
         if path not in self.touched_files:
@@ -163,13 +226,20 @@ class Session:
             "completion_tokens": self.completion_tokens,
             "touched_files": self.touched_files,
             "context_files": self.context_files,
+            "active_provider_ids": self.active_provider_ids,
+            "models": self.models,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Session:
         """Deserialize session state."""
+        provider_id = str(data.get("provider_id", "openrouter"))
+        raw_active = data.get("active_provider_ids") or []
+        active_provider_ids = [
+            str(pid) for pid in raw_active if str(pid).strip()
+        ]
         return cls(
-            provider_id=str(data.get("provider_id", "openrouter")),
+            provider_id=provider_id,
             model=str(data.get("model", "")),
             mode=PermissionMode.from_str(str(data.get("mode", "ask"))),
             workspace_root=Path(str(data.get("workspace_root", "."))),
@@ -178,6 +248,10 @@ class Session:
             completion_tokens=int(data.get("completion_tokens", 0)),
             touched_files=list(data.get("touched_files", [])),
             context_files=list(data.get("context_files", [])),
+            active_provider_ids=active_provider_ids or [provider_id],
+            models={
+                str(k): str(v) for k, v in (data.get("models") or {}).items()
+            },
         )
 
 

@@ -47,8 +47,11 @@ kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.p
 - **Ctrl-D** exits the session.
 - Type `/` to open the slash-command menu. It filters as you keep typing.
 - Run `/model`, `/provider`, or `/mode` without an argument to open a
-  keyboard-driven selector. Arrow keys move, Enter selects, and Ctrl-C returns to
-  the prompt without changing anything.
+  keyboard-driven selector. `/provider` is a checklist: check every provider you
+  want on the failover roster. The first checked provider is the primary; the
+  rest are tried in order if the primary fails. `/provider <id>` replaces the
+  roster with that single provider. Arrow keys move, Enter selects, and Ctrl-C
+  returns to the prompt without changing anything.
 - Opening `/model` checks the provider for models released since you last looked,
   and drops any it has retired. `/model refresh` forces the check.
 - `/model search <term>` searches the provider's full catalog by name and opens
@@ -78,7 +81,7 @@ Reads, writes, edits, listings and searches are sandboxed to the workspace root 
 | `/exit`, `/quit` | Leave the session. |
 | `/clear` | Clear the conversation history. |
 | `/model [name\|refresh\|list\|search <term>]` | Interactively choose a model (the list is refreshed from the provider), set one by name, refresh/show the list, or search the full catalog by name. |
-| `/provider [id]` | Interactively choose a provider, or switch by id. |
+| `/provider [id]` | Choose a failover roster (checklist), or replace it with one provider by id. |
 | `/mode [ask\|auto-accept\|plan]` | Interactively choose, or directly set, the permission mode. |
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |

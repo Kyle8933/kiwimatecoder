@@ -18,6 +18,7 @@ from kiwimatecoder.config import (
     add_provider,
     apply_model_filter,
     describe_key,
+    get_active_provider_ids,
     get_default_mode,
     get_key,
     get_model_catalog,
@@ -360,12 +361,17 @@ def models_clear(
 
 @config_app.command("show")
 def config_show() -> None:
-    """Show the active provider, model, key, and model filter."""
+    """Show the active providers, model, key, and model filter."""
     cfg = load_config()
     provider_id = get_selected_provider_id(cfg)
     provider = get_provider_config(provider_id, cfg)
+    active_ids = get_active_provider_ids(cfg)
+    active_line = ", ".join(
+        f"{pid}" + (" (primary)" if pid == active_ids[0] else "") for pid in active_ids
+    )
     console.print(
         f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
+        + f"Active providers: [cyan]{active_line}[/cyan]\n"
         + f"Model: [cyan]{cfg.get('selected_model') or provider.default_model or '(from server)'}[/cyan]\n"
         + f"Mode: [cyan]{get_default_mode(cfg)}[/cyan]\n"
         + f"Key: [cyan]{describe_key(provider_id)}[/cyan] ({provider.key_env})\n"
@@ -540,6 +546,7 @@ def main(
             model=model,
             mode=mode,
             workspace_root=Path.cwd(),
+            active_provider_ids=get_active_provider_ids(cfg),
         )
 
     repl.run(session)

@@ -214,6 +214,97 @@ def test_remove_key():
 
 
 # ---------------------------------------------------------------------------
+# Active provider roster
+# ---------------------------------------------------------------------------
+
+
+def test_empty_config_defaults_to_single_active_provider():
+    cfg = config.load_config()
+    assert cfg["active_providers"] == ["openrouter"]
+
+
+def test_get_active_provider_ids_validates_and_dedupes():
+    config.set_active_providers(["openai", "openrouter", "openai"])
+    assert config.get_active_provider_ids() == ["openai", "openrouter"]
+
+
+def test_get_active_provider_ids_drops_unknown_ids():
+    cfg = config.load_config()
+    cfg["active_providers"] = ["nope", "openai", "openrouter"]
+    config.save_config(cfg)
+    assert config.get_active_provider_ids() == ["openai", "openrouter"]
+
+
+def test_set_active_providers_requires_a_nonempty_list():
+    with pytest.raises(ValueError):
+        config.set_active_providers([])
+
+
+def test_set_active_providers_keeps_selected_provider_in_sync():
+    ids = config.set_active_providers(["openai", "deepseek"])
+    assert ids == ["openai", "deepseek"]
+    assert config.get_selected_provider_id() == "openai"
+
+
+def test_set_selected_provider_resets_roster_to_single():
+    config.set_active_providers(["openai", "openrouter"])
+    config.set_selected_provider("deepseek")
+    assert config.get_active_provider_ids() == ["deepseek"]
+
+
+def test_remove_provider_drops_it_from_active_roster():
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    config.set_active_providers(["openai", "local", "openrouter"])
+    config.remove_provider("local")
+    assert config.get_active_provider_ids() == ["openai", "openrouter"]
+
+
+def test_remove_primary_provider_repoints_active_roster():
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    config.set_active_providers(["local", "openrouter"])
+    config.remove_provider("local")
+    assert config.get_active_provider_ids() == ["openrouter"]
+
+
+def test_remove_primary_provider_syncs_selected_to_remaining():
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    config.set_active_providers(["local", "openai"])
+    config.remove_provider("local")
+    assert config.get_active_provider_ids() == ["openai"]
+    assert config.get_selected_provider_id() == "openai"
+    assert config.load_config()["selected_provider"] == "openai"
+
+
+def test_get_active_provider_ids_does_not_append_selected():
+    cfg = config.load_config()
+    cfg["selected_provider"] = "openrouter"
+    cfg["active_providers"] = ["openai"]
+    config.save_config(cfg)
+    assert config.get_active_provider_ids() == ["openai"]
+    assert config.get_selected_provider_id() == "openai"
+
+
+def test_load_config_repairs_malformed_active_providers():
+    cfg = config._empty_config()
+    cfg["selected_provider"] = "openai"
+    cfg["active_providers"] = "openai"
+    config.save_config(cfg)
+    loaded = config.load_config()
+    assert loaded["active_providers"] == ["openai"]
+    assert config.get_active_provider_ids() == ["openai"]
+
+
+def test_active_roster_migrates_from_legacy_selected_provider():
+    # A config with only `selected_provider` (no `active_providers`) gets a
+    # roster seeded from that single provider.
+    cfg = config._empty_config()
+    cfg["selected_provider"] = "openai"
+    cfg.pop("active_providers", None)
+    config.save_config(cfg)
+    assert config.get_active_provider_ids() == ["openai"]
+
+
+# ---------------------------------------------------------------------------
 # Live model catalogs
 # ---------------------------------------------------------------------------
 

@@ -12,7 +12,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-from prompt_toolkit.shortcuts import CompleteStyle, choice
+from prompt_toolkit.shortcuts import CompleteStyle, checkboxlist_dialog, choice
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -21,6 +21,7 @@ from kiwimatecoder import __version__
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
+    MultiSelectionPrompt,
     SelectionPrompt,
     dispatch,
     slash_argument_completions,
@@ -94,9 +95,17 @@ def _banner(session: Session) -> Panel:
         else ""
     )
 
+    active = session.active_providers
+    provider_summary = (
+        f"[bold cyan]{session.provider.name}[/bold cyan] ([dim]{session.model}[/dim])"
+    )
+    if len(active) > 1:
+        fallback_names = ", ".join(p.name for p in active[1:])
+        provider_summary += f" [dim]+ {fallback_names}[/dim]"
+
     content = (
         f"[bold green]KiwiMateCoder[/bold green] [dim]v{__version__}[/dim] — "
-        f"[bold cyan]{session.provider.name}[/bold cyan] ([dim]{session.model}[/dim])\n"
+        f"{provider_summary}\n"
         f"[dim]📁 {session.workspace_root.name}{git_badge} · mode:[bold]{session.mode.value}[/bold]{ctx_badge}\n"
         f"Type /help for commands · Alt+Enter for newline · Ctrl-C cancels · Ctrl-D exits[/dim]"
     )
@@ -115,9 +124,12 @@ def _prompt_text(session: Session) -> HTML:
         if session.mode.value == "ask"
         else "ansigreen"
     )
+    provider_display = f"{session.provider_id}:{session.model}"
+    if len(session.active_provider_ids) > 1:
+        provider_display += f" +{len(session.active_provider_ids) - 1}"
     return HTML(
         f"<ansigreen><b>kiwi</b></ansigreen> "
-        f"<{mode_color}>({session.provider_id}:{session.model} · {session.mode.value})</{mode_color}> "
+        f"<{mode_color}>({provider_display} · {session.mode.value})</{mode_color}> "
         f"<ansicyan>›</ansicyan> "
     )
 
@@ -134,6 +146,22 @@ def _select_command_option(prompt: SelectionPrompt) -> str | None:
         )
     except (EOFError, KeyboardInterrupt):
         return None
+
+
+def _select_command_options(prompt: MultiSelectionPrompt) -> list[str] | None:
+    """Render a keyboard-driven checklist for multi-select slash commands."""
+    try:
+        selected = checkboxlist_dialog(
+            title=prompt.title,
+            text=prompt.text,
+            values=[(option.value, option.label) for option in prompt.options],
+            default_values=list(prompt.selected),
+        ).run()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if selected is None:
+        return None
+    return list(selected)
 
 
 def _make_confirm(session: Session):
@@ -271,7 +299,11 @@ def run(session: Session) -> None:
         if line.startswith("/"):
             if (
                 dispatch(
-                    line, session, console, selector=_select_command_option
+                    line,
+                    session,
+                    console,
+                    selector=_select_command_option,
+                    multi_selector=_select_command_options,
                 )
                 == CommandResult.EXIT
             ):
