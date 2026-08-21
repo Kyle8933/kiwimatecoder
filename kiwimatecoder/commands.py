@@ -408,6 +408,13 @@ def _apply_provider_checklist(
     console.print(summary)
 
 
+def _provider_default_label(provider: ProviderConfig) -> str:
+    """Provider label fallback for locals with no static default model."""
+    if provider.default_model:
+        return provider.default_model
+    return "key required (local)" if provider.requires_key else "no key needed (local)"
+
+
 def _multi_selection_prompt(session: Session) -> MultiSelectionPrompt | None:
     """Build the checklist shown for a bare ``/provider``."""
     providers = list_provider_configs()
@@ -422,7 +429,7 @@ def _multi_selection_prompt(session: Session) -> MultiSelectionPrompt | None:
     ordered.extend(provider for provider in providers if provider.id not in seen)
 
     def _label(provider: ProviderConfig) -> str:
-        default = provider.default_model or "no key needed (local)"
+        default = _provider_default_label(provider)
         if roster and provider.id == roster[0]:
             role = " (primary)"
         elif provider.id in roster:
@@ -1458,7 +1465,7 @@ def _selection_prompt(
             options=tuple(
                 CommandOption(
                     provider.id,
-                    f"{provider.name} — {provider.default_model or 'no key needed (local)'}",
+                    f"{provider.name} — {_provider_default_label(provider)}",
                 )
                 for provider in providers
             ),

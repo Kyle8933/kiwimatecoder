@@ -148,6 +148,7 @@ providers with `config provider add`.
 | `openrouter` | `anthropic/claude-sonnet-5` | `OPENROUTER_API_KEY` |
 | `ollama` | *(from server)* | `OLLAMA_API_KEY` (optional) |
 | `lmstudio` | *(from server)* | `LMSTUDIO_API_KEY` (optional) |
+| `unsloth` | *(from server)* | `UNSLOTH_API_KEY` (required) |
 
 These defaults are a starting point; the live catalog below is what `/model`
 actually offers once a provider is in use.
@@ -159,23 +160,30 @@ models, routing via `openrouter` (or another gateway) is the most reliable path
 until native support is added. (Model listing already speaks Anthropic's native
 `/v1/models` scheme, so `/model` works there today.)
 
-### Local providers (Ollama & LM Studio)
+### Local providers (Ollama, LM Studio & Unsloth)
 
-The `ollama` and `lmstudio` providers talk to model servers on your own machine
-— no API key, no setup. Just make sure the server is running
-([Ollama](https://ollama.com) on `http://localhost:11434`, or
-[LM Studio](https://lmstudio.ai)'s local server on `http://localhost:1234`),
-then:
+The `ollama`, `lmstudio`, and `unsloth` providers talk to model servers on your
+own machine. Make sure the server is running ([Ollama](https://ollama.com) on
+`http://localhost:11434`, [LM Studio](https://lmstudio.ai)'s local server on
+`http://localhost:1234`, or [Unsloth](https://unsloth.ai)'s Studio API on
+`http://localhost:8888`), then:
 
 ```text
 /provider ollama
 ```
 
-That's it — the session model is resolved live from whatever the server has
-loaded or pulled, and `/model` lists the server's actual models. `kiwimatecoder
-setup` detects which local servers are running and marks them in the picker.
-Tool calling depends on the model you pick, so choose a tool-capable family
-(Llama 3.1+, Qwen 3, DeepSeek, ...).
+That's it for Ollama and LM Studio — no API key, no setup. The session model is
+resolved live from whatever the server has loaded or pulled, and `/model` lists
+the server's actual models. `kiwimatecoder setup` detects which local servers
+are running and marks them in the picker. Tool calling depends on the model you
+pick, so choose a tool-capable family (Llama 3.1+, Qwen 3, DeepSeek, ...).
+
+`unsloth` works the same way but **requires a key**: Unsloth enforces auth even
+on localhost. Create one in Unsloth under Settings → API (it starts with
+`sk-unsloth-`), run `kiwimatecoder setup --provider unsloth` to save it, and
+load a GGUF model in Unsloth before chatting. Tip: start Unsloth's server with
+`--disable-tools` when an external agent drives it — otherwise Unsloth's own
+server-side tools swallow the agent's tool calls.
 
 A key only matters if your server enforces auth (e.g. LM Studio's server token,
 or Ollama behind an authenticating proxy) — set `OLLAMA_API_KEY` /
@@ -205,8 +213,9 @@ provider itself rather than being frozen into the release.
   touches the network. A failed fetch falls back to the cached list, then to the
   built-in one, and is not retried automatically for 30 minutes.
 - **Needs a key.** A cloud provider is only queried once it has an API key
-  configured; local providers (`ollama`, `lmstudio`, and any custom provider on
-  `localhost` or a `*.local` host) are queried without one.
+  configured; keyless local servers (`ollama`, `lmstudio`, and any custom
+  provider on `localhost` or a `*.local` host) are queried without one —
+  `unsloth`, which enforces auth locally, is queried once its key is set.
 
 From the shell, `kiwimatecoder config models show [--provider <id>]` and
 `kiwimatecoder config models refresh [--provider <id>]` show or refresh the same

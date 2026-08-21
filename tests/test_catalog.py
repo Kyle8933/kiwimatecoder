@@ -307,6 +307,24 @@ def test_probe_sends_no_authorization_header_without_a_key():
     assert "authorization" not in seen[0].headers
 
 
+def test_probe_forwards_the_api_key_when_given_one():
+    seen: list[httpx.Request] = []
+    transport = _json_transport({"data": []}, seen=seen)
+    catalog.probe(REGISTRY["unsloth"], api_key="sk-unsloth-test", transport=transport)
+    assert seen[0].headers["authorization"] == "Bearer sk-unsloth-test"
+
+
+def test_probe_counts_401_as_running_for_key_requiring_local():
+    """A 401 from Unsloth proves the server is up; only the key is missing."""
+    transport = _json_transport({"error": "unauthorized"}, status_code=401)
+    assert catalog.probe(REGISTRY["unsloth"], transport=transport)
+
+
+def test_probe_does_not_count_401_as_running_for_keyless_local():
+    transport = _json_transport({"error": "unauthorized"}, status_code=401)
+    assert not catalog.probe(REGISTRY["ollama"], transport=transport)
+
+
 def test_parse_ollama_style_listing_drops_embedding_models():
     models = catalog.parse_models_response(
         {

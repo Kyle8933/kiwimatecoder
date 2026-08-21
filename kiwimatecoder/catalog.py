@@ -293,6 +293,7 @@ def fetch_models(
 def probe(
     provider: ProviderConfig,
     *,
+    api_key: str | None = None,
     timeout: float = PROBE_TIMEOUT,
     transport: httpx.BaseTransport | None = None,
 ) -> bool:
@@ -300,7 +301,9 @@ def probe(
 
     Used to annotate local providers in the setup wizard; never raises. Any
     200 counts as "running", even when no models are loaded yet — that is a
-    server the user can still pull models into.
+    server the user can still pull models into. A 401 also counts as running
+    for providers that enforce auth (Unsloth): the server is up, only the key
+    is missing — and it may not exist yet when the wizard first probes.
     """
     try:
         with httpx.Client(
@@ -308,12 +311,14 @@ def probe(
         ) as client:
             response = client.get(
                 models_url(provider),
-                headers=request_headers(provider, None),
+                headers=request_headers(provider, api_key),
                 params=request_params(provider),
             )
     except httpx.HTTPError:
         return False
-    return response.status_code == 200
+    if response.status_code == 200:
+        return True
+    return response.status_code == 401 and provider.requires_key
 
 
 def search_models(models: Sequence[str], query: str) -> list[str]:

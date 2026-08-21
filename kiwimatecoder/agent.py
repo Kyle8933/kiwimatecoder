@@ -42,7 +42,7 @@ class Agent:
 
         provider = get_provider_config(provider_id) if provider_id else self.session.provider
         key = get_key(provider.id)
-        if not key and not provider.is_local:
+        if not key and provider.needs_key:
             raise ProviderError(
                 f"No API key for {provider.name}. Set one with "
                 + f"`config set-key --provider {provider.id} <KEY>` or the "

@@ -15,9 +15,12 @@ provider at runtime with ``/model`` (typing any id works, listed or not) or
 persist a choice via ``config set-model``, and can reshape the offered list with
 ``/config models allow|deny``.
 
-Local providers (Ollama, LM Studio) need no API key and serve whatever models
-are loaded, so they ship no static ``default_model`` — the session model is
-resolved live from the running server (see ``config.resolve_default_model``).
+Local providers (Ollama, LM Studio, Unsloth) serve whatever models are loaded,
+so they ship no static ``default_model`` — the session model is resolved live
+from the running server (see ``config.resolve_default_model``). Ollama and
+LM Studio need no API key; Unsloth enforces auth even locally
+(``requires_key=True``), so its ``sk-unsloth-…`` key must be configured before
+the server can be used.
 """
 
 from __future__ import annotations
@@ -25,8 +28,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-# Hosts that serve the local machine and therefore need no API key (LM Studio,
-# Ollama, llama.cpp, ...). ``*.local`` hosts are treated the same way.
+# Hosts that serve the local machine (LM Studio, Ollama, llama.cpp, Unsloth,
+# ...). ``*.local`` hosts are treated the same way. Local does not imply
+# keyless: see ``ProviderConfig.requires_key``.
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
 
 
@@ -39,6 +43,9 @@ class ProviderConfig:
     base_url: str  # includes /v1, never a trailing /chat/completions
     default_model: str  # may be "" for local providers (resolved live)
     key_env: str
+    # Set for local servers that enforce auth anyway (Unsloth's sk-unsloth-…
+    # key). Keyless locals (Ollama, LM Studio) and custom providers leave it off.
+    requires_key: bool = False
     compat: str = "openai"  # "openai" | "anthropic" (reserved; native paths not yet implemented)
     extra_headers: dict[str, str] = field(default_factory=dict)
     # Curated catalog offered by /model; not exhaustive, and any id can still
@@ -47,9 +54,14 @@ class ProviderConfig:
 
     @property
     def is_local(self) -> bool:
-        """Whether the provider serves the local machine (no API key needed)."""
+        """Whether the provider serves the local machine."""
         host = (urlparse(self.base_url).hostname or "").lower()
         return host in _LOCAL_HOSTS or host.endswith(".local")
+
+    @property
+    def needs_key(self) -> bool:
+        """Whether requests fail without an API key (cloud or auth-enforcing local server)."""
+        return self.requires_key or not self.is_local
 
 
 class UnknownProviderError(KeyError):
@@ -170,6 +182,19 @@ REGISTRY: dict[str, ProviderConfig] = {
         default_model="",
         key_env="LMSTUDIO_API_KEY",  # optional; only if the server enforces auth
         models=("qwen2.5-coder-7b-instruct", "llama-3.1-8b-instruct"),
+    ),
+    "unsloth": ProviderConfig(
+        id="unsloth",
+        name="Unsloth (local)",
+        base_url="http://localhost:8888/v1",
+        # No static default: the model is whatever GGUF is loaded in Unsloth
+        # Studio. The curated tuple is only the offline fallback for /model.
+        default_model="",
+        # Required: Unsloth's local server enforces auth (Settings → API,
+        # the key starts with sk-unsloth-).
+        key_env="UNSLOTH_API_KEY",
+        requires_key=True,
+        models=("unsloth/Qwen3.6-27B-GGUF", "unsloth/gemma-4-26B-A4B-it-GGUF"),
     ),
 }
 

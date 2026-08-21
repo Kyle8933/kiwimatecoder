@@ -563,8 +563,33 @@ def test_offline_local_server_falls_back_to_curated(monkeypatch):
 
 def test_describe_key_for_local_provider_without_key(monkeypatch):
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
     assert config.describe_key("ollama") == "not required (local server)"
+    assert config.describe_key("unsloth") == "required by local server"
     assert config.describe_key("openai") == "missing"
+
+
+def test_local_provider_requiring_key_is_not_fetched_without_one(monkeypatch):
+    """Unsloth answers 401 without a key, so no doomed fetch is attempted."""
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
+    calls = _install_fetch(monkeypatch, ["unsloth/Qwen3.6-27B-GGUF"])
+
+    result = config.get_model_catalog("unsloth", refresh=True)
+
+    assert calls == []
+    assert result.source == "curated"
+    assert result.models == list(REGISTRY["unsloth"].models)
+
+
+def test_local_provider_requiring_key_is_fetched_once_key_is_set(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_API_KEY", "sk-unsloth-test")
+    calls = _install_fetch(monkeypatch, ["unsloth/Qwen3.6-27B-GGUF"])
+
+    result = config.get_model_catalog("unsloth", refresh=True)
+
+    assert calls == ["unsloth"]
+    assert result.source == "live"
+    assert result.models == ["unsloth/Qwen3.6-27B-GGUF"]
 
 
 def test_resolve_default_model_returns_static_default_without_network(monkeypatch):

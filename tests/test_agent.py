@@ -245,6 +245,18 @@ def test_agent_client_requires_key_for_cloud_provider(agent_session):
         agent._client()
 
 
+def test_agent_client_requires_key_for_key_requiring_local(agent_session):
+    """Unsloth is local but enforces auth: no key → the friendly error, not a 401."""
+    agent_session.provider_id = "unsloth"
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value=None),
+        pytest.raises(ProviderError, match="No API key"),
+    ):
+        agent._client()
+
+
 # ---------------------------------------------------------------------------
 # Active-provider failover
 # ---------------------------------------------------------------------------

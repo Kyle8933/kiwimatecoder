@@ -249,3 +249,60 @@ def test_ask_with_local_provider_and_no_key(monkeypatch):
     assert captured["api_key"] == ""
     assert captured["model"] == "llama3.1:8b"
     assert captured["provider"].id == "ollama"
+
+
+def test_setup_unsloth_without_key_prompts_instead_of_skipping(monkeypatch):
+    """Unsloth is local but enforces auth, so setup must ask for its key."""
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
+
+    result = CliRunner().invoke(main.app, ["setup", "--provider", "unsloth"])
+
+    # Empty stdin cancels the key prompt; nothing is selected or stored.
+    # (A cancelled setup exits 1, matching the picker-cancel convention.)
+    assert result.exit_code == 1
+    assert "nothing changed" in result.output
+    assert "needs no API key" not in result.output
+    assert config.get_selected_provider_id() == "openrouter"
+    assert config.get_key("unsloth") is None
+
+
+def test_setup_unsloth_with_key_saves_and_selects(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
+
+    result = CliRunner().invoke(
+        main.app, ["setup", "--provider", "unsloth", "--key", "sk-unsloth-test"]
+    )
+
+    assert result.exit_code == 0
+    assert "API key saved" in result.output
+    assert config.get_key("unsloth") == "sk-unsloth-test"
+    assert config.get_selected_provider_id() == "unsloth"
+
+
+def test_ask_with_unsloth_and_no_key_exits(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
+
+    result = CliRunner().invoke(main.app, ["ask", "hi", "--provider", "unsloth"])
+
+    assert result.exit_code == 1
+    assert "No API key" in result.output
+
+
+def test_ask_with_unsloth_and_key_proceeds(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_API_KEY", "sk-unsloth-test")
+    captured = {}
+
+    async def fake_stream(prompt, api_key, model=None, provider=None):
+        captured["api_key"] = api_key
+        captured["provider"] = provider
+
+    monkeypatch.setattr(main, "stream_response", fake_stream)
+    monkeypatch.setattr(
+        main, "resolve_default_model", lambda provider: "unsloth/Qwen3.6-27B-GGUF"
+    )
+
+    result = CliRunner().invoke(main.app, ["ask", "hi", "--provider", "unsloth"])
+
+    assert result.exit_code == 0
+    assert captured["api_key"] == "sk-unsloth-test"
+    assert captured["provider"].id == "unsloth"

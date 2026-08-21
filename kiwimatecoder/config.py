@@ -425,8 +425,13 @@ def describe_key(provider_id: str) -> str:
     origin = source["origin"]
     value = source["value"]
     if origin == "missing":
-        if get_provider_config(provider_id).is_local:
-            return "not required (local server)"
+        provider = get_provider_config(provider_id)
+        if provider.is_local:
+            return (
+                "required by local server"
+                if provider.requires_key
+                else "not required (local server)"
+            )
         return "missing"
     redacted = _redact(value)
     if origin == "env":
@@ -690,11 +695,12 @@ def _can_fetch_models(provider: ProviderConfig) -> bool:
 
     A provider you have no key for is one you cannot use, so we skip the request
     rather than firing off a doomed call every time the selector opens. Local
-    servers are exempt: they usually need no key at all.
+    servers are exempt — except key-enforcing ones like Unsloth, whose listing
+    answers 401 until the key exists.
     """
     if get_key(provider.id):
         return True
-    return provider.is_local
+    return provider.is_local and not provider.requires_key
 
 
 def _should_auto_refresh(entry: dict[str, Any], now: float) -> bool:

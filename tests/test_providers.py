@@ -18,6 +18,7 @@ EXPECTED_DEFAULT_MODELS = {
     "openrouter": "anthropic/claude-sonnet-5",
     "ollama": "",
     "lmstudio": "",
+    "unsloth": "",
 }
 
 
@@ -71,13 +72,27 @@ def test_session_falls_through_to_provider_default_model():
 
 
 def test_local_providers_are_marked_local():
-    for pid in ("ollama", "lmstudio"):
+    for pid in ("ollama", "lmstudio", "unsloth"):
         provider = providers.get_provider(pid)
         assert provider.is_local
         assert provider.default_model == ""
         assert provider.compat == "openai"
         assert provider.models  # curated offline fallback
     assert not providers.get_provider("openai").is_local
+
+
+def test_unsloth_is_local_but_still_requires_a_key():
+    """Unsloth enforces auth even on localhost; ollama/lmstudio stay keyless."""
+    unsloth = providers.get_provider("unsloth")
+    assert unsloth.key_env == "UNSLOTH_API_KEY"
+    assert unsloth.is_local
+    assert unsloth.requires_key
+    assert unsloth.needs_key
+    for pid in ("ollama", "lmstudio"):
+        provider = providers.get_provider(pid)
+        assert not provider.requires_key
+        assert not provider.needs_key
+    assert providers.get_provider("openai").needs_key  # cloud always needs one
 
 
 def test_is_local_matches_host_heuristic():

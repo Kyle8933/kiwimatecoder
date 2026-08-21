@@ -529,7 +529,7 @@ def main(
         except ValueError:
             mode = PermissionMode.ASK
 
-        if not get_key(provider_id) and not provider.is_local:
+        if not get_key(provider_id) and provider.needs_key:
             console.print(
                 Panel(
                     f"[yellow]No API key set for {provider.name}.[/yellow]\n"
@@ -582,7 +582,7 @@ def _interactive_select_provider(
         if p.is_local:
             status = (local_status or {}).get(p.id)
             if status is None:
-                note = "no key needed"
+                note = "key required" if p.requires_key else "no key needed"
             elif status:
                 note = "running"
             else:
@@ -623,9 +623,10 @@ def _run_setup(provider_id: str, key: str | None) -> bool:
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         return False
-    if key is None and provider.is_local:
-        # Local servers need no key — just select the provider and let the
-        # session model resolve from whatever the server has loaded.
+    if key is None and provider.is_local and not provider.requires_key:
+        # Keyless local servers (Ollama, LM Studio) — just select the provider
+        # and let the session model resolve from whatever the server has loaded.
+        # Key-enforcing locals (Unsloth) fall through to the normal key prompt.
         set_selected_provider(provider_id)
         set_selected_model(None)  # don't carry a stale model across providers
         console.print(
@@ -682,8 +683,12 @@ def setup(
     if provider is None and key is None and _stdin_is_tty():
         providers = list_provider_configs(cfg)
         # Detect which local servers are actually up; localhost refuses fast,
-        # so this costs ~nothing when they are not running.
-        local_status = {p.id: probe(p) for p in providers if p.is_local}
+        # so this costs ~nothing when they are not running. Providers that
+        # enforce auth get their key when one is stored, so the probe sees a
+        # true 200 instead of their 401.
+        local_status = {
+            p.id: probe(p, api_key=get_key(p.id)) for p in providers if p.is_local
+        }
         chosen = _interactive_select_provider(providers, provider_id, local_status)
         if chosen is None:
             console.print("[yellow]Setup cancelled.[/yellow]")
@@ -719,7 +724,7 @@ def ask(
         raise typer.Exit(1)
 
     api_key = get_key(provider_id)
-    if not api_key and not provider_cfg.is_local:
+    if not api_key and provider_cfg.needs_key:
         console.print(
             f"[red]No API key for {provider_cfg.name}. "
             + f"Run: kiwimatecoder setup --provider {provider_id}[/red]"
