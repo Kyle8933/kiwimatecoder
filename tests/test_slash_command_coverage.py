@@ -141,7 +141,8 @@ def test_mode_rejects_unknown_value(session):
 
     assert dispatch("/mode nonsense", session, console) == CommandResult.CONTINUE
     assert session.mode is PermissionMode.ASK
-    assert "invalid" in _output(console).lower() or "unknown" in _output(console).lower() or "Mode" in _output(console) or _output(console)
+    output = _output(console).lower()
+    assert "invalid" in output or "unknown" in output
 
 
 def test_context_list_shows_empty_and_pinned(session):
