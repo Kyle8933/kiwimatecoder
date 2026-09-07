@@ -477,13 +477,10 @@ def set_selected_provider(provider_id: str) -> None:
 
     Choosing a single provider explicitly makes it the only active one; the
     checklist (``/provider``) or :func:`set_active_providers` is how a user opts
-    back into a multi-provider roster.
+    back into a multi-provider roster. Switching the primary drops the saved
+    model so a vendor-specific id cannot leak onto the next session.
     """
-    get_provider_config(provider_id)
-    cfg = load_config()
-    cfg["selected_provider"] = provider_id
-    cfg["active_providers"] = [provider_id]
-    save_config(cfg)
+    set_active_providers([provider_id])
 
 
 def set_selected_model(model: str | None) -> None:
@@ -571,7 +568,9 @@ def set_active_providers(provider_ids: Sequence[str]) -> list[str]:
 
     ``provider_ids`` must be a non-empty sequence of known provider ids (order
     is significant: the first is the primary). The single ``selected_provider``
-    is kept in sync with the primary for backward compatibility.
+    is kept in sync with the primary for backward compatibility. Changing the
+    primary clears ``selected_model`` so the next session uses the new
+    provider's default until a model is chosen again.
     """
     if not provider_ids:
         raise ValueError("At least one active provider is required.")
@@ -588,8 +587,11 @@ def set_active_providers(provider_ids: Sequence[str]) -> list[str]:
         raise ValueError("At least one active provider is required.")
 
     cfg = load_config()
+    previous_primary = get_selected_provider_id(cfg)
     cfg["active_providers"] = cleaned
     cfg["selected_provider"] = cleaned[0]
+    if cleaned[0] != previous_primary:
+        cfg["selected_model"] = None
     save_config(cfg)
     return cleaned
 

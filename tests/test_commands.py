@@ -92,6 +92,7 @@ def test_bare_model_command_selects_from_current_provider(session):
 
     assert result == CommandResult.CONTINUE
     assert session.model == "model-b"
+    assert config.load_config().get("selected_model") == "model-b"
     assert prompts[0].title == "Select model"
     assert [option.value for option in prompts[0].options] == ["model-a", "model-b"]
     assert "openrouter" in prompts[0].text
@@ -120,6 +121,15 @@ def test_cancelled_model_selection_leaves_model_unchanged(session):
     assert session.model == "test-model"
 
 
+def test_cancelled_model_selection_does_not_change_saved_default(session):
+    config.set_selected_model("already-saved")
+
+    dispatch("/model", session, _console(), selector=lambda prompt: None)
+
+    assert session.model == "test-model"
+    assert config.load_config().get("selected_model") == "already-saved"
+
+
 def test_bare_provider_and_mode_commands_are_interactive(session):
     def select(prompt: SelectionPrompt) -> str:
         if prompt.title == "Select provider":
@@ -141,9 +151,11 @@ def test_explicit_choice_does_not_open_selector(session):
     dispatch("/model custom-model", session, _console(), selector=fail_if_called)
 
     assert session.model == "custom-model"
+    assert config.load_config().get("selected_model") == "custom-model"
 
 
 def test_bare_provider_command_opens_multi_checklist(session):
+    config.set_selected_model("stale-from-openrouter")
     prompts: list[MultiSelectionPrompt] = []
 
     def select(prompt: MultiSelectionPrompt) -> list[str]:
@@ -159,6 +171,7 @@ def test_bare_provider_command_opens_multi_checklist(session):
     assert session.model == REGISTRY["openai"].default_model
     assert session.active_provider_ids == ["openai", "deepseek"]
     assert config.get_active_provider_ids() == ["openai", "deepseek"]
+    assert config.load_config().get("selected_model") is None
 
 
 def test_bare_provider_checklist_marks_current_selection(session):
@@ -188,11 +201,13 @@ def test_bare_provider_checklist_rejects_empty_selection(session):
 def test_provider_command_with_id_resets_roster_to_single(session):
     console = _console()
     config.set_active_providers(["openrouter", "openai"])
+    config.set_selected_model("stale-from-openrouter")
 
     dispatch("/provider deepseek", session, console)
 
     assert session.provider_id == "deepseek"
     assert config.get_active_provider_ids() == ["deepseek"]
+    assert config.load_config().get("selected_model") is None
 
 
 def test_explicit_provider_id_does_not_open_checklist(session):
@@ -206,6 +221,7 @@ def test_explicit_provider_id_does_not_open_checklist(session):
 
 def test_reapplying_provider_checklist_keeps_current_model(session):
     session.model = "my-custom-model"
+    config.set_selected_model("my-custom-model")
     session.allow_always("run_bash")
 
     dispatch(
@@ -219,6 +235,7 @@ def test_reapplying_provider_checklist_keeps_current_model(session):
     assert session.model == "my-custom-model"
     assert session.is_always_allowed("run_bash")
     assert session.active_provider_ids == ["openrouter", "openai"]
+    assert config.load_config().get("selected_model") == "my-custom-model"
 
 
 def test_provider_checklist_lists_current_roster_first(session):
@@ -389,6 +406,8 @@ def test_model_list_uses_the_cache_without_fetching(session, monkeypatch):
     dispatch("/model list", session, console)
 
     assert "vendor/one" in _output(console)
+    assert config.load_config().get("selected_model") is None
+    assert session.model == "test-model"
 
 
 def test_setting_a_model_by_name_still_works(session, monkeypatch):
@@ -402,6 +421,7 @@ def test_setting_a_model_by_name_still_works(session, monkeypatch):
     dispatch("/model some/unlisted-model", session, _console())
 
     assert session.model == "some/unlisted-model"
+    assert config.load_config().get("selected_model") == "some/unlisted-model"
 
 
 def test_config_models_refresh_updates_the_catalog(session, monkeypatch):
@@ -435,6 +455,7 @@ def test_model_search_offers_matches_and_selects(session, monkeypatch):
     dispatch("/model search vendor", session, _console(), selector=select)
 
     assert session.model == "vendor/bar"
+    assert config.load_config().get("selected_model") == "vendor/bar"
     assert prompts[0].title == "Search: vendor"
     assert [option.value for option in prompts[0].options] == [
         "vendor/foo",

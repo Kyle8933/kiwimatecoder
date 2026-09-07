@@ -246,6 +246,27 @@ def test_set_active_providers_keeps_selected_provider_in_sync():
     assert config.get_selected_provider_id() == "openai"
 
 
+def test_set_active_providers_clears_selected_model_when_primary_changes():
+    config.set_active_providers(["openai"])
+    config.set_selected_model("openai/gpt-test")
+    config.set_active_providers(["deepseek", "openai"])
+    assert config.load_config().get("selected_model") is None
+
+
+def test_set_active_providers_keeps_selected_model_when_primary_unchanged():
+    config.set_active_providers(["openai", "deepseek"])
+    config.set_selected_model("openai/gpt-test")
+    config.set_active_providers(["openai", "openrouter"])
+    assert config.load_config().get("selected_model") == "openai/gpt-test"
+
+
+def test_set_selected_provider_clears_selected_model_when_switching():
+    config.set_selected_provider("openai")
+    config.set_selected_model("openai/gpt-test")
+    config.set_selected_provider("deepseek")
+    assert config.load_config().get("selected_model") is None
+
+
 def test_set_selected_provider_resets_roster_to_single():
     config.set_active_providers(["openai", "openrouter"])
     config.set_selected_provider("deepseek")

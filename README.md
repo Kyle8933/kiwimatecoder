@@ -53,7 +53,10 @@ kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.p
   roster with that single provider. Arrow keys move, Enter selects, and Ctrl-C
   returns to the prompt without changing anything.
 - Opening `/model` checks the provider for models released since you last looked,
-  and drops any it has retired. `/model refresh` forces the check.
+  and drops any it has retired. `/model refresh` forces the check. The model you
+  pick is saved as the default for the next session (`/config model reset`
+  restores the provider default). Switching the primary provider with
+  `/provider` clears that saved model so a vendor-specific id cannot leak.
 - `/model search <term>` searches the provider's full catalog by name and opens
   the selector on the matches — useful when a model is older than the newest few
   that `/model` lists.
@@ -80,7 +83,7 @@ Reads, writes, edits, listings and searches are sandboxed to the workspace root 
 | `/help` | Show available commands. |
 | `/exit`, `/quit` | Leave the session. |
 | `/clear` | Clear the conversation history. |
-| `/model [name\|refresh\|list\|search <term>]` | Interactively choose a model (the list is refreshed from the provider), set one by name, refresh/show the list, or search the full catalog by name. |
+| `/model [name\|refresh\|list\|search <term>]` | Interactively choose a model (the list is refreshed from the provider), set one by name, refresh/show the list, or search the full catalog by name. The choice is remembered for the next session. |
 | `/provider [id]` | Choose a failover roster (checklist), or replace it with one provider by id. |
 | `/mode [ask\|auto-accept\|plan]` | Interactively choose, or directly set, the permission mode. |
 | `/tools` | List available tools. |

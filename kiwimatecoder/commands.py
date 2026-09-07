@@ -324,8 +324,7 @@ def _model_search(
         selected = _run_selector(selector, prompt)
         if selected is None:
             return
-        session.model = selected
-        console.print(f"Model set to [cyan]{selected}[/cyan].")
+        _apply_model(session, selected, console)
         return
 
     _print_model_search(session, console, matches, query)
@@ -354,9 +353,15 @@ def _model(arg: str, session: Session, console: Console, selector: CommandSelect
         _model_search(session, console, rest, selector)
         return CommandResult.CONTINUE
 
-    session.model = arg
-    console.print(f"Model set to [cyan]{arg}[/cyan].")
+    _apply_model(session, arg, console)
     return CommandResult.CONTINUE
+
+
+def _apply_model(session: Session, model: str, console: Console) -> None:
+    """Switch the session model and remember it as the default for next time."""
+    session.model = model
+    set_selected_model(model)
+    console.print(f"Model set to [cyan]{model}[/cyan].")
 
 
 def _provider(arg: str, session: Session, console: Console) -> str:
@@ -1340,7 +1345,7 @@ _HELP_GROUPS = [
                 "/model [name|refresh|list|search <term>]",
                 "Choose a model (the list is refreshed from the provider), "
                 "set one by name, refresh the list, or search the full "
-                "catalog by name.",
+                "catalog by name. The choice is remembered for the next session.",
             ),
             (
                 "/provider [id]",
