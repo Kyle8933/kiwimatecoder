@@ -131,18 +131,32 @@ class Agent:
         text_parts: list[str] = []
         assembler = ToolCallAssembler()
         printed_any = False
+        status = self.console.status("[dim]Thinking…[/dim]")
+        status.start()
+        thinking = True
 
-        async for event in client.stream_chat(self._request_messages(), schemas, model):
-            if isinstance(event, TextDelta):
-                self.console.print(event.text, end="", markup=False, highlight=False)
-                text_parts.append(event.text)
-                printed_any = True
-            elif isinstance(event, ToolCallDelta):
-                assembler.add(event)
-            elif isinstance(event, Usage):
-                self.session.add_usage(event.prompt_tokens, event.completion_tokens)
-            elif isinstance(event, Done):
-                pass
+        try:
+            async for event in client.stream_chat(
+                self._request_messages(), schemas, model
+            ):
+                if isinstance(event, TextDelta):
+                    if thinking:
+                        status.stop()
+                        thinking = False
+                    self.console.print(
+                        event.text, end="", markup=False, highlight=False
+                    )
+                    text_parts.append(event.text)
+                    printed_any = True
+                elif isinstance(event, ToolCallDelta):
+                    assembler.add(event)
+                elif isinstance(event, Usage):
+                    self.session.add_usage(event.prompt_tokens, event.completion_tokens)
+                elif isinstance(event, Done):
+                    pass
+        finally:
+            if thinking:
+                status.stop()
 
         if printed_any:
             self.console.print()
@@ -200,7 +214,8 @@ class Agent:
 
         t0 = time.perf_counter()
         try:
-            result = tool.execute(args, self.session)
+            with self.console.status(f"{summary}…"):
+                result = tool.execute(args, self.session)
         except Exception as exc:
             result = ToolResult.error(f"Tool crashed: {exc!r}")
         duration_ms = int((time.perf_counter() - t0) * 1000)

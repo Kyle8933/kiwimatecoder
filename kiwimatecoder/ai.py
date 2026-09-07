@@ -39,9 +39,19 @@ async def stream_response(
         {"role": "user", "content": prompt},
     ]
 
+    status = console.status("[dim]Thinking…[/dim]")
+    status.start()
+    thinking = True
     try:
-        async for event in client.stream_chat(messages, tools=None, model=model):
-            if isinstance(event, TextDelta):
-                console.print(event.text, end="", markup=False, highlight=False)
+        try:
+            async for event in client.stream_chat(messages, tools=None, model=model):
+                if isinstance(event, TextDelta):
+                    if thinking:
+                        status.stop()
+                        thinking = False
+                    console.print(event.text, end="", markup=False, highlight=False)
+        finally:
+            if thinking:
+                status.stop()
     except ProviderError as exc:
         console.print(f"\n[red]{exc}[/red]")

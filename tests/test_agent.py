@@ -10,6 +10,7 @@ from kiwimatecoder.agent import Agent
 from kiwimatecoder.client import Done, ProviderError, TextDelta, ToolCallDelta
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import Session
+from tests.conftest import track_console
 
 
 @pytest.fixture
@@ -359,3 +360,176 @@ def test_session_model_for_uses_override_for_fallback(agent_session):
 
     assert agent_session.model_for("openrouter") == agent_session.model
     assert agent_session.model_for("openai") == "custom-openai-model"
+
+
+# ---------------------------------------------------------------------------
+# Thinking / working status
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_agent_shows_thinking_until_first_text(agent_session):
+    """The thinking spinner must stop before the first streamed token prints."""
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    log = track_console(console)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+
+    async def mock_stream(*args, **kwargs):
+        yield TextDelta(text="Hello")
+        yield Done(finish_reason="stop")
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("Hi")
+
+    start_idx = next(
+        (
+            i
+            for i, event in enumerate(log)
+            if event[0] == "start" and "Thinking" in event[1]
+        ),
+        None,
+    )
+    stop_idx = next(
+        (
+            i
+            for i, event in enumerate(log)
+            if event[0] == "stop" and "Thinking" in event[1]
+        ),
+        None,
+    )
+    hello_idx = next(
+        (
+            i
+            for i, event in enumerate(log)
+            if event[0] == "print" and "Hello" in event[1]
+        ),
+        None,
+    )
+    assert start_idx is not None, f"expected Thinking status, got {log}"
+    assert stop_idx is not None, f"expected Thinking status to stop, got {log}"
+    assert hello_idx is not None, f"expected streamed text, got {log}"
+    assert start_idx < stop_idx < hello_idx
+
+
+@pytest.mark.anyio
+async def test_agent_shows_working_status_while_tool_runs(agent_session):
+    """A tool's working spinner must stop before the ✓/✗ result line prints."""
+    test_file = agent_session.workspace_root / "hello.txt"
+    test_file.write_text("file content")
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    log = track_console(console)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+
+    round_1 = [
+        ToolCallDelta(
+            index=0,
+            id="call_read",
+            name="read_file",
+            args_fragment='{"path": "hello.txt"}',
+        ),
+        Done(finish_reason="tool_calls"),
+    ]
+    round_2 = [
+        TextDelta(text="The file has: file content"),
+        Done(finish_reason="stop"),
+    ]
+    calls_count = 0
+
+    async def mock_stream(*args, **kwargs):
+        nonlocal calls_count
+        calls_count += 1
+        stream = round_1 if calls_count == 1 else round_2
+        for event in stream:
+            yield event
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("Read hello.txt")
+
+    start_idx = next(
+        (
+            i
+            for i, event in enumerate(log)
+            if event[0] == "start"
+            and "read_file" in event[1]
+            and "hello.txt" in event[1]
+        ),
+        None,
+    )
+    stop_idx = next(
+        (
+            i
+            for i, event in enumerate(log)
+            if event[0] == "stop"
+            and "read_file" in event[1]
+            and "hello.txt" in event[1]
+        ),
+        None,
+    )
+    check_idx = next(
+        (i for i, event in enumerate(log) if event[0] == "print" and "✓" in event[1]),
+        None,
+    )
+    assert start_idx is not None, f"expected tool working status, got {log}"
+    assert stop_idx is not None, f"expected tool status to stop, got {log}"
+    assert check_idx is not None, f"expected tool result line, got {log}"
+    assert start_idx < stop_idx < check_idx
+
+    thinking_starts = [
+        i for i, event in enumerate(log) if event[0] == "start" and "Thinking" in event[1]
+    ]
+    assert len(thinking_starts) >= 2, f"expected Thinking between tool rounds, got {log}"
+    assert thinking_starts[0] < start_idx < thinking_starts[1]
+
+
+@pytest.mark.anyio
+async def test_agent_stops_thinking_before_provider_error(agent_session):
+    """A failed model call must stop Thinking before the error line prints."""
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    log = track_console(console)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+
+    async def mock_stream(*args, **kwargs):
+        raise ProviderError("API rate limit")
+        yield Done()
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("Hello")
+
+    stop_idx = next(
+        (
+            i
+            for i, event in enumerate(log)
+            if event[0] == "stop" and "Thinking" in event[1]
+        ),
+        None,
+    )
+    error_idx = next(
+        (
+            i
+            for i, event in enumerate(log)
+            if event[0] == "print" and "API rate limit" in event[1]
+        ),
+        None,
+    )
+    assert stop_idx is not None, f"expected Thinking status to stop, got {log}"
+    assert error_idx is not None, f"expected error line, got {log}"
+    assert stop_idx < error_idx
