@@ -28,6 +28,7 @@ from kiwimatecoder.tools.run_bash import preview as _bash_preview
 from kiwimatecoder.tools.run_bash import run_bash_tool
 from kiwimatecoder.tools.search import search_tool
 from kiwimatecoder.tools.selection import select_hunks as select_hunks
+from kiwimatecoder.tools.skill import load_skill_tool
 from kiwimatecoder.tools.todo import update_todos_tool
 from kiwimatecoder.tools.write_file import preview as _write_preview
 from kiwimatecoder.tools.write_file import write_file_tool
@@ -39,6 +40,7 @@ _ALL_TOOLS: list[FunctionTool] = [
     read_file_tool,
     list_dir_tool,
     search_tool,
+    load_skill_tool,
     write_file_tool,
     edit_file_tool,
     run_bash_tool,

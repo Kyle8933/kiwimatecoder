@@ -364,6 +364,9 @@ class Agent:
             question = str(args.get("question", "") or "")
             short = question if len(question) <= 50 else f"{question[:47]}..."
             return f"ask [dim]{short}[/dim]"
+        if name == "load_skill":
+            skill = str(args.get("name", "") or "")
+            return f"skill [dim]{skill}[/dim]"
         return name
 
     # Only purely read-only tools are safe to run concurrently: they do not

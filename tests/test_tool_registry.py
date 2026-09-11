@@ -12,6 +12,7 @@ BUILTIN_NAMES = [
     "read_file",
     "list_dir",
     "search",
+    "load_skill",
     "write_file",
     "edit_file",
     "run_bash",

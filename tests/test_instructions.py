@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from kiwimatecoder import config
 from kiwimatecoder.instructions import instructions_section, load_instructions
 from kiwimatecoder.prompts import build_system_prompt
 from kiwimatecoder.session import Session
@@ -115,3 +116,20 @@ def test_build_system_prompt_includes_task_list(tmp_path):
 
     assert "Current task list" in prompt
     assert "write tests" in prompt
+
+
+def test_build_system_prompt_lists_skills_without_bodies(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "cfg")
+    skill_dir = tmp_path / ".kiwimatecoder" / "skills" / "pdf"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "# PDF Handling\nUse pypdf, never shell out.\n\nSECRET SKILL BODY"
+    )
+    session = Session(provider_id="openrouter", model="m", workspace_root=tmp_path)
+
+    prompt = build_system_prompt(session)["content"]
+
+    assert "Available skills" in prompt
+    assert "pdf" in prompt
+    assert "PDF Handling" in prompt
+    assert "SECRET SKILL BODY" not in prompt

@@ -9,6 +9,7 @@ from typing import Any
 from kiwimatecoder.instructions import instructions_section
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import Session
+from kiwimatecoder.skills import skills_section
 from kiwimatecoder.tools.paths import PathError, resolve_in_workspace
 
 _OUTPUT_STYLES = {
@@ -146,6 +147,7 @@ def build_system_prompt(session: Session) -> dict[str, Any]:
     """Return the system message tailored to the current session state."""
     context = _context_section(session)
     instructions = instructions_section(session.workspace_root)
+    skills = skills_section(session.workspace_root)
     style = _OUTPUT_STYLES.get(session.output_style, "")
     style_block = f"\n\nOutput style:\n{style}" if style else ""
     custom_block = (
@@ -171,7 +173,7 @@ Environment:
 - Operating system: {platform.system()} ({platform.release()})
 - Provider/model: {provider_line}
 - Permission mode: {session.mode.value}
-{trust_line}{context}{instructions}
+{trust_line}{context}{instructions}{skills}
 
 Tools: you can read files, list directories, search the codebase, write and \
 edit files, and run shell commands — all scoped to the workspace root. Use them \
