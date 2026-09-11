@@ -417,6 +417,9 @@ class Agent:
             query = str(args.get("query", "") or "")
             short = query if len(query) <= 50 else f"{query[:47]}..."
             return f"web_search [dim]{short}[/dim]"
+        if name in ("git", "git_write", "forge", "forge_write"):
+            action = str(args.get("action", "") or "")
+            return f"{name} [dim]{action}[/dim]"
         return name
 
     # Only purely read-only tools are safe to run concurrently: they do not

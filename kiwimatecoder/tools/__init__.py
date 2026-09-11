@@ -17,6 +17,10 @@ from kiwimatecoder.tools.ask import ask_user_tool
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
 from kiwimatecoder.tools.edit_file import edit_file_tool
 from kiwimatecoder.tools.edit_file import preview as _edit_preview
+from kiwimatecoder.tools.forge import forge_tool, forge_write_tool
+from kiwimatecoder.tools.forge import preview as _forge_write_preview
+from kiwimatecoder.tools.git import git_tool, git_write_tool
+from kiwimatecoder.tools.git import preview as _git_write_preview
 from kiwimatecoder.tools.list_dir import list_dir_tool
 from kiwimatecoder.tools.read_file import read_file_tool
 from kiwimatecoder.tools.registry import (
@@ -49,6 +53,10 @@ _ALL_TOOLS: list[FunctionTool] = [
     ask_user_tool,
     web_fetch_tool,
     web_search_tool,
+    git_tool,
+    git_write_tool,
+    forge_tool,
+    forge_write_tool,
 ]
 
 TOOLS = ToolRegistry()
@@ -60,6 +68,8 @@ _PREVIEWS: dict[str, Callable[[dict[str, Any], Any], str]] = {
     "write_file": _write_preview,
     "edit_file": _edit_preview,
     "run_bash": _bash_preview,
+    "git_write": _git_write_preview,
+    "forge_write": _forge_write_preview,
 }
 
 

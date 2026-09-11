@@ -20,6 +20,10 @@ BUILTIN_NAMES = [
     "ask_user",
     "web_fetch",
     "web_search",
+    "git",
+    "git_write",
+    "forge",
+    "forge_write",
 ]
 
 

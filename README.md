@@ -197,6 +197,10 @@ The assistant has these capabilities, all scoped to the workspace:
   sessions only).
 - `web_fetch`, `web_search` — read a page or search the web; read-only, and
   local/private addresses are blocked by default (see below).
+- `git`, `git_write` — inspect status/diff/log and stage, unstage, commit, or
+  create a branch (see below).
+- `forge`, `forge_write` — list/view or create pull requests/merge requests
+  and issues through the `gh`/`glab` CLI (see below).
 
 ## Web access
 
@@ -218,6 +222,29 @@ the model to cite the URLs it relies on.
 - DuckDuckGo parses the public HTML page, so result extraction is best-effort
   and may need updating if that page's markup changes; `web_fetch` is
   unaffected.
+
+## Git and forge tools
+
+The agent can inspect and change git state through dedicated tools instead of
+dropping to `run_bash`:
+
+- `git` (read-only) — `status`, `diff` (staged or not, optionally against a
+  ref), `log` (1–100 commits), `show <ref>`, and `branches`.
+- `git_write` (approval-gated) — `stage`, `unstage`, `commit` (a non-empty
+  message is required), and `checkout_branch` (creates a new branch). The
+  approval prompt shows the exact `git ...` command line.
+- `forge` (read-only) — `pr_list`, `pr_view`, `issue_list`, and `issue_view`
+  for the forge detected from the `origin` remote.
+- `forge_write` (approval-gated) — `pr_create` and `issue_create`.
+
+Forge integration goes through the official CLI (`gh` for GitHub, `glab` for
+GitLab), so your existing CLI login is used and no token is read or stored by
+KiwiMateCoder. The matching CLI must be installed and authenticated; on
+GitLab, pull requests are handled as merge requests (`glab mr ...`).
+
+Intentionally out of scope: `push`, `reset`, `clean`, and any forge
+merge/close/delete command. Those stay manual, or go through `run_bash` where
+the command rules and approval prompt apply.
 
 ## Providers
 

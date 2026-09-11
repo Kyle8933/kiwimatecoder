@@ -1303,3 +1303,28 @@ def test_agent_unknown_output_mode_falls_back_to_normal(agent_session):
     )
 
     assert agent.output_mode == "normal"
+
+
+def test_agent_call_summaries_for_web_and_forge_tools(agent_session):
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+
+    assert (
+        agent._format_call_summary("git", {"action": "status"})
+        == "git [dim]status[/dim]"
+    )
+    assert (
+        agent._format_call_summary("git_write", {"action": "commit"})
+        == "git_write [dim]commit[/dim]"
+    )
+    assert (
+        agent._format_call_summary("forge", {"action": "pr_list"})
+        == "forge [dim]pr_list[/dim]"
+    )
+    assert (
+        agent._format_call_summary("forge_write", {"action": "pr_create"})
+        == "forge_write [dim]pr_create[/dim]"
+    )
+    fetch = agent._format_call_summary("web_fetch", {"url": "https://example.com"})
+    assert fetch == "web_fetch [dim]https://example.com[/dim]"
+    search = agent._format_call_summary("web_search", {"query": "kiwi docs"})
+    assert search == "web_search [dim]kiwi docs[/dim]"

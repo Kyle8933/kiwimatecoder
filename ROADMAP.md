@@ -68,7 +68,7 @@ and a count in `/mcp list`; `prompts/*` is not surfaced as a user command yet.
 Goal: the agent can see the whole project and the outside world.
 
 - [x] 3.1 Web fetch + web search tools (M)
-- [ ] 3.2 Git tools + GitHub/GitLab PR & issue integration (L)
+- [x] 3.2 Git tools + GitHub/GitLab PR & issue integration (L)
 - [ ] 3.3 Vision/image input (paste, drag, @path) (L; depends 2.8)
 - [ ] 3.4 LSP diagnostics: post-edit errors, definitions, references (L; depends 2.2)
 - [ ] 3.5 Memory: project + user-level persisted facts (L; depends 0.9)
