@@ -33,10 +33,13 @@ class Skill:
 
 def _skill_dirs(workspace_root: Path) -> list[Path]:
     """Workspace first so it wins name collisions with user skills."""
-    return [
-        workspace_root / WORKSPACE_SKILLS_DIR,
-        config.ensure_config_dir() / USER_SKILLS_DIR_NAME,
-    ]
+    dirs = [workspace_root / WORKSPACE_SKILLS_DIR]
+    try:
+        dirs.append(config.ensure_config_dir() / USER_SKILLS_DIR_NAME)
+    except OSError:
+        # An unwritable home directory just means no user-level skills.
+        pass
+    return dirs
 
 
 def _read_raw(path: Path) -> bytes | None:

@@ -67,10 +67,13 @@ def _load_template(path: Path) -> TemplateInfo | None:
 
 def _template_dirs(workspace_root: Path) -> list[Path]:
     """Workspace first so it wins name collisions with user templates."""
-    return [
-        workspace_root / WORKSPACE_COMMANDS_DIR,
-        config.ensure_config_dir() / USER_COMMANDS_DIR_NAME,
-    ]
+    dirs = [workspace_root / WORKSPACE_COMMANDS_DIR]
+    try:
+        dirs.append(config.ensure_config_dir() / USER_COMMANDS_DIR_NAME)
+    except OSError:
+        # An unwritable home directory just means no user-level templates.
+        pass
+    return dirs
 
 
 def discover_templates(workspace_root: Path) -> dict[str, TemplateInfo]:

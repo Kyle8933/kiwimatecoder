@@ -54,7 +54,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from kiwimatecoder import __version__, events, hooks
+from kiwimatecoder import __version__, events, hooks, plugins
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
@@ -734,11 +734,22 @@ def _run_lifecycle_hooks(
             )
 
 
+def _load_session_plugins(
+    session: Session, bus: events.EventBus
+) -> plugins.PluginLoadResult:
+    """Load plugins before the agent exists; failures are dim, never fatal."""
+    result = plugins.load_plugins(session.workspace_root, console=console, bus=bus)
+    for name, reason in result.failed:
+        console.print(f"[dim]Plugin '{name}' failed to load: {reason}[/dim]")
+    return result
+
+
 async def _run_interactive(
     session: Session, bus: events.EventBus | None = None
 ) -> None:
     """Run the async interactive loop until the user exits."""
     bus = bus if bus is not None else events.BUS
+    _load_session_plugins(session, bus)
     console.print(_banner(session))
     _run_lifecycle_hooks(bus, events.SESSION_START, session)
     confirm = _make_confirm(session)

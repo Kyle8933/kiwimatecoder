@@ -957,6 +957,8 @@ def main(
     session.compact_at_tokens = get_compact_at_tokens()
     session.context_window = get_context_window()
 
+    # repl.run loads user (and opted-in project) plugins before the agent is
+    # constructed, turning any failure into a dim warning rather than a crash.
     repl.run(session)
 
 

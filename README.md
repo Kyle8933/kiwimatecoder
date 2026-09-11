@@ -127,6 +127,7 @@ paths outside the workspace root; writes stay sandboxed.
 | `/dry-run [on\|off\|toggle]` | Preview mutating actions without running them. |
 | `/undo [count]`, `/checkpoints` | Restore files changed by recent tools, or list checkpoints. |
 | `/todos` | Show the agent's task list. |
+| `/templates` | List custom prompt templates discovered in the workspace and user command directories. |
 | `/compact [budget]` | Trim older history to fit a token budget. |
 | `/save`, `/load`, `/sessions`, `/fork [name]`, `/export [path]` | Save, resume, branch, or export sessions as Markdown. |
 | `/tools` | List available tools. |
@@ -342,6 +343,70 @@ Drop an `AGENTS.md` (or `CLAUDE.md`, `.kiwimatecoder/AGENTS.md`,
 loaded into the system prompt on every turn — build commands, style rules,
 testing conventions. Files are capped at 32KB each and 48KB total.
 
+## Custom commands and prompt templates
+
+Drop a Markdown file in `<workspace>/.kiwimatecoder/commands/` (or
+`~/.kiwimatecoder/commands/`) and its filename becomes a slash command. The
+body is the prompt sent as a normal user turn; `$ARGUMENTS` is replaced with
+whatever you type after the command, and the arguments are appended when the
+token is absent. Workspace templates win over user templates with the same
+name, and built-in commands always win over templates. `/templates` lists what
+was discovered; `/help` adds a Custom commands group.
+
+```text
+# .kiwimatecoder/commands/review.md
+# Review the current diff
+Review $ARGUMENTS for bugs, security issues, and missing tests.
+
+/review src/app.py
+```
+
+## Agent Skills
+
+Skills are Markdown instruction bundles the model loads only when a task
+matches, so they cost no tokens on turns that do not use them. Each skill is a
+directory containing `SKILL.md`:
+
+```text
+<workspace>/.kiwimatecoder/skills/pdf/SKILL.md   # project skill
+~/.kiwimatecoder/skills/pdf/SKILL.md             # personal skill
+```
+
+The system prompt lists each skill's name and first line only; the model calls
+the read-only `load_skill` tool to pull the full body (capped at 32KB).
+Workspace skills shadow user skills with the same name.
+
+## Plugins
+
+Plugins are Python files with a `register(api)` entry point that can add tools,
+slash commands, and event subscribers without forking the CLI:
+
+```python
+from kiwimatecoder.tools.base import FunctionTool, ToolResult
+
+def register(api):
+    api.register_tool(FunctionTool(
+        name="word_count",
+        description="Count words in a file.",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+        func=lambda args, session: ToolResult(content="..."),
+    ))
+    api.register_command("hello", lambda arg, session, console: "continue")
+    api.subscribe("post_tool", lambda event: None)
+```
+
+User plugins load from `~/.kiwimatecoder/plugins/*.py`. Project plugins in
+`<workspace>/.kiwimatecoder/plugins/*.py` are **disabled by default** — cloning
+a repository must never execute code just because the CLI started in it. Opt in
+with `"plugins": {"allow_project": true}` in `~/.kiwimatecoder/config.json`, and
+skip individual plugins with `"plugins": {"disabled": ["name"]}`. A plugin that
+fails to import or register is reported as a dim warning and skipped; it never
+prevents startup.
+
 ## Sampling and output styles
 
 Sampling parameters apply to every provider and are sent when set:
@@ -451,5 +516,6 @@ The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). P0 and P1 are
 implemented (checkpoints/undo, command rules, dry-run, redacted audit log,
 hunk-level approvals, todos, ask-user, parallel reads, compaction, auto-verify,
 budgets, trusted workspace, and message steering with interrupt recovery), and
-P2 has begun (event bus + hooks and the extensible tool registry). P2 continues
-with plugins, custom slash commands, and MCP.
+P2 has begun (event bus + hooks, the extensible tool registry, custom commands
+and prompt templates, on-demand Agent Skills, and a plugin system). P2 continues
+with MCP.

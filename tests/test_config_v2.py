@@ -296,3 +296,36 @@ def test_project_config_can_add_hooks(tmp_path):
     cfg = config.load_config(project_root=project)
 
     assert config.get_hooks(cfg)["session_end"] == ["echo bye"]
+
+
+def test_plugins_config_defaults_and_roundtrip():
+    assert config.load_config()["plugins"] == {}
+    assert config.get_plugins_config() == {"allow_project": False, "disabled": []}
+
+    assert config.set_plugins_config(allow_project=True) == {
+        "allow_project": True,
+        "disabled": [],
+    }
+    assert config.set_plugins_config(disabled=["one", "one", " two "]) == {
+        "allow_project": True,
+        "disabled": ["one", "two"],
+    }
+
+    cfg = config.load_config()
+    assert config.get_plugins_config(cfg) == {
+        "allow_project": True,
+        "disabled": ["one", "two"],
+    }
+
+
+def test_plugins_config_validation_and_corruption():
+    with pytest.raises(ValueError):
+        config.set_plugins_config(disabled=[""])
+    with pytest.raises(ValueError):
+        config.set_plugins_config(disabled="not-a-list")  # type: ignore[arg-type]
+
+    cfg = config.load_config()
+    cfg["plugins"] = "garbage"
+    config.save_config(cfg)
+
+    assert config.get_plugins_config() == {"allow_project": False, "disabled": []}

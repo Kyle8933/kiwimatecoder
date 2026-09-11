@@ -90,6 +90,7 @@ def _empty_config() -> dict[str, Any]:
         "verify_command": "",
         "budget": {},
         "hooks": {},
+        "plugins": {},
         "compact_at_tokens": 64000,
         "context_window": 128000,
     }
@@ -204,6 +205,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("verify_command", "")
     cfg.setdefault("budget", {})
     cfg.setdefault("hooks", {})
+    cfg.setdefault("plugins", {})
     cfg.setdefault("compact_at_tokens", 64000)
     cfg.setdefault("context_window", 128000)
     # Active-provider roster. Configs written before this feature lack the key;
@@ -958,6 +960,66 @@ def clear_hooks() -> None:
     cfg = load_config()
     cfg["hooks"] = {}
     save_config(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Plugins
+# ---------------------------------------------------------------------------
+
+
+def get_plugins_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return plugin loader settings, always fully populated.
+
+    ``allow_project`` gates the workspace's ``.kiwimatecoder/plugins``
+    directory (off by default so cloning a repository cannot execute code).
+    ``disabled`` lists plugin names to skip entirely.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("plugins") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    raw_disabled = stored.get("disabled")
+    disabled: list[str] = []
+    if isinstance(raw_disabled, list):
+        disabled = list(
+            dict.fromkeys(
+                str(name).strip() for name in raw_disabled if str(name).strip()
+            )
+        )
+    return {
+        "allow_project": bool(stored.get("allow_project", False)),
+        "disabled": disabled,
+    }
+
+
+def set_plugins_config(
+    *,
+    allow_project: bool | None = None,
+    disabled: list[str] | None = None,
+) -> dict[str, Any]:
+    """Update plugin settings and persist them.
+
+    Omitted arguments keep their current value. ``disabled`` must be a list of
+    non-empty plugin names (duplicates are collapsed).
+    """
+    cfg = load_config()
+    current = get_plugins_config(cfg)
+    if allow_project is not None:
+        current["allow_project"] = bool(allow_project)
+    if disabled is not None:
+        if not isinstance(disabled, list):
+            raise ValueError("Plugin 'disabled' must be a list of plugin names.")
+        cleaned: list[str] = []
+        for name in disabled:
+            text = str(name).strip()
+            if not text:
+                raise ValueError("Plugin names in 'disabled' must be non-empty.")
+            if text not in cleaned:
+                cleaned.append(text)
+        current["disabled"] = cleaned
+    cfg["plugins"] = current
+    save_config(cfg)
+    return current
 
 
 def get_trusted_workspace(cfg: dict[str, Any] | None = None) -> bool:

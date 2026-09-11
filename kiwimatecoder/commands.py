@@ -1979,7 +1979,7 @@ def _compact(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
-_COMMANDS = {
+_COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "help": _help,
     "exit": _exit,
     "quit": _exit,
@@ -2013,6 +2013,39 @@ _COMMANDS = {
 def has_command(name: str) -> bool:
     """Whether ``name`` (with or without a leading slash) is registered."""
     return name.strip().lstrip("/").lower() in _COMMANDS
+
+
+_BUILTIN_COMMANDS = frozenset(_COMMANDS)
+
+
+def register_command(
+    name: str,
+    handler: Callable[[str, Session, Console], str],
+    description: str = "",
+) -> str:
+    """Register a slash command dynamically and return its normalized name.
+
+    Raises ``ValueError`` when the name is empty or already registered;
+    built-in commands are protected so extensions cannot shadow core behavior.
+    """
+    key = name.strip().lstrip("/").lower()
+    if not key:
+        raise ValueError("Command name must be non-empty.")
+    if key in _COMMANDS:
+        raise ValueError(f"Command '/{key}' is already registered.")
+    _COMMANDS[key] = handler
+    _COMMAND_DESCRIPTIONS[key] = description or f"Custom command /{key}."
+    return key
+
+
+def unregister_command(name: str) -> bool:
+    """Remove a dynamically registered command; built-ins are protected."""
+    key = name.strip().lstrip("/").lower()
+    if key not in _COMMANDS or key in _BUILTIN_COMMANDS:
+        return False
+    del _COMMANDS[key]
+    _COMMAND_DESCRIPTIONS.pop(key, None)
+    return True
 
 
 _HELP_GROUPS = [
