@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from unittest.mock import MagicMock, patch
@@ -945,3 +946,96 @@ async def test_agent_reports_unapplicable_hunk_selection(agent_session):
     assert agent_session.checkpoints == []
     tool_message = next(m for m in agent_session.messages if m.get("role") == "tool")
     assert "could not be applied" in tool_message["content"]
+
+
+# ---------------------------------------------------------------------------
+# Message steering and interrupt recovery
+# ---------------------------------------------------------------------------
+
+
+def test_agent_drain_steering_returns_false_on_empty_queue(agent_session):
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+
+    assert agent._drain_steering() is False  # noqa: SLF001
+    assert agent_session.messages == []
+
+
+def test_agent_drain_steering_appends_every_queued_message(agent_session):
+    agent_session.steering.append("first")
+    agent_session.steering.append("second")
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+
+    assert agent._drain_steering() is True  # noqa: SLF001
+    assert agent_session.messages == [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": "second"},
+    ]
+    assert agent._drain_steering() is False  # noqa: SLF001
+    assert len(agent_session.messages) == 2
+
+
+@pytest.mark.anyio
+async def test_agent_injects_queued_steering_message(agent_session):
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    agent_session.steering.append("Also check the tests.")
+
+    calls = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        calls["n"] += 1
+        yield TextDelta(text=f"response {calls['n']}")
+        yield Done(finish_reason="stop")
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("First request")
+
+    assert calls["n"] == 2
+    assert [message["role"] for message in agent_session.messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert agent_session.messages[0]["content"] == "First request"
+    assert agent_session.messages[1]["content"] == "response 1"
+    assert agent_session.messages[2]["content"] == "Also check the tests."
+    assert agent_session.messages[3]["content"] == "response 2"
+
+
+@pytest.mark.anyio
+async def test_agent_preserves_partial_assistant_on_cancel(agent_session):
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    delivered = asyncio.Event()
+    blocker = asyncio.Event()
+
+    async def mock_stream(*args, **kwargs):
+        yield TextDelta(text="partial answer")
+        delivered.set()
+        await blocker.wait()
+        yield Done(finish_reason="stop")
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        task = asyncio.create_task(agent.run_turn("Do something"))
+        await asyncio.wait_for(delivered.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert agent_session.messages[-1] == {
+        "role": "assistant",
+        "content": "partial answer",
+    }

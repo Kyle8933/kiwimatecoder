@@ -246,3 +246,17 @@ def test_session_trim_history():
     assert "Turn 0" in sess.messages[0]["content"]
     # Last message is preserved
     assert "Ans 9" in sess.messages[-1]["content"]
+
+
+def test_runtime_steering_queues_are_not_persisted(tmp_path):
+    sess = Session(provider_id="openai", model="gpt-5.6-sol", workspace_root=tmp_path)
+    sess.steering.append("steer me")
+    sess.deferred_commands.append("/undo")
+
+    data = sess.to_dict()
+    restored = Session.from_dict(data)
+
+    assert "steering" not in data
+    assert "deferred_commands" not in data
+    assert list(restored.steering) == []
+    assert list(restored.deferred_commands) == []

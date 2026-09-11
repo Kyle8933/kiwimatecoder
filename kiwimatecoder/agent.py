@@ -56,6 +56,18 @@ class Agent:
         self.session.trim_history(max_tokens=self.session.compact_at_tokens)
         return [build_system_prompt(self.session)] + self.session.messages
 
+    def _drain_steering(self) -> bool:
+        """Inject every queued steering message as a user message.
+
+        Returns True when at least one message was queued and appended.
+        """
+        appended = False
+        while self.session.steering:
+            message = self.session.steering.popleft()
+            self.session.messages.append({"role": "user", "content": message})
+            appended = True
+        return appended
+
     async def run_turn(self, user_input: str) -> None:
         """Process one user message, looping over tool calls until the model stops."""
         blocked, reason = self._budget_exceeded()
@@ -68,7 +80,14 @@ class Agent:
 
         edited = False
         verified = False
+        first_pass = True
         while True:
+            if first_pass:
+                first_pass = False
+            else:
+                # Steering queued while the previous response streamed is
+                # injected before the next model call.
+                self._drain_steering()
             try:
                 assistant_msg, tool_calls = await self._stream_once()
             except ProviderError as exc:
@@ -81,6 +100,9 @@ class Agent:
                 if edited and not verified and self._should_verify():
                     verified = True
                     await self._run_verification()
+                    continue
+                if self._drain_steering():
+                    # The model must answer the steered message.
                     continue
                 self._warn_budget()
                 return
@@ -274,6 +296,21 @@ class Agent:
                     self.session.add_usage(event.prompt_tokens, event.completion_tokens)
                 elif isinstance(event, Done):
                     pass
+        except BaseException:
+            # Preserve the text the user already saw when a turn is interrupted
+            # (Ctrl-C) or the stream fails partway through.
+            partial = "".join(text_parts)
+            if partial:
+                partial_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": partial,
+                }
+                if (
+                    not self.session.messages
+                    or self.session.messages[-1] != partial_msg
+                ):
+                    self.session.messages.append(partial_msg)
+            raise
         finally:
             if thinking:
                 status.stop()

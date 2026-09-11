@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+
+try:  # pragma: no cover - platform dependent
+    # Importing readline makes blocking ``input()`` (approvals, ask-user)
+    # coexist with the active steering prompt, which holds the terminal in
+    # raw mode. Without it, ``input()`` never sees a newline while a turn runs.
+    import readline  # noqa: F401
+except ImportError:  # pragma: no cover - Windows
+    pass
+
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
@@ -534,8 +543,152 @@ def _make_ask_user(console: Console):
     return ask
 
 
-def run(session: Session) -> None:
-    """Run the interactive loop until the user exits."""
+_STEERING_PROMPT = HTML(
+    '<style fg="ansibrightblack">(steering — Enter to send, '
+    "Ctrl-C to cancel turn)</style> "
+)
+
+
+def _route_steering_line(session: Session, line: str) -> str:
+    """Route a line typed while a turn is running.
+
+    Blank input is ignored, slash commands are queued to run after the turn,
+    and anything else is queued as steering for the agent. Returns one of
+    ``"steered"``, ``"deferred"``, or ``"ignored"``.
+    """
+    text = line.strip()
+    if not text:
+        return "ignored"
+    if text.startswith("/"):
+        session.deferred_commands.append(text)
+        console.print("[dim]Command queued; it will run after this turn.[/dim]")
+        return "deferred"
+    session.steering.append(text)
+    return "steered"
+
+
+async def _dispatch_command(line: str, session: Session) -> str:
+    """Run a slash command off the event loop.
+
+    Selector commands call ``Application.run()`` internally, which cannot run
+    inside the live asyncio loop, so the whole dispatch happens in a worker.
+    """
+    return await asyncio.to_thread(
+        dispatch,
+        line,
+        session,
+        console,
+        _select_command_option,
+        None,
+        _select_command_options,
+    )
+
+
+async def _process_deferred_commands(session: Session) -> bool:
+    """Run queued slash commands FIFO; returns True when one requests exit."""
+    while session.deferred_commands:
+        command = session.deferred_commands.popleft()
+        console.print(f"[dim]→ {command}[/dim]")
+        if await _dispatch_command(command, session) == CommandResult.EXIT:
+            session.deferred_commands.clear()
+            return True
+    return False
+
+
+async def _cancel_task(task: asyncio.Task[Any]) -> None:
+    """Cancel ``task`` and wait for it, swallowing prompt interruptions."""
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, KeyboardInterrupt, EOFError):
+        pass
+
+
+async def _steering_input(pt_session: PromptSession[str]) -> tuple[str, str]:
+    """Read one steering line, turning interrupts into sentinel outcomes.
+
+    A ``KeyboardInterrupt`` raised inside a separate asyncio task is re-raised
+    by ``Task.__step`` and escapes the event loop instead of being stored on the
+    task, so it must not cross the task boundary.
+    """
+    try:
+        return await pt_session.prompt_async(_STEERING_PROMPT), "input"
+    except KeyboardInterrupt:
+        return "", "interrupt"
+    except EOFError:
+        return "", "eof"
+
+
+async def _run_turn_with_steering(
+    agent: Agent,
+    pt_session: PromptSession[str],
+    session: Session,
+    line: str,
+) -> bool:
+    """Run one agent turn while steering input is accepted concurrently.
+
+    Returns True when the REPL should exit (Ctrl-D during the turn).
+    """
+    turn_task: asyncio.Task[None] = asyncio.create_task(agent.run_turn(line))
+    interrupted = False
+    exit_requested = False
+
+    try:
+        while not turn_task.done():
+            prompt_task: asyncio.Task[tuple[str, str]] = asyncio.create_task(
+                _steering_input(pt_session)
+            )
+            pending: set[asyncio.Task[Any]] = {turn_task, prompt_task}
+            try:
+                done, _ = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                # Ctrl-C surfaced from the event loop (rather than the prompt)
+                # cancels the whole REPL task; treat it like a prompt interrupt.
+                await _cancel_task(prompt_task)
+                await _cancel_task(turn_task)
+                interrupted = True
+                break
+
+            if turn_task in done:
+                await _cancel_task(prompt_task)
+                break
+
+            typed, outcome = prompt_task.result()
+            if outcome == "interrupt":
+                await _cancel_task(turn_task)
+                interrupted = True
+                break
+            if outcome == "eof":
+                await _cancel_task(turn_task)
+                console.print("[dim]Goodbye![/dim]")
+                exit_requested = True
+                break
+
+            _route_steering_line(session, typed)
+
+        if not interrupted and not exit_requested:
+            # Surface unexpected agent errors from the completed turn.
+            await turn_task
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        await _cancel_task(turn_task)
+        interrupted = True
+    except BaseException:
+        await _cancel_task(turn_task)
+        raise
+
+    if interrupted:
+        console.print("\n[yellow]Interrupted.[/yellow]")
+
+    if await _process_deferred_commands(session):
+        exit_requested = True
+    return exit_requested
+
+
+async def _run_interactive(session: Session) -> None:
+    """Run the async interactive loop until the user exits."""
     console.print(_banner(session))
     confirm = _make_confirm(session)
     session.ask_user = _make_ask_user(console)
@@ -567,8 +720,8 @@ def run(session: Session) -> None:
                     if in_multiline_block
                     else _prompt_text(session)
                 )
-                line = pt_session.prompt(prompt_str)
-            except KeyboardInterrupt:
+                line = await pt_session.prompt_async(prompt_str)
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 # Ctrl-C at the prompt: clear the line / buffer, keep going.
                 multiline_buffer.clear()
                 in_multiline_block = False
@@ -602,23 +755,16 @@ def run(session: Session) -> None:
                 continue
 
             if line.startswith("/"):
-                if (
-                    dispatch(
-                        line,
-                        session,
-                        console,
-                        selector=_select_command_option,
-                        multi_selector=_select_command_options,
-                    )
-                    == CommandResult.EXIT
-                ):
+                if await _dispatch_command(line, session) == CommandResult.EXIT:
                     break
                 continue
 
-            try:
-                asyncio.run(agent.run_turn(line))
-            except KeyboardInterrupt:
-                # Ctrl-C during a turn: cancel and return to the prompt.
-                console.print("\n[yellow]Interrupted.[/yellow]")
+            if await _run_turn_with_steering(agent, pt_session, session, line):
+                break
     finally:
         _autosave(session)
+
+
+def run(session: Session) -> None:
+    """Run the interactive loop until the user exits."""
+    asyncio.run(_run_interactive(session))

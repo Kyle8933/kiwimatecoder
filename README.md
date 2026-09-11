@@ -43,8 +43,14 @@ proceeds.
 kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.py
 ```
 
-- **Ctrl-C** cancels the current turn and returns you to the prompt.
+- **Ctrl-C** cancels the current turn and returns you to the prompt; whatever
+  the model had already streamed is kept in the conversation so you can continue
+  from it.
 - **Ctrl-D** exits the session.
+- While the agent is working you can type ahead: press Enter to send a steering
+  message and the model picks it up on its next step, or type a slash command
+  (e.g. `/undo`) and it runs as soon as the turn finishes. Ctrl-C during the
+  turn cancels it.
 - Your prompt history is saved; the up-arrow recalls commands from previous
   sessions.
 - Every session is auto-saved when you exit. Pick it back up with
@@ -413,8 +419,8 @@ mypy kiwimatecoder
 
 ## Roadmap
 
-The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). P0 and all but one
-P1 item are implemented (checkpoints/undo, command rules, dry-run, redacted
-audit log, hunk-level approvals, todos, ask-user, parallel reads, compaction,
-auto-verify, budgets, trusted workspace). Message steering is deferred; P2
+The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). P0 and P1 are
+implemented (checkpoints/undo, command rules, dry-run, redacted audit log,
+hunk-level approvals, todos, ask-user, parallel reads, compaction, auto-verify,
+budgets, trusted workspace, and message steering with interrupt recovery). P2
 continues with hooks, plugins, and MCP.

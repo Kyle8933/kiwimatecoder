@@ -7,13 +7,20 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.input import create_pipe_input
 
 from kiwimatecoder import config
-from kiwimatecoder.commands import CommandOption, MultiSelectionPrompt, SelectionPrompt
+from kiwimatecoder.commands import (
+    CommandOption,
+    CommandResult,
+    MultiSelectionPrompt,
+    SelectionPrompt,
+)
 from kiwimatecoder.hunks import parse_hunk_selection
 from kiwimatecoder.permissions import ApprovalResult
 from kiwimatecoder.repl import (
     SlashCommandCompleter,
     _build_history,
     _make_confirm,
+    _process_deferred_commands,
+    _route_steering_line,
     _select_command_option,
     _select_command_options,
     checkbox_choice,
@@ -257,3 +264,56 @@ def test_confirm_plain_answers_still_return_bool(session, monkeypatch):
     monkeypatch.setattr("kiwimatecoder.repl.console.input", lambda *args, **kwargs: "n")
 
     assert _make_confirm(session)("write_file(path='f.txt')", None) is False
+
+
+# ---------------------------------------------------------------------------
+# Steering and deferred commands
+# ---------------------------------------------------------------------------
+
+
+def test_route_steering_line_ignores_blank_input(session):
+    assert _route_steering_line(session, "   ") == "ignored"
+    assert not session.steering
+    assert not session.deferred_commands
+
+
+def test_route_steering_line_queues_normal_text(session):
+    assert _route_steering_line(session, "  focus on the tests  ") == "steered"
+    assert list(session.steering) == ["focus on the tests"]
+    assert not session.deferred_commands
+
+
+def test_route_steering_line_defers_slash_commands(session):
+    assert _route_steering_line(session, "/undo") == "deferred"
+    assert list(session.deferred_commands) == ["/undo"]
+    assert not session.steering
+
+
+async def test_deferred_commands_run_fifo(session, monkeypatch):
+    calls: list[str] = []
+
+    async def fake_dispatch(line, session):
+        calls.append(line)
+        return CommandResult.CONTINUE
+
+    monkeypatch.setattr("kiwimatecoder.repl._dispatch_command", fake_dispatch)
+    session.deferred_commands.extend(["/todos", "/cost"])
+
+    assert await _process_deferred_commands(session) is False
+    assert calls == ["/todos", "/cost"]
+    assert list(session.deferred_commands) == []
+
+
+async def test_deferred_command_exit_stops_processing(session, monkeypatch):
+    calls: list[str] = []
+
+    async def fake_dispatch(line, session):
+        calls.append(line)
+        return CommandResult.EXIT
+
+    monkeypatch.setattr("kiwimatecoder.repl._dispatch_command", fake_dispatch)
+    session.deferred_commands.extend(["/exit", "/cost"])
+
+    assert await _process_deferred_commands(session) is True
+    assert calls == ["/exit"]
+    assert list(session.deferred_commands) == []

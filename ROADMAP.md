@@ -37,8 +37,7 @@ reviewable, and bounded.
 - [x] 1.8 Context compaction/summarize + window gauge (M; depends 0.4)
 - [x] 1.9 Auto-verify loop: run tests/lint after edits (M)
 - [x] 1.10 Budget limits + alerts per session/day (M; depends 0.4)
-- [ ] 1.11 Message steering/queueing + resume after interrupt (M) — deferred:
-      needs concurrent input while a turn is streaming
+- [x] 1.11 Message steering/queueing + resume after interrupt (M)
 - [x] 1.12 Structured ask-user tool (S)
 - [x] 1.13 Dry-run mode (S)
 - [x] 1.14 Audit log of every tool action (S)

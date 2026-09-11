@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,9 @@ class Session:
     checkpoint_store: CheckpointStore | None = field(default=None, repr=False)
     # Injected by the REPL so the ask_user tool can prompt interactively.
     ask_user: Callable[[str, list[str]], str] | None = field(default=None, repr=False)
+    # Runtime-only queues: lines typed while a turn is streaming (never saved).
+    steering: deque[str] = field(default_factory=deque, repr=False)
+    deferred_commands: deque[str] = field(default_factory=deque, repr=False)
 
     @property
     def format_version(self) -> int:
