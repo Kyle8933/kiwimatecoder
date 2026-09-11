@@ -400,6 +400,33 @@ class Agent:
                 False,
             )
 
+        original_args = args
+        partial_hunks: tuple[int, ...] | None = None
+        if decision.selected_hunks is not None:
+            selected_args = (
+                tools.select_hunks(
+                    call.name, args, self.session, decision.selected_hunks
+                )
+                if call.name in ("write_file", "edit_file")
+                else None
+            )
+            if selected_args is None:
+                reason = (
+                    "Partial hunk selection could not be applied; no changes "
+                    "were made."
+                )
+                audit.record_tool_event(
+                    tool=call.name,
+                    args=original_args,
+                    decision="denied",
+                    reason=reason,
+                    hunks=decision.selected_hunks,
+                )
+                self.console.print(f"[yellow]⊘ {summary}: {reason}[/yellow]")
+                return self._tool_message(call.id, reason), False
+            args = selected_args
+            partial_hunks = decision.selected_hunks
+
         if call.name in ("write_file", "edit_file"):
             path = str(args.get("path") or "").strip()
             if path:
@@ -414,10 +441,11 @@ class Agent:
         duration_ms = int((time.perf_counter() - t0) * 1000)
         audit.record_tool_event(
             tool=call.name,
-            args=args,
-            decision="allowed",
+            args=original_args,
+            decision="allowed_partial" if partial_hunks is not None else "allowed",
             duration_ms=duration_ms,
             ok=result.ok,
+            hunks=partial_hunks,
         )
 
         if result.ok:
@@ -425,4 +453,7 @@ class Agent:
         else:
             self.console.print(f"[bold red]✗[/bold red] {summary} [red](failed)[/red] [dim]({duration_ms}ms)[/dim]")
         edited = call.name in ("write_file", "edit_file") and result.ok
-        return self._tool_message(call.id, result.content), edited
+        content = result.content
+        if result.ok and partial_hunks is not None:
+            content += f" (applied hunks: {', '.join(str(h) for h in partial_hunks)})"
+        return self._tool_message(call.id, content), edited

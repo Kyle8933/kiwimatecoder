@@ -42,10 +42,23 @@ class PermissionMode(str, Enum):
         return aliases[value]
 
 
+@dataclass(frozen=True)
+class ApprovalResult:
+    """Outcome of a confirm prompt.
+
+    ``selected_hunks`` is ``None`` for whole-action approval, or a tuple of
+    1-based hunk indices when the user approved only part of a diff.
+    """
+
+    allowed: bool
+    selected_hunks: tuple[int, ...] | None = None
+
+
 @dataclass
 class Decision:
     allowed: bool
     reason: str = ""
+    selected_hunks: tuple[int, ...] | None = None
 
 
 class SessionLike(Protocol):
@@ -62,8 +75,9 @@ class ToolLike(Protocol):
     def needs_approval(self) -> bool: ...
 
 
-# A confirm callable receives (action_summary, preview_text) and returns True to allow.
-ConfirmFn = Callable[[str, str | None], bool]
+# A confirm callable receives (action_summary, preview_text) and returns True to
+# allow the whole action, or an :class:`ApprovalResult` to allow a selection.
+ConfirmFn = Callable[[str, str | None], bool | ApprovalResult]
 
 
 def _command_rule_decision(
@@ -139,8 +153,12 @@ def gate(
         return Decision(allowed=True)
 
     summary = f"{tool.name}({_summarize_args(args)})"
-    approved = confirm(summary, preview_text)
-    if approved:
+    outcome = confirm(summary, preview_text)
+    if isinstance(outcome, ApprovalResult):
+        if not outcome.allowed:
+            return Decision(allowed=False, reason="Denied by user.")
+        return Decision(allowed=True, selected_hunks=outcome.selected_hunks)
+    if outcome:
         return Decision(allowed=True)
     return Decision(allowed=False, reason="Denied by user.")
 

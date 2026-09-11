@@ -18,6 +18,7 @@ from kiwimatecoder.tools.read_file import read_file_tool
 from kiwimatecoder.tools.run_bash import preview as _bash_preview
 from kiwimatecoder.tools.run_bash import run_bash_tool
 from kiwimatecoder.tools.search import search_tool
+from kiwimatecoder.tools.selection import select_hunks as select_hunks
 from kiwimatecoder.tools.todo import update_todos_tool
 from kiwimatecoder.tools.write_file import preview as _write_preview
 from kiwimatecoder.tools.write_file import write_file_tool

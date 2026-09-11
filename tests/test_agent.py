@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,7 +9,7 @@ from rich.console import Console
 
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.client import AssembledToolCall, Done, ProviderError, TextDelta, ToolCallDelta
-from kiwimatecoder.permissions import PermissionMode
+from kiwimatecoder.permissions import ApprovalResult, PermissionMode
 from kiwimatecoder.session import Session
 from tests.conftest import track_console
 
@@ -782,3 +783,165 @@ async def test_agent_warns_when_near_budget(agent_session):
         await agent.run_turn("hello")
 
     assert any("Budget warning" in text for _, text in log)
+
+
+# ---------------------------------------------------------------------------
+# Hunk-level partial approvals
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_agent_applies_partial_hunk_selection_to_write(agent_session):
+    from kiwimatecoder import audit
+
+    agent_session.mode = PermissionMode.ASK
+    old_text = "".join(f"line{i}\n" for i in range(1, 21))
+    new_text = old_text.replace("line1\n", "LINE1\n", 1).replace(
+        "line20\n", "LINE20\n", 1
+    )
+    target = agent_session.workspace_root / "multi.txt"
+    target.write_text(old_text)
+
+    console = Console(quiet=True)
+    confirm = MagicMock(
+        return_value=ApprovalResult(allowed=True, selected_hunks=(2,))
+    )
+    agent = Agent(agent_session, console, confirm)
+
+    round_1 = [
+        ToolCallDelta(
+            index=0,
+            id="call_write",
+            name="write_file",
+            args_fragment=json.dumps({"path": "multi.txt", "content": new_text}),
+        ),
+        Done(finish_reason="tool_calls"),
+    ]
+    round_2 = [TextDelta(text="done"), Done(finish_reason="stop")]
+    calls = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        calls["n"] += 1
+        for event in round_1 if calls["n"] == 1 else round_2:
+            yield event
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("update the file")
+
+    assert target.read_text() == old_text.replace("line20\n", "LINE20\n", 1)
+    assert [item.paths for item in agent_session.checkpoints] == [["multi.txt"]]
+    tool_message = next(m for m in agent_session.messages if m.get("role") == "tool")
+    assert "hunks: 2" in tool_message["content"]
+
+    entries = [
+        json.loads(line)
+        for line in audit.audit_log_path().read_text(encoding="utf-8").splitlines()
+    ]
+    partial = next(entry for entry in entries if entry["tool"] == "write_file")
+    assert partial["decision"] == "allowed_partial"
+    assert partial["hunks"] == [2]
+
+
+@pytest.mark.anyio
+async def test_agent_applies_partial_hunk_selection_to_edit(agent_session):
+    agent_session.mode = PermissionMode.ASK
+    old_text = (
+        "".join(f"line{i}\n" for i in range(1, 21))
+        .replace("line5", "TODO", 1)
+        .replace("line15", "TODO", 1)
+    )
+    target = agent_session.workspace_root / "edits.txt"
+    target.write_text(old_text)
+
+    console = Console(quiet=True)
+    confirm = MagicMock(
+        return_value=ApprovalResult(allowed=True, selected_hunks=(1,))
+    )
+    agent = Agent(agent_session, console, confirm)
+
+    round_1 = [
+        ToolCallDelta(
+            index=0,
+            id="call_edit",
+            name="edit_file",
+            args_fragment=json.dumps(
+                {
+                    "path": "edits.txt",
+                    "old_string": "TODO",
+                    "new_string": "DONE",
+                    "replace_all": True,
+                }
+            ),
+        ),
+        Done(finish_reason="tool_calls"),
+    ]
+    round_2 = [TextDelta(text="done"), Done(finish_reason="stop")]
+    calls = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        calls["n"] += 1
+        for event in round_1 if calls["n"] == 1 else round_2:
+            yield event
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("rename the TODOs")
+
+    lines = target.read_text().splitlines()
+    assert lines[4] == "DONE"
+    assert lines[14] == "TODO"
+
+
+@pytest.mark.anyio
+async def test_agent_reports_unapplicable_hunk_selection(agent_session):
+    agent_session.mode = PermissionMode.ASK
+    target = agent_session.workspace_root / "new.txt"
+    console = Console(quiet=True)
+    confirm = MagicMock(
+        return_value=ApprovalResult(allowed=True, selected_hunks=(3,))
+    )
+    agent = Agent(agent_session, console, confirm)
+
+    round_1 = [
+        ToolCallDelta(
+            index=0,
+            id="call_write",
+            name="write_file",
+            args_fragment=json.dumps(
+                {"path": "new.txt", "content": "alpha\nbeta\n"}
+            ),
+        ),
+        Done(finish_reason="tool_calls"),
+    ]
+    round_2 = [TextDelta(text="done"), Done(finish_reason="stop")]
+    calls = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        calls["n"] += 1
+        for event in round_1 if calls["n"] == 1 else round_2:
+            yield event
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("write the file")
+
+    assert not target.exists()
+    assert agent_session.checkpoints == []
+    tool_message = next(m for m in agent_session.messages if m.get("role") == "tool")
+    assert "could not be applied" in tool_message["content"]

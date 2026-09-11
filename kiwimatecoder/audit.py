@@ -32,6 +32,7 @@ def record_tool_event(
     reason: str = "",
     duration_ms: int | None = None,
     ok: bool | None = None,
+    hunks: tuple[int, ...] | None = None,
 ) -> None:
     """Append one redacted JSON record; never raises."""
     try:
@@ -50,6 +51,8 @@ def record_tool_event(
         entry["duration_ms"] = duration_ms
     if ok is not None:
         entry["ok"] = ok
+    if hunks is not None:
+        entry["hunks"] = list(hunks)
     try:
         path = audit_log_path()
         with path.open("a", encoding="utf-8") as handle:

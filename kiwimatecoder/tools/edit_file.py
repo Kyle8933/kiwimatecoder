@@ -35,6 +35,24 @@ def compute_edit(text: str, old: str, new: str, replace_all: bool) -> str:
     return text.replace(old, new, 1)
 
 
+def _edit_from_args(text: str, args: dict[str, Any]) -> str:
+    """Compute the edit described by ``args``; raises :class:`EditError`."""
+    return compute_edit(
+        text,
+        str(args.get("old_string") or ""),
+        str(args.get("new_string") or ""),
+        bool(args.get("replace_all")),
+    )
+
+
+def compute_new_content(old_text: str, args: dict[str, Any]) -> str | None:
+    """Return the content after applying ``args``, or None when it can't apply."""
+    try:
+        return _edit_from_args(old_text, args)
+    except EditError:
+        return None
+
+
 def _diff(old_text: str, new_text: str, rel: str) -> str:
     return "".join(
         difflib.unified_diff(
@@ -59,12 +77,7 @@ def preview(args: dict[str, Any], session: Session) -> str:
     rel = display_path(resolved, session.workspace_root)
     old_text = resolved.read_text(encoding="utf-8", errors="replace")
     try:
-        new_text = compute_edit(
-            old_text,
-            str(args.get("old_string") or ""),
-            str(args.get("new_string") or ""),
-            bool(args.get("replace_all")),
-        )
+        new_text = _edit_from_args(old_text, args)
     except EditError as exc:
         return f"(cannot apply edit: {exc})"
     return _diff(old_text, new_text, rel) or "(no changes)"
@@ -83,12 +96,7 @@ def _edit_file(args: dict[str, Any], session: Session) -> ToolResult:
 
     old_text = resolved.read_text(encoding="utf-8", errors="replace")
     try:
-        new_text = compute_edit(
-            old_text,
-            str(args.get("old_string") or ""),
-            str(args.get("new_string") or ""),
-            bool(args.get("replace_all")),
-        )
+        new_text = _edit_from_args(old_text, args)
     except EditError as exc:
         return ToolResult.error(str(exc))
 

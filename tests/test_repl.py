@@ -1,3 +1,4 @@
+import difflib
 from pathlib import Path
 
 from prompt_toolkit.completion import CompleteEvent
@@ -7,9 +8,12 @@ from prompt_toolkit.input import create_pipe_input
 
 from kiwimatecoder import config
 from kiwimatecoder.commands import CommandOption, MultiSelectionPrompt, SelectionPrompt
+from kiwimatecoder.hunks import parse_hunk_selection
+from kiwimatecoder.permissions import ApprovalResult
 from kiwimatecoder.repl import (
     SlashCommandCompleter,
     _build_history,
+    _make_confirm,
     _select_command_option,
     _select_command_options,
     checkbox_choice,
@@ -148,3 +152,108 @@ def test_build_history_uses_config_dir(tmp_path, monkeypatch):
 
     assert isinstance(history, FileHistory)
     assert Path(history.filename) == tmp_path / "history"
+
+
+# ---------------------------------------------------------------------------
+# Hunk-level approvals
+# ---------------------------------------------------------------------------
+
+
+def _multi_hunk_preview() -> str:
+    old = "".join(f"line{i}\n" for i in range(1, 21))
+    new = old.replace("line1\n", "LINE1\n", 1).replace("line20\n", "LINE20\n", 1)
+    return "".join(
+        difflib.unified_diff(
+            old.splitlines(keepends=True),
+            new.splitlines(keepends=True),
+            fromfile="f.txt",
+            tofile="f.txt",
+            n=3,
+        )
+    )
+
+
+def _single_hunk_preview() -> str:
+    return "".join(
+        difflib.unified_diff(
+            ["alpha\n", "beta\n"],
+            ["ALPHA\n", "beta\n"],
+            fromfile="f.txt",
+            tofile="f.txt",
+            n=3,
+        )
+    )
+
+
+def test_parse_hunk_selection_forms_and_errors():
+    assert parse_hunk_selection("1,2", 3) == (1, 2)
+    assert parse_hunk_selection("1-2", 3) == (1, 2)
+    assert parse_hunk_selection("all", 3) == "all"
+    assert parse_hunk_selection("none", 3) == "none"
+    assert parse_hunk_selection("8", 3) is None
+
+
+def test_confirm_returns_partial_hunk_selection(session, monkeypatch):
+    answers = iter(["h", "1,2"])
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.console.input", lambda *args, **kwargs: next(answers)
+    )
+
+    confirm = _make_confirm(session)
+    result = confirm("write_file(path='f.txt')", _multi_hunk_preview())
+
+    assert result == ApprovalResult(allowed=True, selected_hunks=(1, 2))
+
+
+def test_confirm_hunk_mode_none_denies(session, monkeypatch):
+    answers = iter(["h", "none"])
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.console.input", lambda *args, **kwargs: next(answers)
+    )
+
+    result = _make_confirm(session)("write_file(path='f.txt')", _multi_hunk_preview())
+
+    assert result == ApprovalResult(allowed=False)
+
+
+def test_confirm_hunk_mode_reprompts_then_accepts(session, monkeypatch):
+    answers = iter(["h", "nope", "2"])
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.console.input", lambda *args, **kwargs: next(answers)
+    )
+
+    result = _make_confirm(session)("write_file(path='f.txt')", _multi_hunk_preview())
+
+    assert result == ApprovalResult(allowed=True, selected_hunks=(2,))
+
+
+def test_confirm_hunk_mode_all_allows_whole_action(session, monkeypatch):
+    answers = iter(["h", "all"])
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.console.input", lambda *args, **kwargs: next(answers)
+    )
+
+    result = _make_confirm(session)("write_file(path='f.txt')", _multi_hunk_preview())
+
+    assert result == ApprovalResult(allowed=True)
+
+
+def test_confirm_single_hunk_keeps_plain_prompt(session, monkeypatch):
+    prompts: list[str] = []
+
+    def fake_input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("kiwimatecoder.repl.console.input", fake_input)
+
+    result = _make_confirm(session)("write_file(path='f.txt')", _single_hunk_preview())
+
+    assert result is True
+    assert "hunks" not in prompts[0]
+
+
+def test_confirm_plain_answers_still_return_bool(session, monkeypatch):
+    monkeypatch.setattr("kiwimatecoder.repl.console.input", lambda *args, **kwargs: "n")
+
+    assert _make_confirm(session)("write_file(path='f.txt')", None) is False

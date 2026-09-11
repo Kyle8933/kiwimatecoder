@@ -30,8 +30,7 @@ reviewable, and bounded.
 - [x] 1.1 Session store v2: versioned format, fork/branch, export/import (M)
 - [x] 1.2 Checkpoints + `/undo` + `/rewind` (L; depends 1.1)
 - [x] 1.3 Command allow/deny rules, e.g. deny `rm -rf` (M; depends 0.5, 0.6)
-- [ ] 1.4 Hunk-level diff accept/reject in approvals (M) — deferred: needs a
-      richer approval result than the boolean confirm hook
+- [x] 1.4 Hunk-level diff accept/reject in approvals (M)
 - [x] 1.5 Secrets scanning/redaction in context and logs (M)
 - [x] 1.6 Todo/plan tool (M)
 - [x] 1.7 Parallel tool execution (M)

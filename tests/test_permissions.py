@@ -1,4 +1,4 @@
-from kiwimatecoder.permissions import PermissionMode, gate
+from kiwimatecoder.permissions import ApprovalResult, PermissionMode, gate
 from kiwimatecoder.tools.read_file import read_file_tool
 from kiwimatecoder.tools.run_bash import run_bash_tool
 from kiwimatecoder.tools.write_file import write_file_tool
@@ -10,6 +10,14 @@ def _always(summary, preview):
 
 def _never(summary, preview):
     return False
+
+
+def _approve_second_hunk(summary, preview):
+    return ApprovalResult(allowed=True, selected_hunks=(2,))
+
+
+def _reject_with_result(summary, preview):
+    return ApprovalResult(allowed=False)
 
 
 def test_reads_allowed_in_all_modes(session):
@@ -41,6 +49,39 @@ def test_always_allowed_skips_confirm(session):
     session.mode = PermissionMode.ASK
     session.allow_always("write_file")
     assert gate(write_file_tool, {"path": "x", "content": ""}, session, _never).allowed
+
+
+def test_approval_result_denial(session):
+    session.mode = PermissionMode.ASK
+
+    decision = gate(
+        write_file_tool, {"path": "x", "content": ""}, session, _reject_with_result
+    )
+
+    assert not decision.allowed
+    assert decision.reason == "Denied by user."
+    assert decision.selected_hunks is None
+
+
+def test_approval_result_selection_exposed_on_decision(session):
+    session.mode = PermissionMode.ASK
+
+    decision = gate(
+        write_file_tool, {"path": "x", "content": ""}, session, _approve_second_hunk
+    )
+
+    assert decision.allowed
+    assert decision.selected_hunks == (2,)
+
+
+def test_plain_bool_confirm_leaves_selection_unset(session):
+    session.mode = PermissionMode.ASK
+
+    allowed = gate(write_file_tool, {"path": "x", "content": ""}, session, _always)
+    denied = gate(write_file_tool, {"path": "x", "content": ""}, session, _never)
+
+    assert allowed.allowed and allowed.selected_hunks is None
+    assert not denied.allowed and denied.selected_hunks is None
 
 
 def test_provider_switch_keeps_always_allowed(session):

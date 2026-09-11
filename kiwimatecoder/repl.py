@@ -55,6 +55,8 @@ from kiwimatecoder.commands import (
     slash_argument_completions,
     slash_command_completions,
 )
+from kiwimatecoder.hunks import Hunk, parse_hunk_selection, split_hunks
+from kiwimatecoder.permissions import ApprovalResult, ConfirmFn
 from kiwimatecoder.session import Session
 
 console = Console()
@@ -361,11 +363,51 @@ def _select_command_options(prompt: MultiSelectionPrompt) -> list[str] | None:
         return None
 
 
-def _make_confirm(session: Session):
+def _hunk_overview(hunk: Hunk, limit: int = 2) -> list[str]:
+    """Return up to ``limit`` changed lines for display in the hunk list."""
+    changed = [line.rstrip("\n") for line in hunk.lines if line.startswith(("+", "-"))]
+    return changed[:limit]
+
+
+def _review_hunks(hunk_list: Sequence[Hunk]) -> ApprovalResult:
+    """Prompt for a 1-based hunk selection; deny after repeated bad input."""
+    console.print("[bold]Review hunks:[/bold]")
+    for hunk in hunk_list:
+        console.print(f"  [cyan]{hunk.index}[/cyan]. {hunk.header}")
+        for line in _hunk_overview(hunk):
+            console.print(f"     {line}", markup=False, highlight=False)
+
+    for _ in range(3):
+        try:
+            answer = console.input(
+                "[bold]Apply which hunks?[/bold] "
+                "([cyan]1,3[/cyan] / [cyan]1-2[/cyan] / [cyan]all[/cyan] / "
+                "[cyan]none[/cyan]): "
+            )
+        except (EOFError, KeyboardInterrupt):
+            console.print("[yellow]Denied.[/yellow]")
+            return ApprovalResult(allowed=False)
+
+        selection = parse_hunk_selection(answer, len(hunk_list))
+        if selection is None:
+            console.print("[yellow]Unrecognized selection — try again.[/yellow]")
+            continue
+        if selection == "all":
+            return ApprovalResult(allowed=True)
+        if selection == "none":
+            return ApprovalResult(allowed=False)
+        return ApprovalResult(allowed=True, selected_hunks=selection)
+
+    console.print("[yellow]Too many invalid attempts; denied.[/yellow]")
+    return ApprovalResult(allowed=False)
+
+
+def _make_confirm(session: Session) -> ConfirmFn:
     """Build the approval callback used by the permission gate."""
 
-    def confirm(summary: str, preview_text: str | None) -> bool:
+    def confirm(summary: str, preview_text: str | None) -> bool | ApprovalResult:
         console.print()
+        hunk_list: list[Hunk] = []
         if preview_text:
             is_diff = preview_text.lstrip().startswith(
                 ("---", "+++", "@@", "+", "-")
@@ -391,6 +433,7 @@ def _make_confirm(session: Session):
                 )
                 title = f"[bold yellow]Approve Change: {summary}[/bold yellow]{stats}"
                 border = "yellow"
+                hunk_list = split_hunks(preview_text)
             else:
                 title = f"[bold magenta]Approve Shell: {summary}[/bold magenta]"
                 border = "magenta"
@@ -411,10 +454,17 @@ def _make_confirm(session: Session):
         else:
             console.print(f"[yellow]Approve: {summary}[/yellow]")
 
+        multi_hunk = len(hunk_list) >= 2
+        choices = (
+            "([green]y[/green]es / [red]n[/red]o / [cyan]a[/cyan]lways this tool"
+        )
+        if multi_hunk:
+            choices = (
+                "([green]y[/green])es / ([red]n[/red])o / "
+                "([cyan]a[/cyan])lways / ([magenta]h[/magenta])unks"
+            )
         try:
-            answer = console.input(
-                "[bold]Allow?[/bold] ([green]y[/green]es / [red]n[/red]o / [cyan]a[/cyan]lways this tool): "
-            ).strip().lower()
+            answer = console.input(f"[bold]Allow?[/bold] {choices}): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("[yellow]Denied.[/yellow]")
             return False
@@ -433,6 +483,8 @@ def _make_confirm(session: Session):
             except OSError:
                 pass
             return True
+        if multi_hunk and answer in ("h", "hunks"):
+            return _review_hunks(hunk_list)
         return answer in ("y", "yes")
 
     return confirm

@@ -82,7 +82,8 @@ it can do without asking, and you can switch it at any time with `/mode`:
 At an approval prompt, answer `a` (always) to approve that tool for the rest of
 the session **and future sessions**. Persisted approvals survive restarts and
 provider switches; manage them with `/config permissions` or
-`config permissions list|remove|clear`.
+`config permissions list|remove|clear`. When a diff spans multiple hunks, answer
+`h` to choose which hunks to apply (e.g. `1,3`, `1-2`, `all`, or `none`).
 
 Every mutating action is checkpointed before it runs. Restore the last change
 with `/undo`, rewind several steps with `/undo 3`, and list them with
@@ -412,8 +413,8 @@ mypy kiwimatecoder
 
 ## Roadmap
 
-The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). P0 and all but two
-P1 items are implemented (checkpoints/undo, command rules, dry-run, redacted
-audit log, todos, ask-user, parallel reads, compaction, auto-verify, budgets,
-trusted workspace). Hunk-level diff approval and message steering are deferred;
-P2 continues with hooks, plugins, and MCP.
+The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). P0 and all but one
+P1 item are implemented (checkpoints/undo, command rules, dry-run, redacted
+audit log, hunk-level approvals, todos, ask-user, parallel reads, compaction,
+auto-verify, budgets, trusted workspace). Message steering is deferred; P2
+continues with hooks, plugins, and MCP.
