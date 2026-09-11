@@ -122,6 +122,7 @@ def _banner(session: Session) -> Panel:
         if session.context_files
         else ""
     )
+    dry_badge = " · [yellow]dry-run[/yellow]" if session.dry_run else ""
 
     active = session.active_providers
     provider_summary = (
@@ -134,7 +135,7 @@ def _banner(session: Session) -> Panel:
     content = (
         f"[bold green]KiwiMateCoder[/bold green] [dim]v{__version__}[/dim] — "
         f"{provider_summary}\n"
-        f"[dim]📁 {session.workspace_root.name}{git_badge} · mode:[bold]{session.mode.value}[/bold]{ctx_badge}\n"
+        f"[dim]📁 {session.workspace_root.name}{git_badge} · mode:[bold]{session.mode.value}[/bold]{ctx_badge}{dry_badge}\n"
         f"Type /help for commands · Alt+Enter for newline · Ctrl-C cancels · Ctrl-D exits[/dim]"
     )
     return Panel(

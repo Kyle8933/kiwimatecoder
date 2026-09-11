@@ -12,7 +12,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from kiwimatecoder import __version__, catalog, config
+from kiwimatecoder import __version__, audit, catalog, config
 from kiwimatecoder.providers import ProviderConfig
 from kiwimatecoder.session import Session
 
@@ -81,6 +81,16 @@ def _config_checks() -> list[Check]:
     sessions = config.ensure_config_dir() / "sessions"
     count = len(list(sessions.glob("*.json"))) if sessions.is_dir() else 0
     checks.append(Check("Saved sessions", OK, f"{count} in {sessions}"))
+
+    audit_path = audit.audit_log_path()
+    if audit_path.exists():
+        try:
+            size = audit_path.stat().st_size
+        except OSError:
+            size = 0
+        checks.append(Check("Audit log", OK, f"{audit_path} ({size} bytes)"))
+    else:
+        checks.append(Check("Audit log", OK, f"{audit_path} (not created yet)"))
     return checks
 
 

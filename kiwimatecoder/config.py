@@ -780,6 +780,96 @@ def clear_always_allowed_tools() -> int:
     return len(current)
 
 
+def get_command_rules(cfg: dict[str, Any] | None = None) -> dict[str, list[str]]:
+    """Return the run_bash allow/deny regex rules."""
+    cfg = cfg or load_config()
+    stored = cfg.get("command_rules") or {}
+    if not isinstance(stored, dict):
+        return {"allow": [], "deny": []}
+    result: dict[str, list[str]] = {}
+    for kind in ("allow", "deny"):
+        raw = stored.get(kind)
+        patterns = raw if isinstance(raw, list) else []
+        result[kind] = list(
+            dict.fromkeys(str(p) for p in patterns if str(p).strip())
+        )
+    return result
+
+
+def _validate_command_pattern(pattern: str) -> str:
+    import re
+
+    cleaned = pattern.strip()
+    if not cleaned:
+        raise ValueError("Command rule pattern is required.")
+    try:
+        re.compile(cleaned)
+    except re.error as exc:
+        raise ValueError(f"Invalid regular expression: {exc}") from exc
+    return cleaned
+
+
+def set_command_rules(
+    allow: list[str] | None = None,
+    deny: list[str] | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
+    """Replace the command rules for the given kinds and return the result."""
+    cfg = cfg or load_config()
+    current = get_command_rules(cfg)
+    if allow is not None:
+        current["allow"] = list(
+            dict.fromkeys(_validate_command_pattern(p) for p in allow)
+        )
+    if deny is not None:
+        current["deny"] = list(
+            dict.fromkeys(_validate_command_pattern(p) for p in deny)
+        )
+    cfg["command_rules"] = current
+    save_config(cfg)
+    return current
+
+
+def add_command_rule(
+    kind: str, pattern: str, cfg: dict[str, Any] | None = None
+) -> dict[str, list[str]]:
+    """Add one allow/deny pattern for run_bash commands."""
+    kind = kind.strip().lower()
+    if kind not in {"allow", "deny"}:
+        raise ValueError("Command rule kind must be 'allow' or 'deny'.")
+    cleaned = _validate_command_pattern(pattern)
+    cfg = cfg or load_config()
+    current = get_command_rules(cfg)
+    current[kind] = list(dict.fromkeys([*current[kind], cleaned]))
+    cfg["command_rules"] = current
+    save_config(cfg)
+    return current
+
+
+def remove_command_rule(kind: str, pattern: str) -> bool:
+    """Remove one pattern; returns whether it existed."""
+    kind = kind.strip().lower()
+    if kind not in {"allow", "deny"}:
+        raise ValueError("Command rule kind must be 'allow' or 'deny'.")
+    cleaned = pattern.strip()
+    cfg = load_config()
+    current = get_command_rules(cfg)
+    if cleaned not in current[kind]:
+        return False
+    current[kind] = [p for p in current[kind] if p != cleaned]
+    cfg["command_rules"] = current
+    save_config(cfg)
+    return True
+
+
+def clear_command_rules() -> dict[str, list[str]]:
+    """Remove every command rule."""
+    cfg = load_config()
+    cfg["command_rules"] = {"allow": [], "deny": []}
+    save_config(cfg)
+    return {"allow": [], "deny": []}
+
+
 def get_sampling(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return validated sampling parameters (only explicitly set keys)."""
     cfg = cfg or load_config()

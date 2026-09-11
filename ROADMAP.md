@@ -29,9 +29,9 @@ reviewable, and bounded.
 
 - [x] 1.1 Session store v2: versioned format, fork/branch, export/import (M)
 - [x] 1.2 Checkpoints + `/undo` + `/rewind` (L; depends 1.1)
-- [ ] 1.3 Command allow/deny rules, e.g. deny `rm -rf` (M; depends 0.5, 0.6)
+- [x] 1.3 Command allow/deny rules, e.g. deny `rm -rf` (M; depends 0.5, 0.6)
 - [ ] 1.4 Hunk-level diff accept/reject in approvals (M)
-- [ ] 1.5 Secrets scanning/redaction in context and logs (M)
+- [x] 1.5 Secrets scanning/redaction in context and logs (M)
 - [ ] 1.6 Todo/plan tool (M)
 - [ ] 1.7 Parallel tool execution (M)
 - [ ] 1.8 Context compaction/summarize + window gauge (M; depends 0.4)
@@ -39,8 +39,8 @@ reviewable, and bounded.
 - [ ] 1.10 Budget limits + alerts per session/day (M; depends 0.4)
 - [ ] 1.11 Message steering/queueing + resume after interrupt (M)
 - [ ] 1.12 Structured ask-user tool (S)
-- [ ] 1.13 Dry-run mode (S)
-- [ ] 1.14 Audit log of every tool action (S)
+- [x] 1.13 Dry-run mode (S)
+- [x] 1.14 Audit log of every tool action (S)
 - [ ] 1.15 Trusted-workspace flag for outside-root reads (S; depends 0.5)
 
 ## P2 — Extensibility platform (6–9 weeks)

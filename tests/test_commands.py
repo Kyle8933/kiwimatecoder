@@ -757,6 +757,27 @@ def test_config_permissions_clear(session):
     assert session.always_allowed == set()
 
 
+def test_config_commands_allow_deny_and_clear(session):
+    console = _console()
+
+    dispatch("/config commands deny rm -rf", session, console)
+    assert config.get_command_rules()["deny"] == ["rm -rf"]
+    assert session.command_rules["deny"] == ["rm -rf"]
+
+    dispatch("/config commands allow ^pytest", session, console)
+    dispatch("/config commands list", session, console)
+    output = _output(console)
+    assert "rm -rf" in output
+    assert "^pytest" in output
+
+    dispatch("/config commands remove deny rm -rf", session, console)
+    assert config.get_command_rules()["deny"] == []
+
+    dispatch("/config commands clear", session, console)
+    assert config.get_command_rules() == {"allow": [], "deny": []}
+    assert session.command_rules == {"allow": [], "deny": []}
+
+
 def test_config_sampling_set_show_reset(session):
     console = _console()
 
@@ -867,3 +888,16 @@ def test_fork_command_saves_copy(session):
     assert config.CONFIG_DIR.joinpath("sessions", "mybranch.json").is_file()
     assert "mybranch" in _output(console)
 
+
+
+def test_dry_run_command_toggles(session):
+    console = _console()
+
+    dispatch("/dry-run on", session, console)
+    assert session.dry_run is True
+
+    dispatch("/dry-run toggle", session, console)
+    assert session.dry_run is False
+
+    dispatch("/dry-run", session, console)
+    assert "off" in _output(console)

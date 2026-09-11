@@ -433,6 +433,25 @@ def test_config_permissions_roundtrip():
     assert config.get_always_allowed_tools() == []
 
 
+def test_config_commands_roundtrip():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "commands", "deny", r"rm -rf"])
+    assert result.exit_code == 0
+    assert config.get_command_rules()["deny"] == [r"rm -rf"]
+
+    result = runner.invoke(main.app, ["config", "commands", "list"])
+    assert "rm -rf" in result.output
+
+    result = runner.invoke(main.app, ["config", "commands", "remove", "deny", r"rm -rf"])
+    assert result.exit_code == 0
+    assert config.get_command_rules()["deny"] == []
+
+    result = runner.invoke(main.app, ["config", "commands", "clear"])
+    assert result.exit_code == 0
+    assert config.get_command_rules() == {"allow": [], "deny": []}
+
+
 def test_config_show_mentions_new_settings():
     result = CliRunner().invoke(main.app, ["config", "show"])
 

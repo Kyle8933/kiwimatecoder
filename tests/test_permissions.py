@@ -1,5 +1,6 @@
 from kiwimatecoder.permissions import PermissionMode, gate
 from kiwimatecoder.tools.read_file import read_file_tool
+from kiwimatecoder.tools.run_bash import run_bash_tool
 from kiwimatecoder.tools.write_file import write_file_tool
 
 
@@ -53,3 +54,44 @@ def test_provider_switch_keeps_always_allowed(session):
 def test_mode_from_str_aliases():
     assert PermissionMode.from_str("auto") is PermissionMode.AUTO
     assert PermissionMode.from_str("read-only") is PermissionMode.PLAN
+
+
+def test_command_deny_rule_blocks_even_in_auto(session):
+    session.command_rules = {"allow": [], "deny": [r"rm\s+-rf"]}
+    session.mode = PermissionMode.AUTO
+
+    decision = gate(run_bash_tool, {"command": "rm -rf /"}, session, _always)
+
+    assert not decision.allowed
+    assert "deny rule" in decision.reason
+
+
+def test_command_allow_rule_skips_prompt(session):
+    session.command_rules = {"allow": [r"^pytest\b"], "deny": []}
+    session.mode = PermissionMode.ASK
+
+    assert gate(run_bash_tool, {"command": "pytest -q"}, session, _never).allowed
+
+
+def test_command_allow_rule_still_prompts_others(session):
+    session.command_rules = {"allow": [r"^pytest\b"], "deny": []}
+    session.mode = PermissionMode.ASK
+
+    assert not gate(run_bash_tool, {"command": "ls"}, session, _never).allowed
+
+
+def test_command_allow_rule_does_not_override_plan(session):
+    session.command_rules = {"allow": [r"^pytest\b"], "deny": []}
+    session.mode = PermissionMode.PLAN
+
+    decision = gate(run_bash_tool, {"command": "pytest -q"}, session, _always)
+
+    assert not decision.allowed
+    assert "plan" in decision.reason.lower()
+
+
+def test_command_rules_do_not_affect_file_tools(session):
+    session.command_rules = {"allow": [], "deny": ["."]}
+    session.mode = PermissionMode.ASK
+
+    assert gate(write_file_tool, {"path": "x", "content": ""}, session, _always).allowed

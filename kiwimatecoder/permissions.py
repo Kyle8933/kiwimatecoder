@@ -12,6 +12,7 @@ The confirm prompt is injected (``confirm`` callable) so tests run without a TTY
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Protocol
@@ -49,6 +50,7 @@ class Decision:
 
 class SessionLike(Protocol):
     mode: PermissionMode
+    command_rules: dict[str, list[str]]
 
     def is_always_allowed(self, tool_name: str) -> bool: ...
 
@@ -64,6 +66,45 @@ class ToolLike(Protocol):
 ConfirmFn = Callable[[str, str | None], bool]
 
 
+def _command_rule_decision(
+    tool_name: str, args: dict[str, Any], session: SessionLike
+) -> Decision | None:
+    """Apply run_bash allow/deny regexes.
+
+    Deny patterns are a hard block (even in auto-accept mode). Allow patterns
+    auto-approve a command that would otherwise prompt, but never override plan
+    mode because the plan check runs before allow is consulted.
+    """
+    if tool_name != "run_bash":
+        return None
+    command = str(args.get("command") or "")
+    if not command:
+        return None
+    rules = getattr(session, "command_rules", None)
+    if not isinstance(rules, dict):
+        return None
+
+    patterns = rules.get("deny")
+    for pattern in patterns if isinstance(patterns, list) else []:
+        try:
+            if re.search(str(pattern), command):
+                return Decision(
+                    allowed=False,
+                    reason=f"Blocked by command deny rule '{pattern}'.",
+                )
+        except re.error:
+            continue
+
+    patterns = rules.get("allow")
+    for pattern in patterns if isinstance(patterns, list) else []:
+        try:
+            if re.search(str(pattern), command):
+                return Decision(allowed=True)
+        except re.error:
+            continue
+    return None
+
+
 def gate(
     tool: ToolLike,
     args: dict[str, Any],
@@ -74,6 +115,10 @@ def gate(
     """Decide whether a tool call may run under the session's current mode."""
     if not tool.needs_approval:
         return Decision(allowed=True)
+
+    rule_decision = _command_rule_decision(tool.name, args, session)
+    if rule_decision is not None and not rule_decision.allowed:
+        return rule_decision
 
     if session.mode is PermissionMode.PLAN:
         return Decision(
@@ -86,6 +131,9 @@ def gate(
 
     if session.mode is PermissionMode.AUTO:
         return Decision(allowed=True)
+
+    if rule_decision is not None:
+        return rule_decision
 
     if session.is_always_allowed(tool.name):
         return Decision(allowed=True)

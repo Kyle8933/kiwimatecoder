@@ -15,12 +15,15 @@ from kiwimatecoder import __version__
 from kiwimatecoder.ai import stream_response
 from kiwimatecoder.catalog import probe, summarize_ids
 from kiwimatecoder.config import (
+    add_command_rule,
     add_provider,
     apply_model_filter,
     clear_always_allowed_tools,
+    clear_command_rules,
     describe_key,
     get_active_provider_ids,
     get_always_allowed_tools,
+    get_command_rules,
     get_default_mode,
     get_key,
     get_model_catalog,
@@ -34,6 +37,7 @@ from kiwimatecoder.config import (
     load_config,
     project_config_path,
     remove_always_allowed_tool,
+    remove_command_rule,
     remove_key,
     remove_provider,
     reset_default_mode,
@@ -408,6 +412,79 @@ def permissions_clear() -> None:
     console.print(f"[green]✓ Cleared {count} persisted tool approval(s).[/green]")
 
 
+# --- canonical `config commands ...` ----------------------------------------
+
+commands_app = typer.Typer(
+    help="Auto-approve or hard-block run_bash commands by regex."
+)
+config_app.add_typer(commands_app, name="commands")
+
+
+@commands_app.command("list")
+def commands_list() -> None:
+    """List the run_bash allow/deny rules."""
+    rules = get_command_rules()
+    if not rules["allow"] and not rules["deny"]:
+        console.print("[dim]No command rules set.[/dim]")
+        return
+    table = Table(title="Command rules (run_bash)", show_header=True)
+    table.add_column("Kind", style="cyan")
+    table.add_column("Pattern")
+    for kind in ("deny", "allow"):
+        for pattern in rules[kind]:
+            table.add_row(kind, pattern)
+    console.print(table)
+
+
+def _add_rule(kind: str, pattern: str) -> None:
+    try:
+        rules = add_command_rule(kind, pattern)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]✓ Added {kind} rule:[/green] {rules[kind][-1]}")
+
+
+@commands_app.command("allow")
+def commands_allow(
+    pattern: Annotated[str, typer.Argument(help="Regex that auto-approves a command")],
+) -> None:
+    """Auto-approve matching run_bash commands."""
+    _add_rule("allow", pattern)
+
+
+@commands_app.command("deny")
+def commands_deny(
+    pattern: Annotated[str, typer.Argument(help="Regex that blocks a command")],
+) -> None:
+    """Hard-block matching run_bash commands."""
+    _add_rule("deny", pattern)
+
+
+@commands_app.command("remove")
+def commands_remove(
+    kind: Annotated[str, typer.Argument(help="'allow' or 'deny'")],
+    pattern: Annotated[str, typer.Argument(help="Regex to remove")],
+) -> None:
+    """Remove one command rule."""
+    try:
+        existed = remove_command_rule(kind, pattern)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if existed:
+        console.print(f"[green]✓ Removed {kind} rule:[/green] {pattern}")
+    else:
+        console.print(f"[dim]No such {kind} rule: {pattern}[/dim]")
+
+
+@commands_app.command("clear")
+def commands_clear() -> None:
+    """Remove every command rule."""
+    clear_command_rules()
+    console.print("[green]✓ Cleared all command rules.[/green]")
+
+
 # --- canonical `config sampling ...` ----------------------------------------
 
 sampling_app = typer.Typer(help="Get or set sampling parameters.")
@@ -742,11 +819,13 @@ def main(
             always_allowed=set(get_always_allowed_tools(cfg)),
             output_style=get_output_style(cfg),
             custom_system_prompt=get_system_prompt(cfg),
+            command_rules=get_command_rules(cfg),
         )
 
     # Persisted approvals are user preferences, so a resumed session picks up
-    # anything granted since its last save.
+    # anything granted since its last save. Command rules come from config too.
     session.always_allowed.update(get_always_allowed_tools())
+    session.command_rules = get_command_rules()
 
     repl.run(session)
 

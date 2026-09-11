@@ -8,7 +8,7 @@ from typing import Any
 
 from rich.console import Console
 
-from kiwimatecoder import tools
+from kiwimatecoder import audit, tools
 from kiwimatecoder.client import (
     AssembledToolCall,
     Done,
@@ -174,6 +174,10 @@ class Agent:
             ]
         return assistant_msg, calls
 
+    def _auto_confirm(self, summary: str, preview: str | None) -> bool:
+        """Approval stand-in used in dry-run mode so nothing prompts."""
+        return True
+
     def _format_call_summary(self, name: str, args: dict[str, Any]) -> str:
         """Produce a short human-readable string summarizing the tool call arguments."""
         if name in ("read_file", "write_file", "edit_file", "list_dir"):
@@ -206,10 +210,32 @@ class Agent:
 
         summary = self._format_call_summary(call.name, args)
         preview_text = tools.preview(call.name, args, self.session)
-        decision = gate(tool, args, self.session, self.confirm, preview_text)
+        confirm = (
+            self._auto_confirm
+            if self.session.dry_run and tool.needs_approval
+            else self.confirm
+        )
+        decision = gate(tool, args, self.session, confirm, preview_text)
         if not decision.allowed:
+            audit.record_tool_event(
+                tool=call.name,
+                args=args,
+                decision="denied",
+                reason=decision.reason,
+            )
             self.console.print(f"[yellow]⊘ {summary}: {decision.reason}[/yellow]")
             self._append_result(call.id, decision.reason)
+            return
+
+        if self.session.dry_run and tool.needs_approval:
+            audit.record_tool_event(tool=call.name, args=args, decision="dry_run")
+            self.console.print(f"[yellow]dry-run[/yellow] {summary}")
+            if preview_text:
+                self.console.print(preview_text, markup=False, highlight=False)
+            self._append_result(
+                call.id,
+                f"DRY RUN: {summary} was not executed; no files or state changed.",
+            )
             return
 
         if call.name in ("write_file", "edit_file"):
@@ -224,6 +250,13 @@ class Agent:
         except Exception as exc:
             result = ToolResult.error(f"Tool crashed: {exc!r}")
         duration_ms = int((time.perf_counter() - t0) * 1000)
+        audit.record_tool_event(
+            tool=call.name,
+            args=args,
+            decision="allowed",
+            duration_ms=duration_ms,
+            ok=result.ok,
+        )
 
         if result.ok:
             self.console.print(f"[bold green]✓[/bold green] {summary} [dim]({duration_ms}ms)[/dim]")

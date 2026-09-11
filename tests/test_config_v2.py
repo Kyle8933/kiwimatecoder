@@ -120,6 +120,35 @@ def test_persist_always_allowed_tool_survives_reload():
     assert config.get_always_allowed_tools(fresh) == ["run_bash"]
 
 
+def test_command_rules_roundtrip_and_validation():
+    rules = config.add_command_rule("deny", r"rm -rf")
+
+    assert rules["deny"] == [r"rm -rf"]
+    assert config.get_command_rules()["deny"] == [r"rm -rf"]
+
+    with pytest.raises(ValueError):
+        config.add_command_rule("deny", "[")
+    with pytest.raises(ValueError):
+        config.add_command_rule("nope", "x")
+
+    assert config.remove_command_rule("deny", r"rm -rf") is True
+    assert config.remove_command_rule("deny", r"rm -rf") is False
+
+    config.add_command_rule("allow", "^pytest")
+    assert config.get_command_rules()["allow"] == ["^pytest"]
+
+    config.clear_command_rules()
+    assert config.get_command_rules() == {"allow": [], "deny": []}
+
+
+def test_set_command_rules_replaces_kinds():
+    config.add_command_rule("deny", "one")
+
+    config.set_command_rules(deny=["two"], allow=["three"])
+
+    assert config.get_command_rules() == {"allow": ["three"], "deny": ["two"]}
+
+
 def test_sampling_roundtrip_and_validation():
     effective = config.set_sampling({"temperature": "0.2", "max_tokens": "4096"})
 

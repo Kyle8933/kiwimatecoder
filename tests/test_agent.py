@@ -13,6 +13,13 @@ from kiwimatecoder.session import Session
 from tests.conftest import track_console
 
 
+@pytest.fixture(autouse=True)
+def isolate_config_home(tmp_path, monkeypatch):
+    from kiwimatecoder import config
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "config-home")
+
+
 @pytest.fixture
 def agent_session(tmp_path):
     return Session(
@@ -533,3 +540,84 @@ async def test_agent_stops_thinking_before_provider_error(agent_session):
     assert stop_idx is not None, f"expected Thinking status to stop, got {log}"
     assert error_idx is not None, f"expected error line, got {log}"
     assert stop_idx < error_idx
+
+
+@pytest.mark.anyio
+async def test_agent_dry_run_previews_without_executing(agent_session):
+    agent_session.dry_run = True
+    agent_session.mode = PermissionMode.ASK
+    console = Console(quiet=True)
+    confirm = MagicMock(return_value=False)
+    agent = Agent(agent_session, console, confirm)
+
+    round_1 = [
+        ToolCallDelta(
+            index=0,
+            id="call_write",
+            name="write_file",
+            args_fragment='{"path": "new.txt", "content": "hi"}',
+        ),
+        Done(finish_reason="tool_calls"),
+    ]
+    round_2 = [TextDelta(text="done"), Done(finish_reason="stop")]
+    calls = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        calls["n"] += 1
+        for event in round_1 if calls["n"] == 1 else round_2:
+            yield event
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("write a file")
+
+    assert not (agent_session.workspace_root / "new.txt").exists()
+    assert "DRY RUN" in agent_session.messages[2]["content"]
+    confirm.assert_not_called()
+    assert agent_session.checkpoints == []
+
+
+@pytest.mark.anyio
+async def test_agent_checkpoints_file_before_write(agent_session):
+    existing = agent_session.workspace_root / "existing.txt"
+    existing.write_text("before")
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+
+    round_1 = [
+        ToolCallDelta(
+            index=0,
+            id="call_write",
+            name="write_file",
+            args_fragment='{"path": "existing.txt", "content": "after"}',
+        ),
+        Done(finish_reason="tool_calls"),
+    ]
+    round_2 = [TextDelta(text="done"), Done(finish_reason="stop")]
+    calls = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        calls["n"] += 1
+        for event in round_1 if calls["n"] == 1 else round_2:
+            yield event
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("write the file")
+
+    assert existing.read_text() == "after"
+    assert [item.paths for item in agent_session.checkpoints] == [["existing.txt"]]
+
+    agent_session.undo_checkpoints()
+
+    assert existing.read_text() == "before"

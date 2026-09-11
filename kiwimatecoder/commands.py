@@ -17,11 +17,14 @@ from rich.table import Table
 from kiwimatecoder import tools
 from kiwimatecoder.catalog import ModelCatalog, summarize_ids
 from kiwimatecoder.config import (
+    add_command_rule,
     add_provider,
     apply_model_filter,
     clear_always_allowed_tools,
+    clear_command_rules,
     describe_key,
     get_always_allowed_tools,
+    get_command_rules,
     get_default_mode,
     get_model_catalog,
     get_model_filter,
@@ -31,6 +34,7 @@ from kiwimatecoder.config import (
     list_visible_models,
     project_config_path,
     remove_always_allowed_tool,
+    remove_command_rule,
     remove_key,
     remove_provider,
     reset_default_mode,
@@ -482,6 +486,32 @@ def _mode(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
+def _dry_run(arg: str, session: Session, console: Console) -> str:
+    token = arg.strip().lower()
+    if token in {"", "status", "show"}:
+        state = "on" if session.dry_run else "off"
+        console.print(f"Dry-run is [cyan]{state}[/cyan].")
+        return CommandResult.CONTINUE
+    if token in {"on", "true", "yes"}:
+        session.dry_run = True
+    elif token in {"off", "false", "no"}:
+        session.dry_run = False
+    elif token == "toggle":
+        session.dry_run = not session.dry_run
+    else:
+        console.print("[yellow]Usage: /dry-run [on|off|toggle][/yellow]")
+        return CommandResult.CONTINUE
+    console.print(
+        f"[green]Dry-run {'on' if session.dry_run else 'off'}.[/green]"
+        + (
+            " Mutating tools will show their preview without running."
+            if session.dry_run
+            else ""
+        )
+    )
+    return CommandResult.CONTINUE
+
+
 def _tools(arg: str, session: Session, console: Console) -> str:
     table = Table(title="Available Tools", show_header=True)
     table.add_column("Tool", style="cyan bold", no_wrap=True)
@@ -726,6 +756,11 @@ def _config_help(console: Console) -> None:
             "Manage tools you approved with 'always'.",
         ),
         (
+            "/config commands [list|allow <regex>|deny <regex>|"
+            "remove <kind> <regex>|clear]",
+            "Auto-approve or hard-block run_bash commands by regex.",
+        ),
+        (
             "/config sampling [show|set key=value ...|reset]",
             "Get or set temperature, top_p, max_tokens, reasoning_effort.",
         ),
@@ -774,6 +809,13 @@ def _config_show(session: Session, console: Console) -> None:
     project_path = project_config_path()
     if project_path is not None:
         console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
+    command_rules = get_command_rules()
+    if command_rules["allow"] or command_rules["deny"]:
+        console.print(
+            "Command rules: "
+            + f"[cyan]{len(command_rules['deny'])} deny[/cyan], "
+            + f"[cyan]{len(command_rules['allow'])} allow[/cyan]"
+        )
 
 
 def _config_providers(
@@ -1215,6 +1257,73 @@ def _config_permissions(
     )
 
 
+def _config_commands(  # noqa: C901 - small parser, mirrors the other config sections
+    action_parts: list[str], session: Session, console: Console
+) -> None:
+    action = action_parts[0].lower() if action_parts else "list"
+    rest = action_parts[1:]
+
+    if action in {"list", "ls", "show"}:
+        rules = get_command_rules()
+        session.command_rules = rules
+        if not rules["allow"] and not rules["deny"]:
+            console.print("[dim]No command rules set.[/dim]")
+            return
+        table = Table(title="Command rules (run_bash)", show_header=True)
+        table.add_column("Kind", style="cyan")
+        table.add_column("Pattern")
+        for kind in ("deny", "allow"):
+            for pattern in rules[kind]:
+                table.add_row(kind, pattern)
+        console.print(table)
+        return
+
+    if action in {"allow", "deny"}:
+        if not rest:
+            console.print(
+                f"[yellow]Usage: /config commands {action} <regex>[/yellow]"
+            )
+            return
+        pattern = " ".join(rest)
+        try:
+            rules = add_command_rule(action, pattern)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        session.command_rules = rules
+        console.print(f"[green]Added {action} rule:[/green] {pattern}")
+        return
+
+    if action in {"remove", "rm", "delete"}:
+        if len(rest) < 2:
+            console.print(
+                "[yellow]Usage: /config commands remove <allow|deny> <regex>[/yellow]"
+            )
+            return
+        kind, pattern = rest[0].lower(), " ".join(rest[1:])
+        try:
+            existed = remove_command_rule(kind, pattern)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        session.command_rules = get_command_rules()
+        if existed:
+            console.print(f"[green]Removed {kind} rule:[/green] {pattern}")
+        else:
+            console.print(f"[dim]No such {kind} rule: {pattern}[/dim]")
+        return
+
+    if action in {"clear", "reset"}:
+        session.command_rules = clear_command_rules()
+        console.print("[green]Cleared all command rules.[/green]")
+        return
+
+    console.print(
+        "[yellow]Usage: /config commands [list|allow <regex>|deny <regex>|"
+        "remove <allow|deny> <regex>|clear][/yellow]"
+    )
+
+
 def _config_sampling(action_parts: list[str], console: Console) -> None:
     action = action_parts[0].lower() if action_parts else "show"
     rest = action_parts[1:]
@@ -1360,6 +1469,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_mode(rest, session, console)
     elif section in {"permissions", "perm"}:
         _config_permissions(rest, session, console)
+    elif section in {"commands", "command-rules", "rules"}:
+        _config_commands(rest, session, console)
     elif section == "sampling":
         _config_sampling(rest, console)
     elif section == "style":
@@ -1404,6 +1515,7 @@ def _config_interact(
             CommandOption("models", "Manage model visibility / refresh catalog"),
             CommandOption("mode", "Set the default permission mode"),
             CommandOption("permissions", "Manage tools approved with 'always'"),
+            CommandOption("commands", "Manage shell command allow/deny rules"),
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
             CommandOption("style", "Show or set the output style"),
             CommandOption("help", "Show all /config commands"),
@@ -1442,6 +1554,7 @@ def _config_interact(
         "permissions",
         "sampling",
         "style",
+        "commands",
     }:
         _config(section, session, console, selector, prompt_input)
         return CommandResult.CONTINUE
@@ -1513,6 +1626,10 @@ def _load(arg: str, session: Session, console: Console) -> str:
         session.always_allowed.update(get_always_allowed_tools())
         session.output_style = loaded.output_style
         session.custom_system_prompt = loaded.custom_system_prompt
+        session.command_rules = loaded.command_rules or get_command_rules()
+        session.dry_run = loaded.dry_run
+        session.todos = list(loaded.todos)
+        session.trusted_workspace = loaded.trusted_workspace
         console.print(
             f"[green]Loaded session [bold]{arg.strip()}[/bold]: "
             f"{len(session.messages)} messages, provider={session.provider_id}:{session.model}[/green]"
@@ -1637,6 +1754,8 @@ _COMMANDS = {
     "model": _model,
     "provider": _provider,
     "mode": _mode,
+    "dry-run": _dry_run,
+    "dryrun": _dry_run,
     "tools": _tools,
     "files": _files,
     "context": _context,
@@ -1691,6 +1810,10 @@ _HELP_GROUPS = [
                 "/mode [ask|auto-accept|plan]",
                 "Choose or directly set the permission mode.",
             ),
+            (
+                "/dry-run [on|off|toggle]",
+                "Preview mutating actions without running them.",
+            ),
         ],
     ),
     (
@@ -1723,6 +1846,8 @@ _COMMAND_DESCRIPTIONS = {
     "model": "Choose a model, set one by name, refresh the list, or search.",
     "provider": "Choose a failover roster (checklist), or replace it with one provider by id.",
     "mode": "Choose or directly set the permission mode.",
+    "dry-run": "Preview mutating actions without running them.",
+    "dryrun": "Alias for /dry-run.",
     "tools": "List available tools.",
     "files": "List files changed this session.",
     "context": "Manage pinned files included with each turn.",
@@ -1773,6 +1898,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "models": "Refresh the model catalog or manage allow/deny filters.",
     "mode": "Set or reset the default permission mode.",
     "permissions": "List or remove tools approved with 'always'.",
+    "commands": "Manage run_bash allow/deny regex rules.",
     "sampling": "Show, set, or reset sampling parameters.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",
