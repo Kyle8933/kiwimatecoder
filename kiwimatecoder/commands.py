@@ -39,6 +39,7 @@ from kiwimatecoder.config import (
     get_provider_config,
     get_sampling,
     get_ui,
+    get_web,
     list_provider_configs,
     list_visible_models,
     project_config_path,
@@ -65,6 +66,7 @@ from kiwimatecoder.config import (
     set_trusted_workspace,
     set_ui,
     set_verify_command,
+    set_web,
     update_provider,
 )
 from kiwimatecoder.permissions import PermissionMode
@@ -919,6 +921,10 @@ def _config_help(console: Console) -> None:
             "Get or set temperature, top_p, max_tokens, reasoning_effort.",
         ),
         (
+            "/config web [show|max-chars <n>|timeout <s>|allow-local <on|off>]",
+            "Set web fetch/search limits and local-address access.",
+        ),
+        (
             "/config style [set <default|concise|explanatory|code>]",
             "Show or set the output style.",
         ),
@@ -1661,6 +1667,69 @@ def _config_sampling(action_parts: list[str], console: Console) -> None:
     )
 
 
+def _config_web(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "ls", "status"}:
+        settings = get_web()
+        console.print(
+            f"Web max chars: [cyan]{settings['max_chars']}[/cyan]\n"
+            f"Web timeout: [cyan]{settings['timeout']:g}s[/cyan]\n"
+            f"Allow local addresses: "
+            f"[cyan]{'on' if settings['allow_local'] else 'off'}[/cyan]\n"
+            f"Search provider: [cyan]{settings['search_provider']}[/cyan]"
+        )
+        return
+
+    if action in {"max-chars", "max_chars", "chars"}:
+        if not rest:
+            console.print("[yellow]Usage: /config web max-chars <n>[/yellow]")
+            return
+        try:
+            settings = set_web(max_chars=rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Web max chars:[/green] {settings['max_chars']}"
+        )
+        return
+
+    if action in {"timeout", "time-out"}:
+        if not rest:
+            console.print("[yellow]Usage: /config web timeout <seconds>[/yellow]")
+            return
+        try:
+            settings = set_web(timeout=rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(f"[green]Web timeout:[/green] {settings['timeout']:g}s")
+        return
+
+    if action in {"allow-local", "allow_local", "local"}:
+        if not rest:
+            console.print("[yellow]Usage: /config web allow-local <on|off>[/yellow]")
+            return
+        token = rest[0].strip().lower()
+        if token not in {"on", "off", "true", "false", "yes", "no"}:
+            console.print("[red]Expected 'on' or 'off'.[/red]")
+            return
+        enabled = token in {"on", "true", "yes"}
+        settings = set_web(allow_local=enabled)
+        console.print(
+            f"[green]Allow local addresses:[/green] "
+            f"{'on' if settings['allow_local'] else 'off'}"
+        )
+        return
+
+    console.print(
+        "[yellow]Usage: /config web [show|max-chars <n>|timeout <s>|"
+        "allow-local <on|off>][/yellow]"
+    )
+
+
 _UI_USAGE = (
     "/config ui [show|color <auto|always|never>|"
     "output <normal|compact|verbose>|ascii <on|off>|"
@@ -1949,6 +2018,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_budget(rest, session, console)
     elif section == "sampling":
         _config_sampling(rest, console)
+    elif section == "web":
+        _config_web(rest, console)
     elif section == "ui":
         _config_ui(rest, console)
     elif section == "style":
@@ -2000,6 +2071,7 @@ def _config_interact(
             CommandOption("commands", "Manage shell command allow/deny rules"),
             CommandOption("trust", "Allow reads outside the workspace root"),
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
+            CommandOption("web", "Web fetch/search limits and local access"),
             CommandOption("style", "Show or set the output style"),
             CommandOption("ui", "Theme, color, output mode, and ASCII mode"),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
@@ -2040,6 +2112,7 @@ def _config_interact(
         "help",
         "permissions",
         "sampling",
+        "web",
         "style",
         "ui",
         "prompt",
@@ -2509,6 +2582,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "verify": "Set the command run automatically after edits.",
     "budget": "Set or clear token/cost budget limits.",
     "sampling": "Show, set, or reset sampling parameters.",
+    "web": "Set web fetch/search limits and local-address access.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",

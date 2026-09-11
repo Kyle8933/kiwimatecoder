@@ -18,6 +18,8 @@ BUILTIN_NAMES = [
     "run_bash",
     "update_todos",
     "ask_user",
+    "web_fetch",
+    "web_search",
 ]
 
 

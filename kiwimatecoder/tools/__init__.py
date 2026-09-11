@@ -30,6 +30,7 @@ from kiwimatecoder.tools.search import search_tool
 from kiwimatecoder.tools.selection import select_hunks as select_hunks
 from kiwimatecoder.tools.skill import load_skill_tool
 from kiwimatecoder.tools.todo import update_todos_tool
+from kiwimatecoder.tools.web import web_fetch_tool, web_search_tool
 from kiwimatecoder.tools.write_file import preview as _write_preview
 from kiwimatecoder.tools.write_file import write_file_tool
 
@@ -46,6 +47,8 @@ _ALL_TOOLS: list[FunctionTool] = [
     run_bash_tool,
     update_todos_tool,
     ask_user_tool,
+    web_fetch_tool,
+    web_search_tool,
 ]
 
 TOOLS = ToolRegistry()

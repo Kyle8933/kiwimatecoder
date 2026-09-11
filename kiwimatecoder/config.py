@@ -103,6 +103,13 @@ def _empty_config() -> dict[str, Any]:
         "compact_at_tokens": 64000,
         "context_window": 128000,
         "ui": {},
+        "web": {
+            "max_chars": 50000,
+            "timeout": 20.0,
+            "allow_local": False,
+            "search_provider": "duckduckgo",
+            "search_api_key": "",
+        },
     }
 
 
@@ -228,6 +235,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("compact_at_tokens", 64000)
     cfg.setdefault("context_window", 128000)
     cfg.setdefault("ui", {})
+    cfg.setdefault("web", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
     # stored empty list, a non-list, or a list of junk is seeded the same way.
@@ -1419,6 +1427,116 @@ def set_output_style(style: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Web fetch/search
+# ---------------------------------------------------------------------------
+
+WEB_DEFAULTS: dict[str, Any] = {
+    "max_chars": 50000,
+    "timeout": 20.0,
+    "allow_local": False,
+    "search_provider": "duckduckgo",
+    "search_api_key": "",
+}
+WEB_SEARCH_PROVIDERS = ("duckduckgo",)
+WEB_MAX_CHARS_MIN = 1_000
+WEB_MAX_CHARS_MAX = 2_000_000
+WEB_TIMEOUT_MIN = 1.0
+WEB_TIMEOUT_MAX = 120.0
+
+
+def get_web(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized web-fetch/search settings, always fully populated."""
+    cfg = cfg or load_config()
+    stored = cfg.get("web") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(WEB_DEFAULTS)
+    try:
+        max_chars = int(stored.get("max_chars", WEB_DEFAULTS["max_chars"]))
+    except (TypeError, ValueError):
+        max_chars = int(WEB_DEFAULTS["max_chars"])
+    if WEB_MAX_CHARS_MIN <= max_chars <= WEB_MAX_CHARS_MAX:
+        effective["max_chars"] = max_chars
+    try:
+        timeout = float(stored.get("timeout", WEB_DEFAULTS["timeout"]))
+    except (TypeError, ValueError):
+        timeout = float(WEB_DEFAULTS["timeout"])
+    if WEB_TIMEOUT_MIN <= timeout <= WEB_TIMEOUT_MAX:
+        effective["timeout"] = timeout
+    allow_local = stored.get("allow_local")
+    if isinstance(allow_local, bool):
+        effective["allow_local"] = allow_local
+    provider = str(stored.get("search_provider") or "").strip().lower()
+    if provider in WEB_SEARCH_PROVIDERS:
+        effective["search_provider"] = provider
+    api_key = stored.get("search_api_key")
+    effective["search_api_key"] = str(api_key) if api_key else ""
+    return effective
+
+
+def _validate_web_max_chars(value: Any) -> int:
+    try:
+        cleaned = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("web max_chars must be an integer.") from exc
+    if not WEB_MAX_CHARS_MIN <= cleaned <= WEB_MAX_CHARS_MAX:
+        raise ValueError(
+            f"web max_chars must be between {WEB_MAX_CHARS_MIN} "
+            f"and {WEB_MAX_CHARS_MAX}."
+        )
+    return cleaned
+
+
+def _validate_web_timeout(value: Any) -> float:
+    try:
+        cleaned = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("web timeout must be a number of seconds.") from exc
+    if not WEB_TIMEOUT_MIN <= cleaned <= WEB_TIMEOUT_MAX:
+        raise ValueError(
+            f"web timeout must be between {WEB_TIMEOUT_MIN:g} "
+            f"and {WEB_TIMEOUT_MAX:g} seconds."
+        )
+    return cleaned
+
+
+def set_web(
+    max_chars: int | str | None = None,
+    timeout: float | str | None = None,
+    allow_local: bool | None = None,
+    search_provider: str | None = None,
+    search_api_key: str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update web settings; omitted arguments keep their current value.
+
+    Raises ``ValueError`` for out-of-range numbers or an unsupported search
+    provider, so callers can validate eagerly.
+    """
+    cfg = cfg or load_config()
+    current = get_web(cfg)
+    if max_chars is not None:
+        current["max_chars"] = _validate_web_max_chars(max_chars)
+    if timeout is not None:
+        current["timeout"] = _validate_web_timeout(timeout)
+    if allow_local is not None:
+        current["allow_local"] = bool(allow_local)
+    if search_provider is not None:
+        provider = str(search_provider).strip().lower()
+        if provider not in WEB_SEARCH_PROVIDERS:
+            raise ValueError(
+                f"Unknown search provider '{search_provider}'. "
+                f"Choose: {', '.join(WEB_SEARCH_PROVIDERS)}."
+            )
+        current["search_provider"] = provider
+    if search_api_key is not None:
+        current["search_api_key"] = str(search_api_key).strip()
+    cfg["web"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
 # UI preferences (color, theme, output mode, ASCII)
 # ---------------------------------------------------------------------------
 
@@ -2177,6 +2295,36 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
         theme = ui.get("theme")
         if theme is not None and str(theme).strip().lower() not in THEMES:
             add("error", "ui.theme", f"Unknown theme '{theme}'.")
+
+    web = cfg.get("web")
+    if web is not None:
+        if not isinstance(web, dict):
+            add("error", "web", "'web' must be an object.")
+        else:
+            if "max_chars" in web:
+                try:
+                    _validate_web_max_chars(web["max_chars"])
+                except ValueError as exc:
+                    add("error", "web.max_chars", str(exc))
+            if "timeout" in web:
+                try:
+                    _validate_web_timeout(web["timeout"])
+                except ValueError as exc:
+                    add("error", "web.timeout", str(exc))
+            if "allow_local" in web and not isinstance(web["allow_local"], bool):
+                add("error", "web.allow_local", "'allow_local' must be true or false.")
+            provider = web.get("search_provider")
+            if (
+                provider is not None
+                and str(provider).strip().lower() not in WEB_SEARCH_PROVIDERS
+            ):
+                add(
+                    "error",
+                    "web.search_provider",
+                    f"Unknown search provider '{provider}'.",
+                )
+            if "search_api_key" in web and not isinstance(web["search_api_key"], str):
+                add("error", "web.search_api_key", "'search_api_key' must be a string.")
 
     prompt = cfg.get("system_prompt")
     if prompt is not None and not isinstance(prompt, str):

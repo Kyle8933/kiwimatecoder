@@ -46,6 +46,7 @@ from kiwimatecoder.config import (
     get_trusted_workspace,
     get_ui,
     get_verify_command,
+    get_web,
     list_provider_configs,
     load_config,
     project_config_path,
@@ -74,6 +75,7 @@ from kiwimatecoder.config import (
     set_trusted_workspace,
     set_ui,
     set_verify_command,
+    set_web,
     update_provider,
     validate_config,
 )
@@ -107,6 +109,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config mode set <ask|auto-accept|plan>[/cyan]  Set default mode")
     console.print("  [cyan]config models show[/cyan]         List the models offered")
     console.print("  [cyan]config ui show[/cyan]             Theme, color, output, ASCII")
+    console.print("  [cyan]config web show[/cyan]            Web fetch/search limits")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
 
@@ -753,6 +756,93 @@ def cache_cmd(
     elif token in {"off", "false", "disable", "disabled"}:
         set_prompt_cache(False)
         console.print(f"[green]{_check()} Prompt caching off.[/green]")
+    else:
+        console.print("[red]Expected 'on' or 'off'.[/red]")
+        raise typer.Exit(1)
+
+
+# --- canonical `config web ...` ---------------------------------------------
+
+web_app = typer.Typer(help="Web fetch/search settings.")
+config_app.add_typer(web_app, name="web")
+
+
+def _print_web(settings: dict[str, object]) -> None:
+    console.print(
+        f"Web max chars: [cyan]{settings['max_chars']}[/cyan]\n"
+        f"Web timeout: [cyan]{settings['timeout']}s[/cyan]\n"
+        f"Allow local addresses: "
+        f"[cyan]{'on' if settings['allow_local'] else 'off'}[/cyan]\n"
+        f"Search provider: [cyan]{settings['search_provider']}[/cyan]"
+    )
+
+
+@web_app.command("show")
+def web_show() -> None:
+    """Show web fetch/search limits and local-address access."""
+    _print_web(get_web())
+
+
+@web_app.command("max-chars")
+def web_max_chars(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Maximum characters to return (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Set the maximum characters web_fetch returns."""
+    if value is None:
+        console.print(f"Web max chars: [cyan]{get_web()['max_chars']}[/cyan]")
+        return
+    try:
+        settings = set_web(max_chars=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{_check()} Web max chars:[/green] {settings['max_chars']}")
+
+
+@web_app.command("timeout")
+def web_timeout(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Timeout in seconds (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Set the web fetch/search timeout in seconds."""
+    if value is None:
+        console.print(f"Web timeout: [cyan]{get_web()['timeout']:g}s[/cyan]")
+        return
+    try:
+        settings = set_web(timeout=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{_check()} Web timeout:[/green] {settings['timeout']:g}s")
+
+
+@web_app.command("allow-local")
+def web_allow_local(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Allow web_fetch to reach local/private addresses (default off)."""
+    if state is None:
+        current = "on" if get_web()["allow_local"] else "off"
+        console.print(f"Allow local addresses: [cyan]{current}[/cyan]")
+        return
+    token = state.strip().lower()
+    if token in {"on", "true", "enable", "enabled"}:
+        set_web(allow_local=True)
+        console.print(
+            f"[yellow]{_check()} Allow local addresses on:[/yellow] web_fetch may "
+            "reach localhost and private network hosts."
+        )
+    elif token in {"off", "false", "disable", "disabled"}:
+        set_web(allow_local=False)
+        console.print(f"[green]{_check()} Allow local addresses off.[/green]")
     else:
         console.print("[red]Expected 'on' or 'off'.[/red]")
         raise typer.Exit(1)

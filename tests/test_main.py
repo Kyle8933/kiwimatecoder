@@ -492,6 +492,37 @@ def test_config_verify_and_budget_roundtrip():
     assert config.get_budget() == {}
 
 
+def test_config_web_roundtrip():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "web", "max-chars", "60000"])
+    assert result.exit_code == 0
+    assert config.get_web()["max_chars"] == 60000
+
+    result = runner.invoke(main.app, ["config", "web", "timeout", "9"])
+    assert result.exit_code == 0
+    assert config.get_web()["timeout"] == 9.0
+
+    result = runner.invoke(main.app, ["config", "web", "allow-local", "on"])
+    assert result.exit_code == 0
+    assert config.get_web()["allow_local"] is True
+
+    result = runner.invoke(main.app, ["config", "web", "show"])
+    assert result.exit_code == 0
+    assert "60000" in result.output
+    assert "on" in result.output
+
+
+def test_config_web_rejects_invalid_values():
+    result = CliRunner().invoke(main.app, ["config", "web", "max-chars", "5"])
+
+    assert result.exit_code == 1
+    assert config.get_web()["max_chars"] == 50000
+
+    result = CliRunner().invoke(main.app, ["config", "web", "allow-local", "maybe"])
+    assert result.exit_code == 1
+
+
 # ---------------------------------------------------------------------------
 # Profiles and config validation
 # ---------------------------------------------------------------------------

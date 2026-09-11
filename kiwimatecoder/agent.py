@@ -409,6 +409,14 @@ class Agent:
         if name == "load_skill":
             skill = str(args.get("name", "") or "")
             return f"skill [dim]{skill}[/dim]"
+        if name == "web_fetch":
+            url = str(args.get("url", "") or "")
+            short = url if len(url) <= 60 else f"{url[:57]}..."
+            return f"web_fetch [dim]{short}[/dim]"
+        if name == "web_search":
+            query = str(args.get("query", "") or "")
+            short = query if len(query) <= 50 else f"{query[:47]}..."
+            return f"web_search [dim]{short}[/dim]"
         return name
 
     # Only purely read-only tools are safe to run concurrently: they do not

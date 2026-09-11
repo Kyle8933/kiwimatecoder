@@ -195,6 +195,29 @@ The assistant has these capabilities, all scoped to the workspace:
 - `update_todos` — keep the visible task list in sync with multi-step work.
 - `ask_user` — ask a clarifying question with optional choices (interactive
   sessions only).
+- `web_fetch`, `web_search` — read a page or search the web; read-only, and
+  local/private addresses are blocked by default (see below).
+
+## Web access
+
+`web_search` searches the web with the DuckDuckGo HTML endpoint (no API key)
+and returns titles, URLs, and snippets. `web_fetch` downloads a page,
+follows redirects, converts HTML to readable text, and summarizes binary
+responses instead of dumping them. Both are read-only tools, so they run
+without approval and stay available in plan mode, and both descriptions tell
+the model to cite the URLs it relies on.
+
+- Response size is capped with a truncation note; defaults are 50,000
+  characters and a 20-second timeout.
+- `localhost`, loopback/private/link-local IPs, and `*.local` hosts are
+  refused by default. Enable them with `/config web allow-local on` (or
+  `kiwimatecoder config web allow-local on`) when you are working against a
+  local dev server.
+- Settings live under `/config web show|max-chars <n>|timeout <s>|allow-local <on|off>`
+  in the REPL, or `kiwimatecoder config web ...` from the shell.
+- DuckDuckGo parses the public HTML page, so result extraction is best-effort
+  and may need updating if that page's markup changes; `web_fetch` is
+  unaffected.
 
 ## Providers
 
