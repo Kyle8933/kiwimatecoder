@@ -83,6 +83,13 @@ class Agent:
             self.console.print(f"[red]{reason}[/red]")
             return
 
+        from kiwimatecoder.config import get_model_routing
+        from kiwimatecoder.routing import choose_turn_model
+
+        routed_model = choose_turn_model(
+            user_input, self.session, get_model_routing()
+        )
+
         self._budget_warned = False
         self.session.messages.append({"role": "user", "content": user_input})
 
@@ -97,7 +104,9 @@ class Agent:
                 # injected before the next model call.
                 self._drain_steering()
             try:
-                assistant_msg, tool_calls = await self._stream_once()
+                assistant_msg, tool_calls = await self._stream_once(
+                    model_override=routed_model
+                )
             except ProviderError as exc:
                 self.console.print(f"\n[red]{exc}[/red]")
                 return
@@ -223,13 +232,18 @@ class Agent:
             }
         )
 
-    async def _stream_once(self) -> tuple[dict[str, Any], list[AssembledToolCall]]:
+    async def _stream_once(
+        self, model_override: str | None = None
+    ) -> tuple[dict[str, Any], list[AssembledToolCall]]:
         """Stream one assistant response, rendering text and collecting tool calls.
 
         Tries each active provider in order (primary first); when a provider
         fails with a :class:`ProviderError`, the next active provider is tried
         with its own default model. Only when every active provider fails is the
         error surfaced.
+
+        ``model_override`` (per-turn model routing) applies to the primary
+        provider only; fallback providers keep their own model.
         """
         read_only = self.session.mode is PermissionMode.PLAN
         schemas = tools.tool_schemas(read_only=read_only)
@@ -244,6 +258,10 @@ class Agent:
                 self._announce_failover(provider.name, exc, providers[index + 1 :])
                 continue
             model = self.session.model_for(provider.id)
+            if model_override and provider.id == self.session.provider_id:
+                if model_override != model:
+                    self.console.print(f"[dim]routed to {model_override}[/dim]")
+                model = model_override
             try:
                 return await self._stream_from(client, schemas, model)
             except ProviderError as exc:

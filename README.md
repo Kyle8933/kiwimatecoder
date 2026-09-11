@@ -473,6 +473,29 @@ or `code`. Set one with `config style set <name>` (or `/config style set`). For
 a fully custom instruction, add a system-prompt suffix with
 `config prompt set "<text>"` and remove it with `config prompt clear`.
 
+## Model routing
+
+Route short, plain requests to a cheaper model while keeping the session model
+for real work. Configure it under `model_routing` in
+`~/.kiwimatecoder/config.json`:
+
+```json
+{
+  "model_routing": {
+    "enabled": true,
+    "simple_model": "gpt-5-mini",
+    "simple_max_chars": 200,
+    "exclude_keywords": ["refactor", "implement", "debug", "test"]
+  }
+}
+```
+
+A turn is routed when routing is enabled, `simple_model` is set, the message is
+at most `simple_max_chars` long, and it contains no code fence, file path,
+slash command, or exclude keyword (whole-word, case-insensitive). The override
+applies to the primary provider only — fallback providers keep their own
+models — and the session's model is never changed.
+
 ## Auto-verify
 
 Point the agent at your test/lint command and it runs automatically after any

@@ -376,6 +376,125 @@ def test_session_model_for_uses_override_for_fallback(agent_session):
 
 
 # ---------------------------------------------------------------------------
+# Per-turn model routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_agent_routes_short_prompt_to_simple_model(agent_session):
+    from kiwimatecoder import config
+
+    config.set_model_routing(enabled=True, simple_model="cheap-model")
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    seen: list[str] = []
+
+    async def mock_stream(messages, tools, model):
+        seen.append(model)
+        yield TextDelta(text="ok")
+        yield Done(finish_reason="stop")
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("add a docstring")
+
+    assert seen == ["cheap-model"]
+    # The override must not mutate the session's model.
+    assert agent_session.model == "test-model"
+
+
+@pytest.mark.anyio
+async def test_agent_keeps_model_for_complex_prompt(agent_session):
+    from kiwimatecoder import config
+
+    config.set_model_routing(enabled=True, simple_model="cheap-model")
+    agent = Agent(agent_session, Console(quiet=True), MagicMock(return_value=True))
+    seen: list[str] = []
+
+    async def mock_stream(messages, tools, model):
+        seen.append(model)
+        yield TextDelta(text="ok")
+        yield Done(finish_reason="stop")
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("please refactor the parser")
+
+    assert seen == ["test-model"]
+
+
+@pytest.mark.anyio
+async def test_agent_routing_override_applies_to_primary_only(agent_session):
+    from kiwimatecoder import config
+
+    agent_session.set_active_providers(["openrouter", "openai"])
+    agent_session.models["openai"] = "openai-model"
+    config.set_model_routing(enabled=True, simple_model="cheap-model")
+    agent = Agent(agent_session, Console(quiet=True), MagicMock(return_value=True))
+    seen: list[tuple[str, str]] = []
+
+    class RecordingStream:
+        def __init__(self, provider_id: str, fail: bool):
+            self.provider_id = provider_id
+            self.fail = fail
+
+        async def stream_chat(self, messages, tools, model):
+            seen.append((self.provider_id, model))
+            if self.fail:
+                raise ProviderError(f"{self.provider_id} down")
+            yield TextDelta(text=f"hi from {self.provider_id}")
+            yield Done(finish_reason="stop")
+
+    def fake_client(provider_id: str | None = None):
+        return RecordingStream(provider_id or "", fail=provider_id == "openrouter")
+
+    with patch("kiwimatecoder.agent.Agent._client", side_effect=fake_client):
+        msg, _calls = await agent._stream_once(model_override="cheap-model")
+
+    assert msg["content"] == "hi from openai"
+    assert seen == [
+        ("openrouter", "cheap-model"),
+        ("openai", "openai-model"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_agent_prints_routed_line(agent_session):
+    from kiwimatecoder import config
+
+    config.set_model_routing(enabled=True, simple_model="cheap-model")
+    buf = io.StringIO()
+    agent = Agent(
+        agent_session, Console(file=buf, force_terminal=False, width=120), MagicMock()
+    )
+
+    async def mock_stream(messages, tools, model):
+        yield TextDelta(text="ok")
+        yield Done(finish_reason="stop")
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("hi")
+
+    assert "routed to cheap-model" in buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Thinking / working status
 # ---------------------------------------------------------------------------
 

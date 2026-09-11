@@ -55,7 +55,7 @@ Goal: the community can add capabilities without touching core.
 - [x] 2.6 MCP client (stdio + HTTP, tools/resources; bearer/header auth; interactive OAuth deferred) (XL; depends 2.2)
 - [x] 2.7 Profiles/presets + config schema validation (M; depends 0.5)
 - [ ] 2.8 Themes, output modes, `NO_COLOR`, accessibility basics (M)
-- [ ] 2.9 Model routing per task type (M; depends 0.5)
+- [x] 2.9 Model routing per task type (M; depends 0.5)
 - [ ] 2.10 Prompt caching headers where supported (M; depends 0.4)
 
 **2.6 follow-up:** interactive OAuth is deferred. HTTP MCP servers authenticate

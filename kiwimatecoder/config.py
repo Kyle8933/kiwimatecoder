@@ -98,6 +98,7 @@ def _empty_config() -> dict[str, Any]:
         "plugins": {},
         "mcp_servers": {},
         "profiles": {},
+        "model_routing": {},
         "compact_at_tokens": 64000,
         "context_window": 128000,
     }
@@ -220,6 +221,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("plugins", {})
     cfg.setdefault("mcp_servers", {})
     cfg.setdefault("profiles", {})
+    cfg.setdefault("model_routing", {})
     cfg.setdefault("compact_at_tokens", 64000)
     cfg.setdefault("context_window", 128000)
     # Active-provider roster. Configs written before this feature lack the key;
@@ -1413,6 +1415,103 @@ def set_output_style(style: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Per-turn model routing
+# ---------------------------------------------------------------------------
+
+MODEL_ROUTING_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "simple_model": "",
+    "simple_max_chars": 200,
+    "exclude_keywords": [
+        "refactor",
+        "implement",
+        "debug",
+        "explain",
+        "why",
+        "design",
+        "architecture",
+        "test",
+        "migrate",
+        "review",
+    ],
+}
+
+
+def get_model_routing(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return routing settings, always fully populated and normalized."""
+    cfg = cfg or load_config()
+    stored = cfg.get("model_routing") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    enabled = bool(stored.get("enabled", MODEL_ROUTING_DEFAULTS["enabled"]))
+    simple_model = str(stored.get("simple_model") or "").strip()
+    try:
+        max_chars = int(
+            stored.get("simple_max_chars", MODEL_ROUTING_DEFAULTS["simple_max_chars"])
+        )
+    except (TypeError, ValueError):
+        max_chars = int(MODEL_ROUTING_DEFAULTS["simple_max_chars"])
+    if max_chars < 1:
+        max_chars = int(MODEL_ROUTING_DEFAULTS["simple_max_chars"])
+    raw_keywords = stored.get(
+        "exclude_keywords", MODEL_ROUTING_DEFAULTS["exclude_keywords"]
+    )
+    if not isinstance(raw_keywords, list):
+        raw_keywords = MODEL_ROUTING_DEFAULTS["exclude_keywords"]
+    keywords = list(
+        dict.fromkeys(str(keyword).strip() for keyword in raw_keywords if str(keyword).strip())
+    )
+    return {
+        "enabled": enabled,
+        "simple_model": simple_model,
+        "simple_max_chars": max_chars,
+        "exclude_keywords": keywords,
+    }
+
+
+def set_model_routing(
+    enabled: bool | None = None,
+    simple_model: str | None = None,
+    simple_max_chars: int | str | None = None,
+    exclude_keywords: list[str] | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update routing settings; omitted arguments keep their current value.
+
+    ``simple_max_chars`` must be a positive integer and ``exclude_keywords`` a
+    list of non-empty strings (duplicates collapse).
+    """
+    cfg = cfg or load_config()
+    current = get_model_routing(cfg)
+    if enabled is not None:
+        current["enabled"] = bool(enabled)
+    if simple_model is not None:
+        current["simple_model"] = str(simple_model).strip()
+    if simple_max_chars is not None:
+        try:
+            value = int(simple_max_chars)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("simple_max_chars must be a positive integer.") from exc
+        if value < 1:
+            raise ValueError("simple_max_chars must be a positive integer.")
+        current["simple_max_chars"] = value
+    if exclude_keywords is not None:
+        if not isinstance(exclude_keywords, list):
+            raise ValueError("exclude_keywords must be a list of non-empty strings.")
+        cleaned: list[str] = []
+        for keyword in exclude_keywords:
+            text = str(keyword).strip()
+            if not text:
+                raise ValueError("exclude_keywords entries must be non-empty.")
+            if text not in cleaned:
+                cleaned.append(text)
+        current["exclude_keywords"] = cleaned
+    cfg["model_routing"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
 # Profiles (named presets)
 # ---------------------------------------------------------------------------
 
@@ -1862,6 +1961,48 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                         _validate_command_pattern(str(pattern))
                     except ValueError as exc:
                         add("error", f"command_rules.{kind}[{index}]", str(exc))
+
+    routing = cfg.get("model_routing")
+    if routing is not None:
+        if not isinstance(routing, dict):
+            add("error", "model_routing", "'model_routing' must be an object.")
+        else:
+            if not isinstance(routing.get("enabled", False), bool):
+                add("error", "model_routing.enabled", "'enabled' must be a boolean.")
+            if "simple_model" in routing and not isinstance(
+                routing["simple_model"], str
+            ):
+                add(
+                    "error",
+                    "model_routing.simple_model",
+                    "'simple_model' must be a string.",
+                )
+            if "simple_max_chars" in routing:
+                try:
+                    if int(routing["simple_max_chars"]) < 1:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    add(
+                        "error",
+                        "model_routing.simple_max_chars",
+                        "Must be a positive integer.",
+                    )
+            keywords = routing.get("exclude_keywords")
+            if keywords is not None:
+                if not isinstance(keywords, list):
+                    add(
+                        "error",
+                        "model_routing.exclude_keywords",
+                        "Must be a list of non-empty strings.",
+                    )
+                else:
+                    for index, keyword in enumerate(keywords):
+                        if not str(keyword).strip():
+                            add(
+                                "error",
+                                f"model_routing.exclude_keywords[{index}]",
+                                "Keyword must be non-empty.",
+                            )
 
     profiles = cfg.get("profiles")
     if not isinstance(profiles, dict):
