@@ -3,6 +3,10 @@
 A tool is "advertised" to the model via its JSON schema. In PLAN mode only
 read-only tools are advertised (and the permission gate blocks the rest as a
 second line of defense).
+
+The mapping lives in :class:`~kiwimatecoder.tools.registry.ToolRegistry`, which
+also records each tool's source (``"builtin"`` or a plugin label). The module
+level ``TOOLS`` name is that registry and remains dict-compatible.
 """
 
 from __future__ import annotations
@@ -15,6 +19,11 @@ from kiwimatecoder.tools.edit_file import edit_file_tool
 from kiwimatecoder.tools.edit_file import preview as _edit_preview
 from kiwimatecoder.tools.list_dir import list_dir_tool
 from kiwimatecoder.tools.read_file import read_file_tool
+from kiwimatecoder.tools.registry import (
+    BUILTIN_SOURCE,
+    PLUGIN_SOURCE,
+    ToolRegistry,
+)
 from kiwimatecoder.tools.run_bash import preview as _bash_preview
 from kiwimatecoder.tools.run_bash import run_bash_tool
 from kiwimatecoder.tools.search import search_tool
@@ -37,7 +46,9 @@ _ALL_TOOLS: list[FunctionTool] = [
     ask_user_tool,
 ]
 
-TOOLS: dict[str, FunctionTool] = {t.name: t for t in _ALL_TOOLS}
+TOOLS = ToolRegistry()
+for _tool in _ALL_TOOLS:
+    TOOLS.register(_tool, source=BUILTIN_SOURCE)
 
 # Preview functions used by the permission gate to render what an action will do.
 _PREVIEWS: dict[str, Callable[[dict[str, Any], Any], str]] = {
@@ -47,14 +58,32 @@ _PREVIEWS: dict[str, Callable[[dict[str, Any], Any], str]] = {
 }
 
 
+def register_tool(tool: FunctionTool, source: str = PLUGIN_SOURCE) -> FunctionTool:
+    """Register a tool dynamically and return it.
+
+    Raises ``ValueError`` when the name is already registered; pass through
+    ``TOOLS.register(tool, replace=True)`` to deliberately replace one.
+    """
+    return TOOLS.register(tool, source=source)
+
+
+def unregister_tool(name: str, force: bool = False) -> bool:
+    """Remove a dynamically registered tool; built-ins need ``force=True``."""
+    return TOOLS.unregister(name, force=force)
+
+
+def tool_sources() -> dict[str, list[str]]:
+    """Map each tool source to its sorted tool names."""
+    return TOOLS.sources()
+
+
 def read_only_tools() -> list[FunctionTool]:
-    return [t for t in _ALL_TOOLS if not t.needs_approval]
+    return TOOLS.read_only()
 
 
 def tool_schemas(read_only: bool = False) -> list[dict[str, Any]]:
     """Return OpenAI tool schemas, optionally restricted to read-only tools."""
-    tools = read_only_tools() if read_only else _ALL_TOOLS
-    return [t.schema() for t in tools]
+    return TOOLS.schemas(read_only=read_only)
 
 
 def get_tool(name: str) -> FunctionTool | None:
@@ -73,3 +102,22 @@ def dispatch(name: str, args: dict[str, Any], session: Session) -> ToolResult:
     if tool is None:
         return ToolResult.error(f"Unknown tool: {name}")
     return tool.execute(args, session)
+
+
+__all__ = [
+    "BUILTIN_SOURCE",
+    "PLUGIN_SOURCE",
+    "TOOLS",
+    "FunctionTool",
+    "ToolRegistry",
+    "ToolResult",
+    "dispatch",
+    "get_tool",
+    "preview",
+    "read_only_tools",
+    "register_tool",
+    "select_hunks",
+    "tool_schemas",
+    "tool_sources",
+    "unregister_tool",
+]
