@@ -3,7 +3,7 @@ import io
 import pytest
 from rich.console import Console
 
-from kiwimatecoder import catalog, config
+from kiwimatecoder import catalog, config, ui
 from kiwimatecoder.commands import (
     CommandResult,
     MultiSelectionPrompt,
@@ -1070,3 +1070,64 @@ def test_help_includes_custom_commands_group(session):
     output = _output(console)
     assert "Custom commands" in output
     assert "/review" in output
+
+
+# ---------------------------------------------------------------------------
+# /config ui
+# ---------------------------------------------------------------------------
+
+
+def test_config_ui_show_prints_current_settings(session):
+    console = _console()
+
+    dispatch("/config ui show", session, console)
+
+    output = _output(console)
+    assert "UI:" in output
+    assert "default" in output
+    assert "normal" in output
+
+
+def test_config_ui_bare_prints_current_settings(session):
+    console = _console()
+
+    dispatch("/config ui", session, console)
+
+    assert "UI:" in _output(console)
+
+
+def test_config_ui_updates_settings(session):
+    console = _console()
+
+    dispatch("/config ui color never", session, console)
+    assert config.get_ui()["color"] == "never"
+
+    dispatch("/config ui output compact", session, console)
+    assert config.get_ui()["output_mode"] == "compact"
+
+    dispatch("/config ui ascii on", session, console)
+    assert config.get_ui()["ascii"] is True
+
+    dispatch("/config ui theme ocean", session, console)
+    assert config.get_ui()["theme"] == "ocean"
+
+    output = _output(console)
+    assert "ocean" in output
+    assert "Restart the session" in output
+
+
+def test_config_ui_rejects_invalid_values(session):
+    console = _console()
+
+    dispatch("/config ui color rainbow", session, console)
+    dispatch("/config ui output loud", session, console)
+    dispatch("/config ui ascii maybe", session, console)
+    dispatch("/config ui theme neon", session, console)
+
+    assert config.get_ui() == ui.UI_DEFAULTS
+
+
+def test_config_action_descriptions_include_ui():
+    from kiwimatecoder.commands import _CONFIG_ACTION_DESCRIPTIONS
+
+    assert "ui" in _CONFIG_ACTION_DESCRIPTIONS

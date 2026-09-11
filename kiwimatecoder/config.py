@@ -102,6 +102,7 @@ def _empty_config() -> dict[str, Any]:
         "prompt_cache": False,
         "compact_at_tokens": 64000,
         "context_window": 128000,
+        "ui": {},
     }
 
 
@@ -226,6 +227,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("prompt_cache", False)
     cfg.setdefault("compact_at_tokens", 64000)
     cfg.setdefault("context_window", 128000)
+    cfg.setdefault("ui", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
     # stored empty list, a non-list, or a list of junk is seeded the same way.
@@ -1417,6 +1419,80 @@ def set_output_style(style: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# UI preferences (color, theme, output mode, ASCII)
+# ---------------------------------------------------------------------------
+
+
+def get_ui(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized UI preferences, always fully populated.
+
+    Stored values that are not recognized fall back to :data:`ui.UI_DEFAULTS`
+    (same tolerance as the other section getters), so a hand-edited config can
+    never crash the REPL.
+    """
+    from kiwimatecoder.ui import COLOR_MODES, OUTPUT_MODES, THEMES, UI_DEFAULTS
+
+    cfg = cfg or load_config()
+    stored = cfg.get("ui") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(UI_DEFAULTS)
+    color = str(stored.get("color") or "").strip().lower()
+    if color in COLOR_MODES:
+        effective["color"] = color
+    output_mode = str(stored.get("output_mode") or "").strip().lower()
+    if output_mode in OUTPUT_MODES:
+        effective["output_mode"] = output_mode
+    ascii_value = stored.get("ascii")
+    if isinstance(ascii_value, bool):
+        effective["ascii"] = ascii_value
+    theme = str(stored.get("theme") or "").strip().lower()
+    if theme in THEMES:
+        effective["theme"] = theme
+    return effective
+
+
+def set_ui(
+    color: str | None = None,
+    output_mode: str | None = None,
+    ascii: bool | None = None,
+    theme: str | None = None,
+) -> dict[str, Any]:
+    """Update UI preferences and persist them; omitted values are unchanged."""
+    from kiwimatecoder.ui import COLOR_MODES, OUTPUT_MODES, THEMES
+
+    cfg = load_config()
+    current = get_ui(cfg)
+    if color is not None:
+        cleaned = str(color).strip().lower()
+        if cleaned not in COLOR_MODES:
+            raise ValueError(
+                f"Unknown color mode '{color}'. Choose: {', '.join(COLOR_MODES)}."
+            )
+        current["color"] = cleaned
+    if output_mode is not None:
+        cleaned = str(output_mode).strip().lower()
+        if cleaned not in OUTPUT_MODES:
+            raise ValueError(
+                f"Unknown output mode '{output_mode}'. "
+                f"Choose: {', '.join(OUTPUT_MODES)}."
+            )
+        current["output_mode"] = cleaned
+    if ascii is not None:
+        if not isinstance(ascii, bool):
+            raise ValueError("UI ascii must be true or false.")
+        current["ascii"] = ascii
+    if theme is not None:
+        cleaned = str(theme).strip().lower()
+        if cleaned not in THEMES:
+            raise ValueError(f"Unknown theme '{theme}'. Choose: {', '.join(THEMES)}.")
+        current["theme"] = cleaned
+    cfg["ui"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
 # Per-turn model routing
 # ---------------------------------------------------------------------------
 
@@ -2080,6 +2156,27 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
     style = cfg.get("output_style")
     if style is not None and str(style).strip().lower() not in OUTPUT_STYLES:
         add("error", "output_style", f"Unknown output style '{style}'.")
+
+    ui = cfg.get("ui")
+    if not isinstance(ui, dict):
+        add("error", "ui", "'ui' must be an object.")
+    else:
+        from kiwimatecoder.ui import COLOR_MODES, OUTPUT_MODES, THEMES
+
+        color = ui.get("color")
+        if color is not None and str(color).strip().lower() not in COLOR_MODES:
+            add("error", "ui.color", f"Unknown color mode '{color}'.")
+        output_mode = ui.get("output_mode")
+        if (
+            output_mode is not None
+            and str(output_mode).strip().lower() not in OUTPUT_MODES
+        ):
+            add("error", "ui.output_mode", f"Unknown output mode '{output_mode}'.")
+        if "ascii" in ui and not isinstance(ui["ascii"], bool):
+            add("error", "ui.ascii", "'ascii' must be true or false.")
+        theme = ui.get("theme")
+        if theme is not None and str(theme).strip().lower() not in THEMES:
+            add("error", "ui.theme", f"Unknown theme '{theme}'.")
 
     prompt = cfg.get("system_prompt")
     if prompt is not None and not isinstance(prompt, str):

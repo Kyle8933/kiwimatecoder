@@ -1,7 +1,7 @@
 import pytest
 from typer.testing import CliRunner
 
-from kiwimatecoder import __version__, config, main
+from kiwimatecoder import __version__, config, main, ui
 from kiwimatecoder.updater import build_update_command
 
 
@@ -648,3 +648,79 @@ def test_profile_with_resume_overlays_mode_and_model(tmp_path, monkeypatch):
     assert captured["session"].provider_id == "anthropic"
     assert captured["session"].model == "claude-new"
     assert captured["session"].mode.value == "plan"
+
+
+# ---------------------------------------------------------------------------
+# `config ui` CLI
+# ---------------------------------------------------------------------------
+
+
+def test_config_ui_roundtrip():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "ui", "color", "never"])
+    assert result.exit_code == 0
+    assert config.get_ui()["color"] == "never"
+
+    result = runner.invoke(main.app, ["config", "ui", "output", "compact"])
+    assert result.exit_code == 0
+    assert config.get_ui()["output_mode"] == "compact"
+
+    result = runner.invoke(main.app, ["config", "ui", "ascii", "on"])
+    assert result.exit_code == 0
+    assert config.get_ui()["ascii"] is True
+
+    result = runner.invoke(main.app, ["config", "ui", "theme", "ocean"])
+    assert result.exit_code == 0
+    assert config.get_ui()["theme"] == "ocean"
+
+    result = runner.invoke(main.app, ["config", "ui", "show"])
+    assert result.exit_code == 0
+    assert "ocean" in result.output
+    assert "never" in result.output
+    assert "compact" in result.output
+
+
+def test_config_ui_ascii_off_roundtrip():
+    runner = CliRunner()
+    runner.invoke(main.app, ["config", "ui", "ascii", "on"])
+
+    result = runner.invoke(main.app, ["config", "ui", "ascii", "off"])
+
+    assert result.exit_code == 0
+    assert config.get_ui()["ascii"] is False
+
+
+def test_config_ui_rejects_invalid_values():
+    runner = CliRunner()
+
+    for args in (
+        ["config", "ui", "color", "rainbow"],
+        ["config", "ui", "output", "loud"],
+        ["config", "ui", "ascii", "maybe"],
+        ["config", "ui", "theme", "neon"],
+    ):
+        result = runner.invoke(main.app, args)
+        assert result.exit_code == 1, args
+
+    assert config.get_ui() == ui.UI_DEFAULTS
+
+
+def test_config_confirmations_use_ascii_glyph_when_enabled():
+    runner = CliRunner()
+    runner.invoke(main.app, ["config", "ui", "ascii", "on"])
+
+    result = runner.invoke(main.app, ["config", "key", "set", "openai", "sk-openai"])
+
+    assert result.exit_code == 0
+    assert "[ok]" in result.output
+    assert "✓" not in result.output
+
+
+def test_config_show_mentions_ui_settings():
+    result = CliRunner().invoke(main.app, ["config", "show"])
+
+    assert result.exit_code == 0
+    assert "UI:" in result.output
+    assert "theme" in result.output
+    assert "output" in result.output

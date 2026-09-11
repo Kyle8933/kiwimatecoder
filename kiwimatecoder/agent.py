@@ -8,8 +8,10 @@ import time
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
+from rich.text import Text
 
-from kiwimatecoder import audit, events, hooks, tools
+from kiwimatecoder import audit, events, hooks, tools, ui
 from kiwimatecoder.client import (
     AssembledToolCall,
     Done,
@@ -40,12 +42,24 @@ class Agent:
         console: Console,
         confirm: ConfirmFn,
         bus: events.EventBus | None = None,
+        ascii_mode: bool = False,
+        output_mode: str = "normal",
     ) -> None:
         self.session = session
         self.console = console
         self.confirm = confirm
         self.bus = bus if bus is not None else events.BUS
         self._budget_warned = False
+        self.ascii_mode = bool(ascii_mode)
+        self.output_mode = output_mode if output_mode in ui.OUTPUT_MODES else "normal"
+
+    def _glyph(self, name: str) -> str:
+        """Active glyph escaped for direct use inside Rich markup."""
+        return escape(ui.glyph(name, {"ui": {"ascii": self.ascii_mode}}))
+
+    def _print_markup(self, markup: str) -> None:
+        """Print styled markup as ``Text`` so logs keep the plain glyph text."""
+        self.console.print(Text.from_markup(markup))
 
     def _client(self, provider_id: str | None = None) -> UnifiedClient:
         from kiwimatecoder.config import (
@@ -460,7 +474,9 @@ class Agent:
                 decision="denied",
                 reason=decision.reason,
             )
-            self.console.print(f"[yellow]⊘ {summary}: {decision.reason}[/yellow]")
+            self._print_markup(
+                f"[yellow]{self._glyph('blocked')} {summary}: {decision.reason}[/yellow]"
+            )
             return self._tool_message(call.id, decision.reason), False
 
         if self.session.dry_run and tool.needs_approval:
@@ -498,7 +514,9 @@ class Agent:
                     reason=reason,
                     hunks=decision.selected_hunks,
                 )
-                self.console.print(f"[yellow]⊘ {summary}: {reason}[/yellow]")
+                self._print_markup(
+                    f"[yellow]{self._glyph('blocked')} {summary}: {reason}[/yellow]"
+                )
                 return self._tool_message(call.id, reason), False
             args = selected_args
             partial_hunks = decision.selected_hunks
@@ -513,13 +531,18 @@ class Agent:
                 decision="hook_blocked",
                 reason=reason,
             )
-            self.console.print(f"[red]⊘ {summary}: {reason}[/red]")
+            self._print_markup(
+                f"[red]{self._glyph('blocked')} {summary}: {reason}[/red]"
+            )
             return self._tool_message(call.id, self._hook_block_message(blocked)), False
 
         if call.name in ("write_file", "edit_file"):
             path = str(args.get("path") or "").strip()
             if path:
                 self.session.checkpoint([path], f"{call.name} {path}")
+
+        if self.output_mode == "verbose":
+            self.console.print(self._verbose_args(args))
 
         t0 = time.perf_counter()
         try:
@@ -544,14 +567,34 @@ class Agent:
         )
 
         if result.ok:
-            self.console.print(f"[bold green]✓[/bold green] {summary} [dim]({duration_ms}ms)[/dim]")
+            if self.output_mode != "compact":
+                self._print_markup(
+                    f"[bold green]{self._glyph('check')}[/bold green] {summary} "
+                    f"[dim]({duration_ms}ms)[/dim]"
+                )
         else:
-            self.console.print(f"[bold red]✗[/bold red] {summary} [red](failed)[/red] [dim]({duration_ms}ms)[/dim]")
+            self._print_markup(
+                f"[bold red]{self._glyph('cross')}[/bold red] {summary} "
+                f"[red](failed)[/red] [dim]({duration_ms}ms)[/dim]"
+            )
+        if self.output_mode == "verbose":
+            self.console.print(f"[dim]result: {len(result.content):,} chars[/dim]")
         edited = call.name in ("write_file", "edit_file") and result.ok
         content = result.content
         if result.ok and partial_hunks is not None:
             content += f" (applied hunks: {', '.join(str(h) for h in partial_hunks)})"
         return self._tool_message(call.id, content), edited
+
+    def _verbose_args(self, args: dict[str, Any]) -> str:
+        """Render the verbose-mode argument block: redacted and capped."""
+        try:
+            rendered = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            rendered = str(args)
+        rendered = redact(rendered)
+        if len(rendered) > 500:
+            rendered = rendered[:497] + "..."
+        return f"[dim]args: {escape(rendered)}[/dim]"
 
     def _run_pre_tool_hooks(
         self, name: str, args: dict[str, Any]

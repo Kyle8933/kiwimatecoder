@@ -1179,3 +1179,127 @@ async def test_agent_preserves_partial_assistant_on_cancel(agent_session):
         "role": "assistant",
         "content": "partial answer",
     }
+
+
+# ---------------------------------------------------------------------------
+# Output modes and ASCII accessibility
+# ---------------------------------------------------------------------------
+
+
+def _call(name: str, arguments: str, call_id: str = "call_1") -> AssembledToolCall:
+    return AssembledToolCall(id=call_id, name=name, arguments=arguments)
+
+
+def test_agent_normal_mode_prints_success_line(agent_session):
+    (agent_session.workspace_root / "hello.txt").write_text("file content")
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    log = track_console(console)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+
+    agent._run_tool_call(_call("read_file", '{"path": "hello.txt"}'))
+
+    prints = [text for kind, text in log if kind == "print"]
+    assert any("✓" in text for text in prints)
+
+
+def test_agent_compact_mode_hides_success_but_keeps_failures(agent_session):
+    (agent_session.workspace_root / "hello.txt").write_text("file content")
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    log = track_console(console)
+    agent = Agent(
+        agent_session, console, MagicMock(return_value=True), output_mode="compact"
+    )
+
+    agent._run_tool_call(_call("read_file", '{"path": "hello.txt"}'))
+    agent._run_tool_call(_call("read_file", '{"path": "missing.txt"}', "call_2"))
+
+    prints = [text for kind, text in log if kind == "print"]
+    assert not any("✓" in text for text in prints)
+    assert any("✗" in text for text in prints)
+
+
+def test_agent_compact_mode_still_appends_tool_results(agent_session):
+    (agent_session.workspace_root / "hello.txt").write_text("file content")
+    console = Console(quiet=True)
+    agent = Agent(
+        agent_session, console, MagicMock(return_value=True), output_mode="compact"
+    )
+
+    message, edited = agent._run_tool_call(
+        _call("read_file", '{"path": "hello.txt"}')
+    )
+
+    assert edited is False
+    assert "file content" in message["content"]
+
+
+def test_agent_ascii_mode_replaces_glyphs(agent_session):
+    (agent_session.workspace_root / "hello.txt").write_text("file content")
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=120)
+    log = track_console(console)
+    agent = Agent(
+        agent_session, console, MagicMock(return_value=True), ascii_mode=True
+    )
+
+    agent._run_tool_call(_call("read_file", '{"path": "hello.txt"}'))
+    agent._run_tool_call(_call("read_file", '{"path": "missing.txt"}', "call_2"))
+
+    output = buf.getvalue()
+    assert "[ok]" in output
+    assert "[fail]" in output
+    assert "✓" not in output
+    assert "✗" not in output
+
+    prints = [text for kind, text in log if kind == "print"]
+    assert any("[ok]" in text for text in prints)
+    assert any("[fail]" in text for text in prints)
+
+
+def test_agent_verbose_mode_prints_redacted_args_and_result_size(agent_session):
+    (agent_session.workspace_root / "hello.txt").write_text("file content")
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=120)
+    track_console(console)
+    agent = Agent(
+        agent_session, console, MagicMock(return_value=True), output_mode="verbose"
+    )
+    call = AssembledToolCall(
+        id="call_1",
+        name="read_file",
+        arguments=json.dumps(
+            {
+                "path": "hello.txt",
+                "token": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            }
+        ),
+    )
+
+    agent._run_tool_call(call)
+
+    output = buf.getvalue()
+    assert "args:" in output
+    assert "[REDACTED]" in output
+    assert "ghp_" not in output
+    assert "result:" in output
+    assert "chars" in output
+
+
+def test_agent_verbose_args_are_capped(agent_session):
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    agent = Agent(
+        agent_session, console, MagicMock(return_value=True), output_mode="verbose"
+    )
+
+    block = agent._verbose_args({"path": "x" * 2000})
+
+    assert len(block) < 600
+    assert block.endswith("...[/dim]")
+
+
+def test_agent_unknown_output_mode_falls_back_to_normal(agent_session):
+    agent = Agent(
+        agent_session, Console(quiet=True), MagicMock(), output_mode="loud"
+    )
+
+    assert agent.output_mode == "normal"

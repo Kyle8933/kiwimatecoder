@@ -44,6 +44,7 @@ from kiwimatecoder.config import (
     get_selected_provider_id,
     get_system_prompt,
     get_trusted_workspace,
+    get_ui,
     get_verify_command,
     list_provider_configs,
     load_config,
@@ -71,6 +72,7 @@ from kiwimatecoder.config import (
     set_selected_provider,
     set_system_prompt,
     set_trusted_workspace,
+    set_ui,
     set_verify_command,
     update_provider,
     validate_config,
@@ -104,6 +106,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config model set <id>[/cyan]       Set the default model")
     console.print("  [cyan]config mode set <ask|auto-accept|plan>[/cyan]  Set default mode")
     console.print("  [cyan]config models show[/cyan]         List the models offered")
+    console.print("  [cyan]config ui show[/cyan]             Theme, color, output, ASCII")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
 
@@ -114,6 +117,25 @@ def _resolve_provider(provider_id: str) -> None:
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
+
+
+def _check() -> str:
+    """Return the active success glyph, escaped for Rich markup."""
+    from rich.markup import escape
+
+    from kiwimatecoder.ui import glyph
+
+    return escape(glyph("check"))
+
+
+def _print_ui(current: dict[str, Any]) -> None:
+    """Print the current UI preferences as a short summary."""
+    console.print(
+        f"Theme: [cyan]{current['theme']}[/cyan]\n"
+        f"Color: [cyan]{current['color']}[/cyan]\n"
+        f"Output mode: [cyan]{current['output_mode']}[/cyan]\n"
+        f"ASCII: [cyan]{'on' if current['ascii'] else 'off'}[/cyan]"
+    )
 
 
 key_app = typer.Typer(help="Save, remove, or list API keys.")
@@ -147,7 +169,7 @@ def key_set(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]✓ API key saved for[/green] [cyan]{provider}[/cyan] "
+        f"[green]{_check()} API key saved for[/green] [cyan]{provider}[/cyan] "
         + f"— {describe_key(provider)}."
     )
     if warning:
@@ -164,7 +186,7 @@ def key_remove(provider: Annotated[str, typer.Argument(help="Provider id")]) -> 
         raise typer.Exit(1)
     if existed:
         console.print(
-            f"[green]✓ Removed stored API key for[/green] [cyan]{provider}[/cyan]."
+            f"[green]{_check()} Removed stored API key for[/green] [cyan]{provider}[/cyan]."
         )
     else:
         console.print(f"[dim]No stored API key for {provider}.[/dim]")
@@ -193,7 +215,7 @@ def provider_use(provider: Annotated[str, typer.Argument(help="Provider id")]) -
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]✓ Default provider set to [cyan]{provider}[/cyan].[/green]")
+    console.print(f"[green]{_check()} Default provider set to [cyan]{provider}[/cyan].[/green]")
 
 
 @provider_app.command("list")
@@ -231,7 +253,7 @@ def provider_add(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]✓ Added provider[/green] [cyan]{provider.id}[/cyan] ({provider.name})."
+        f"[green]{_check()} Added provider[/green] [cyan]{provider.id}[/cyan] ({provider.name})."
     )
 
 
@@ -243,7 +265,7 @@ def provider_remove(provider: Annotated[str, typer.Argument(help="Provider id")]
     except (KeyError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]✓ Removed provider {provider}.[/green]")
+    console.print(f"[green]{_check()} Removed provider {provider}.[/green]")
 
 
 @provider_app.command("edit")
@@ -274,7 +296,7 @@ def provider_edit(
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]✓ Updated provider {provider}.[/green]")
+    console.print(f"[green]{_check()} Updated provider {provider}.[/green]")
 
 
 # --- canonical `config model ...` -------------------------------------------
@@ -284,14 +306,14 @@ def provider_edit(
 def model_set(model: Annotated[str, typer.Argument(help="Model id")]) -> None:
     """Set the default model (overrides the provider default)."""
     set_selected_model(model)
-    console.print(f"[green]✓ Default model set to [cyan]{model}[/cyan].[/green]")
+    console.print(f"[green]{_check()} Default model set to [cyan]{model}[/cyan].[/green]")
 
 
 @model_app.command("reset")
 def model_reset() -> None:
     """Use the provider's default model again."""
     set_selected_model(None)
-    console.print("[green]✓ Default model reset (using provider default).[/green]")
+    console.print(f"[green]{_check()} Default model reset (using provider default).[/green]")
 
 
 # --- canonical `config mode ...` --------------------------------------------
@@ -310,14 +332,14 @@ def mode_set(
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]✓ Default mode set to [cyan]{effective}[/cyan].[/green]")
+    console.print(f"[green]{_check()} Default mode set to [cyan]{effective}[/cyan].[/green]")
 
 
 @mode_app.command("reset")
 def mode_reset() -> None:
     """Reset the default permission mode to 'ask'."""
     effective = reset_default_mode()
-    console.print(f"[green]✓ Default mode reset to [cyan]{effective}[/cyan].[/green]")
+    console.print(f"[green]{_check()} Default mode reset to [cyan]{effective}[/cyan].[/green]")
 
 
 # --- canonical `config models ...` ------------------------------------------
@@ -390,7 +412,7 @@ def models_clear(
     pid = provider or get_selected_provider_id()
     _resolve_provider(pid)
     set_model_filter(pid, "all", [])
-    console.print(f"[green]✓ Cleared model visibility for {pid}.[/green]")
+    console.print(f"[green]{_check()} Cleared model visibility for {pid}.[/green]")
 
 
 # --- canonical `config permissions ...` -------------------------------------
@@ -422,7 +444,7 @@ def permissions_remove(
 ) -> None:
     """Remove a persisted tool approval."""
     if remove_always_allowed_tool(tool):
-        console.print(f"[green]✓ Removed persisted approval for {tool}.[/green]")
+        console.print(f"[green]{_check()} Removed persisted approval for {tool}.[/green]")
     else:
         console.print(f"[dim]No persisted approval for {tool}.[/dim]")
 
@@ -431,7 +453,7 @@ def permissions_remove(
 def permissions_clear() -> None:
     """Remove every persisted tool approval."""
     count = clear_always_allowed_tools()
-    console.print(f"[green]✓ Cleared {count} persisted tool approval(s).[/green]")
+    console.print(f"[green]{_check()} Cleared {count} persisted tool approval(s).[/green]")
 
 
 # --- canonical `config commands ...` ----------------------------------------
@@ -464,7 +486,7 @@ def _add_rule(kind: str, pattern: str) -> None:
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]✓ Added {kind} rule:[/green] {rules[kind][-1]}")
+    console.print(f"[green]{_check()} Added {kind} rule:[/green] {rules[kind][-1]}")
 
 
 @commands_app.command("allow")
@@ -495,7 +517,7 @@ def commands_remove(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     if existed:
-        console.print(f"[green]✓ Removed {kind} rule:[/green] {pattern}")
+        console.print(f"[green]{_check()} Removed {kind} rule:[/green] {pattern}")
     else:
         console.print(f"[dim]No such {kind} rule: {pattern}[/dim]")
 
@@ -504,7 +526,7 @@ def commands_remove(
 def commands_clear() -> None:
     """Remove every command rule."""
     clear_command_rules()
-    console.print("[green]✓ Cleared all command rules.[/green]")
+    console.print(f"[green]{_check()} Cleared all command rules.[/green]")
 
 
 # --- canonical `config mcp ...` ---------------------------------------------
@@ -590,7 +612,7 @@ def mcp_add(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]✓ MCP server [cyan]{name}[/cyan] saved "
+        f"[green]{_check()} MCP server [cyan]{name}[/cyan] saved "
         f"({len(servers)} total).[/green]"
     )
 
@@ -599,7 +621,7 @@ def mcp_add(
 def mcp_remove(name: Annotated[str, typer.Argument(help="Server name")]) -> None:
     """Remove an MCP server."""
     if remove_mcp_server(name):
-        console.print(f"[green]✓ Removed MCP server {name}.[/green]")
+        console.print(f"[green]{_check()} Removed MCP server {name}.[/green]")
     else:
         console.print(f"[dim]No MCP server named {name}.[/dim]")
 
@@ -620,12 +642,12 @@ def trusted_workspace_cmd(
     if token in {"on", "true", "enable", "enabled"}:
         set_trusted_workspace(True)
         console.print(
-            "[yellow]✓ Trusted workspace on:[/yellow] read-only tools may read "
+            f"[yellow]{_check()} Trusted workspace on:[/yellow] read-only tools may read "
             "outside the workspace root; writes stay sandboxed."
         )
     elif token in {"off", "false", "disable", "disabled"}:
         set_trusted_workspace(False)
-        console.print("[green]✓ Trusted workspace off.[/green]")
+        console.print(f"[green]{_check()} Trusted workspace off.[/green]")
     else:
         console.print("[red]Expected 'on' or 'off'.[/red]")
         raise typer.Exit(1)
@@ -651,11 +673,11 @@ def verify_cmd(
             console.print("[red]Usage: config verify set <command>[/red]")
             raise typer.Exit(1)
         set_verify_command(command)
-        console.print(f"[green]✓ Auto-verify set to:[/green] {command}")
+        console.print(f"[green]{_check()} Auto-verify set to:[/green] {command}")
         return
     if action in {"clear", "reset", "off"}:
         set_verify_command("")
-        console.print("[green]✓ Auto-verify disabled.[/green]")
+        console.print(f"[green]{_check()} Auto-verify disabled.[/green]")
         return
     console.print("[red]Expected 'show', 'set', or 'clear'.[/red]")
     raise typer.Exit(1)
@@ -683,7 +705,7 @@ def budget_cmd(
         return
     if action in {"clear", "reset"}:
         clear_budget()
-        console.print("[green]✓ Budget limits cleared.[/green]")
+        console.print(f"[green]{_check()} Budget limits cleared.[/green]")
         return
     if action in {"tokens", "token"}:
         limit = None if value in (None, "clear", "none", "off") else value
@@ -692,7 +714,7 @@ def budget_cmd(
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1)
-        console.print(f"[green]✓ Token budget:[/green] {get_budget().get('max_tokens')}")
+        console.print(f"[green]{_check()} Token budget:[/green] {get_budget().get('max_tokens')}")
         return
     if action in {"cost", "usd"}:
         limit = None if value in (None, "clear", "none", "off") else value
@@ -702,7 +724,7 @@ def budget_cmd(
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1)
         console.print(
-            f"[green]✓ Cost budget:[/green] ${get_budget().get('max_cost_usd')}"
+            f"[green]{_check()} Cost budget:[/green] ${get_budget().get('max_cost_usd')}"
         )
         return
     console.print("[red]Expected 'show', 'tokens', 'cost', or 'clear'.[/red]")
@@ -725,12 +747,12 @@ def cache_cmd(
     if token in {"on", "true", "enable", "enabled"}:
         set_prompt_cache(True)
         console.print(
-            "[green]✓ Prompt caching on:[/green] native Anthropic requests mark "
+            f"[green]{_check()} Prompt caching on:[/green] native Anthropic requests mark "
             "the system prompt and tool definitions as cache breakpoints."
         )
     elif token in {"off", "false", "disable", "disabled"}:
         set_prompt_cache(False)
-        console.print("[green]✓ Prompt caching off.[/green]")
+        console.print(f"[green]{_check()} Prompt caching off.[/green]")
     else:
         console.print("[red]Expected 'on' or 'off'.[/red]")
         raise typer.Exit(1)
@@ -777,14 +799,14 @@ def sampling_set(
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]✓ Sampling set:[/green] {effective}")
+    console.print(f"[green]{_check()} Sampling set:[/green] {effective}")
 
 
 @sampling_app.command("reset")
 def sampling_reset() -> None:
     """Reset sampling parameters to provider defaults."""
     reset_sampling()
-    console.print("[green]✓ Sampling reset to provider defaults.[/green]")
+    console.print(f"[green]{_check()} Sampling reset to provider defaults.[/green]")
 
 
 # --- canonical `config style ...` and `config prompt ...` -------------------
@@ -809,7 +831,7 @@ def style_set(
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]✓ Output style set to [cyan]{effective}[/cyan].[/green]")
+    console.print(f"[green]{_check()} Output style set to [cyan]{effective}[/cyan].[/green]")
 
 
 prompt_app = typer.Typer(help="Show, set, or clear a custom system prompt.")
@@ -836,14 +858,94 @@ def prompt_set(
         console.print("[red]Prompt text is required.[/red]")
         raise typer.Exit(1)
     set_system_prompt(joined)
-    console.print("[green]✓ Custom system prompt saved.[/green]")
+    console.print(f"[green]{_check()} Custom system prompt saved.[/green]")
 
 
 @prompt_app.command("clear")
 def prompt_clear() -> None:
     """Clear the custom system-prompt addition."""
     set_system_prompt(None)
-    console.print("[green]✓ Custom system prompt cleared.[/green]")
+    console.print(f"[green]{_check()} Custom system prompt cleared.[/green]")
+
+
+# --- canonical `config ui ...` ----------------------------------------------
+
+ui_app = typer.Typer(
+    help="Themes, output modes, color control, and accessibility settings."
+)
+config_app.add_typer(ui_app, name="ui")
+
+
+@ui_app.command("show")
+def ui_show() -> None:
+    """Show the theme, color, output, and ASCII settings."""
+    _print_ui(get_ui())
+
+
+@ui_app.command("color")
+def ui_color(
+    value: Annotated[str, typer.Argument(help="auto, always, or never")],
+) -> None:
+    """Control color output: auto, always, or never."""
+    try:
+        current = set_ui(color=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Color mode set to [cyan]{current['color']}[/cyan].[/green]"
+    )
+
+
+@ui_app.command("output")
+def ui_output(
+    value: Annotated[str, typer.Argument(help="normal, compact, or verbose")],
+) -> None:
+    """Set how much the agent prints as tools run."""
+    try:
+        current = set_ui(output_mode=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Output mode set to "
+        f"[cyan]{current['output_mode']}[/cyan].[/green]"
+    )
+
+
+@ui_app.command("ascii")
+def ui_ascii(
+    state: Annotated[str, typer.Argument(help="'on' or 'off'")],
+) -> None:
+    """Enable or disable ASCII mode for screen readers and plain terminals."""
+    token = state.strip().lower()
+    if token in {"on", "true", "yes", "enable", "enabled"}:
+        enabled = True
+    elif token in {"off", "false", "no", "disable", "disabled"}:
+        enabled = False
+    else:
+        console.print("[red]Expected 'on' or 'off'.[/red]")
+        raise typer.Exit(1)
+    set_ui(ascii=enabled)
+    console.print(
+        f"[green]{_check()} ASCII mode "
+        f"{'on' if enabled else 'off'}.[/green]"
+    )
+
+
+@ui_app.command("theme")
+def ui_theme(
+    value: Annotated[str, typer.Argument(help="default, ocean, magenta, or mono")],
+) -> None:
+    """Set the visual theme used for accents and the banner."""
+    try:
+        current = set_ui(theme=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Theme set to [cyan]{current['theme']}[/cyan].[/green]"
+    )
 
 
 # --- canonical `config profile ...` -----------------------------------------
@@ -900,7 +1002,7 @@ def profile_save_cmd(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]✓ Saved profile [cyan]{name}[/cyan][/green] "
+        f"[green]{_check()} Saved profile [cyan]{name}[/cyan][/green] "
         f"({len(profile)} setting(s))."
     )
 
@@ -916,7 +1018,7 @@ def profile_use(name: Annotated[str, typer.Argument(help="Profile name")]) -> No
     cfg = load_config()
     provider_id = get_selected_provider_id(cfg)
     console.print(
-        f"[green]✓ Applied profile [cyan]{name}[/cyan][/green] — "
+        f"[green]{_check()} Applied profile [cyan]{name}[/cyan][/green] — "
         f"provider: [cyan]{provider_id}[/cyan], "
         f"model: [cyan]{cfg.get('selected_model') or '(provider default)'}[/cyan], "
         f"mode: [cyan]{get_default_mode(cfg)}[/cyan]."
@@ -927,7 +1029,7 @@ def profile_use(name: Annotated[str, typer.Argument(help="Profile name")]) -> No
 def profile_remove(name: Annotated[str, typer.Argument(help="Profile name")]) -> None:
     """Remove a saved profile."""
     if remove_profile(name):
-        console.print(f"[green]✓ Removed profile {name}.[/green]")
+        console.print(f"[green]{_check()} Removed profile {name}.[/green]")
     else:
         console.print(f"[dim]No profile named {name}.[/dim]")
 
@@ -944,7 +1046,7 @@ def profile_rename(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     if renamed:
-        console.print(f"[green]✓ Renamed profile {old} to {new}.[/green]")
+        console.print(f"[green]{_check()} Renamed profile {old} to {new}.[/green]")
     else:
         console.print(f"[dim]No profile named {old}.[/dim]")
 
@@ -954,7 +1056,7 @@ def validate_cmd() -> None:
     """Validate the stored configuration; exit 1 when errors are found."""
     issues = validate_config()
     if not issues:
-        console.print("[green]✓ Configuration is valid.[/green]")
+        console.print(f"[green]{_check()} Configuration is valid.[/green]")
         return
     table = Table(title="Configuration issues", show_header=True)
     table.add_column("level", style="cyan")
@@ -1016,6 +1118,14 @@ def config_show() -> None:
         + "\nPrompt caching: "
         + f"[cyan]{'on' if get_prompt_cache(cfg) else 'off'}[/cyan]"
     )
+    ui_config = get_ui(cfg)
+    console.print(
+        "UI: "
+        + f"[cyan]{ui_config['theme']}[/cyan] theme, "
+        + f"[cyan]{ui_config['color']}[/cyan] color, "
+        + f"[cyan]{ui_config['output_mode']}[/cyan] output, "
+        + f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan]"
+    )
     project_path = project_config_path()
     if project_path is not None:
         console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
@@ -1060,7 +1170,7 @@ def _set_filter(provider: str | None, mode: str, models: list[str]) -> None:
         raise typer.Exit(1)
     verb = "showing" if mode == "allow" else "hiding"
     console.print(
-        f"[green]✓ Now {verb} these models for {pid}:[/green] "
+        f"[green]{_check()} Now {verb} these models for {pid}:[/green] "
         + ", ".join(models)
     )
 
@@ -1331,7 +1441,7 @@ def _run_setup(provider_id: str, key: str | None) -> bool:
         set_selected_provider(provider_id)
         set_selected_model(None)  # don't carry a stale model across providers
         console.print(
-            f"[green]✓ {provider.name} needs no API key[/green] — "
+            f"[green]{_check()} {provider.name} needs no API key[/green] — "
             + f"models are read from the server at {provider.base_url}."
         )
         if not probe(provider):
@@ -1356,7 +1466,7 @@ def _run_setup(provider_id: str, key: str | None) -> bool:
         return False
     set_selected_provider(provider_id)
     console.print(
-        f"[green]✓ API key saved for {provider_id}[/green] "
+        f"[green]{_check()} API key saved for {provider_id}[/green] "
         + f"— {describe_key(provider_id)}."
     )
     if warning:

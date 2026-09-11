@@ -133,7 +133,7 @@ paths outside the workspace root; writes stay sandboxed.
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
-| `/config` | Show or change providers, keys, models, filters, permissions, command rules, sampling, styles, verify, and budgets. |
+| `/config` | Show or change providers, keys, models, filters, permissions, command rules, sampling, styles, themes, output modes, accessibility, verify, and budgets. |
 | `/mcp [list\|reload]` | List configured MCP servers, their status, and registered tools; `reload` reconnects every server. |
 | `/cost` | Show token usage, context gauge, and estimated USD cost for this session (per-model pricing). |
 | `/doctor` | Run environment, config, provider, and workspace diagnostics. |
@@ -166,6 +166,9 @@ Config examples:
 /config sampling set temperature=0.2 max_tokens=4096
 /config sampling reset
 /config style set concise
+/config ui theme ocean
+/config ui output compact
+/config ui ascii on
 /config prompt set "Prefer functional style; never use classes."
 /config prompt clear
 /config verify set "pytest -q"
@@ -473,6 +476,50 @@ or `code`. Set one with `config style set <name>` (or `/config style set`). For
 a fully custom instruction, add a system-prompt suffix with
 `config prompt set "<text>"` and remove it with `config prompt clear`.
 
+## Themes, output modes, and accessibility
+
+Control color independently of your terminal, pick a theme, tune how much the
+agent prints, and switch to ASCII glyphs for screen readers and limited
+terminals:
+
+```bash
+kiwimatecoder config ui show
+kiwimatecoder config ui color never        # auto | always | never
+kiwimatecoder config ui theme ocean        # default | ocean | magenta | mono
+kiwimatecoder config ui output compact     # normal | compact | verbose
+kiwimatecoder config ui ascii on           # on | off
+```
+
+The same settings are available in-session with `/config ui ...`. Values live
+under the `ui` key in `~/.kiwimatecoder/config.json`:
+
+```json
+{
+  "ui": {
+    "theme": "ocean",
+    "color": "auto",
+    "output_mode": "normal",
+    "ascii": false
+  }
+}
+```
+
+Color precedence: an explicit `ui.color` of `always`/`never` wins; otherwise
+`NO_COLOR` set to anything non-empty disables color, then `FORCE_COLOR` set to
+anything non-empty enables it. With `auto` and neither variable exported, Rich
+still detects a pipe or log file and stays plain.
+
+Output modes shape the tool log. `normal` prints a line per tool with a success
+or failure marker. `compact` hides successful tool lines while keeping failures,
+the thinking status, and the final answer. `verbose` adds a redacted argument
+block (secrets replaced, capped at ~500 characters) before each tool runs and
+the result size after.
+
+ASCII mode replaces the check, cross, blocked, folder, and bullet glyphs with
+plain text (`[ok]`, `[fail]`, `[blocked]`, no folder prefix, `-`) and the CLI
+confirmations follow suit. Color, theme, ASCII, and output-mode changes apply
+to the next session.
+
 ## Model routing
 
 Route short, plain requests to a cheaper model while keeping the session model
@@ -566,9 +613,10 @@ the agent. `/config` does not manage hooks yet — edit the JSON directly.
 ## Configuration
 
 Global settings live in `~/.kiwimatecoder/config.json` (provider keys, default
-provider/model, default mode, sampling, output style, custom prompt, and
-persisted tool approvals). The original single-key `~/.kiwimatecoder/config`
-format is read automatically, so existing setups keep working.
+provider/model, default mode, sampling, output style, theme/color/output/ASCII
+preferences, custom prompt, and persisted tool approvals). The original
+single-key `~/.kiwimatecoder/config` format is read automatically, so existing
+setups keep working.
 
 A project can pin its own settings in `.kiwimatecoder.json` at the repository
 root (or wherever `KIWIMATECODER_PROJECT_CONFIG` points). Project values
@@ -614,7 +662,8 @@ issues, exiting non-zero when any error-level problem is found. It surfaces
 exactly what the tolerant getters would silently drop: unknown top-level keys
 (warning), malformed provider/model-filter/sampling/budget/hook/command-rule/
 profile/MCP/plugin entries, invalid regexes, unknown hook events, and bad
-default mode, output style, or workspace-flag values.
+default mode, output style, UI (theme/color/ASCII/output mode), or
+workspace-flag values.
 
 ## Development
 
@@ -631,7 +680,7 @@ The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). P0 and P1 are
 implemented (checkpoints/undo, command rules, dry-run, redacted audit log,
 hunk-level approvals, todos, ask-user, parallel reads, compaction, auto-verify,
 budgets, trusted workspace, and message steering with interrupt recovery), and
-P2 has begun (event bus + hooks, the extensible tool registry, custom commands
-and prompt templates, on-demand Agent Skills, a plugin system, the MCP client,
-config profiles with schema validation, per-turn model routing, and Anthropic
-prompt caching). P2 continues with themes and output modes.
+P2 is complete (event bus + hooks, the extensible tool registry, custom
+commands and prompt templates, on-demand Agent Skills, a plugin system, the MCP
+client, config profiles with schema validation, per-turn model routing,
+Anthropic prompt caching, and themes/output modes/NO_COLOR accessibility).

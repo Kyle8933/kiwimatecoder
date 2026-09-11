@@ -38,6 +38,7 @@ from kiwimatecoder.config import (
     get_prompt_cache,
     get_provider_config,
     get_sampling,
+    get_ui,
     list_provider_configs,
     list_visible_models,
     project_config_path,
@@ -62,6 +63,7 @@ from kiwimatecoder.config import (
     set_selected_provider,
     set_system_prompt,
     set_trusted_workspace,
+    set_ui,
     set_verify_command,
     update_provider,
 )
@@ -929,6 +931,12 @@ def _config_help(console: Console) -> None:
             "Save or apply named configuration presets.",
         ),
         (
+            "/config ui [show|color <auto|always|never>|"
+            "output <normal|compact|verbose>|ascii <on|off>|"
+            "theme <default|ocean|magenta|mono>]",
+            "Set theme, color, output verbosity, and ASCII mode.",
+        ),
+        (
             "/config cache [on|off]",
             "Cache the system prompt and tools on native Anthropic providers.",
         ),
@@ -966,6 +974,13 @@ def _config_show(session: Session, console: Console) -> None:
         f"Custom system prompt: [cyan]{'set' if session.custom_system_prompt else 'none'}[/cyan]\n"
         f"Always-allowed tools: [cyan]{', '.join(sorted(session.always_allowed)) or 'none'}[/cyan]\n"
         f"Trusted workspace: [cyan]{'on' if session.trusted_workspace else 'off'}[/cyan]"
+    )
+    ui_config = get_ui()
+    console.print(
+        f"UI: [cyan]{ui_config['theme']}[/cyan] theme, "
+        f"[cyan]{ui_config['color']}[/cyan] color, "
+        f"[cyan]{ui_config['output_mode']}[/cyan] output, "
+        f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan]"
     )
     project_path = project_config_path()
     if project_path is not None:
@@ -1646,6 +1661,69 @@ def _config_sampling(action_parts: list[str], console: Console) -> None:
     )
 
 
+_UI_USAGE = (
+    "/config ui [show|color <auto|always|never>|"
+    "output <normal|compact|verbose>|ascii <on|off>|"
+    "theme <default|ocean|magenta|mono>]"
+)
+
+
+def _config_ui(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "status"}:
+        current = get_ui()
+        console.print(
+            "UI: "
+            f"theme=[cyan]{current['theme']}[/cyan], "
+            f"color=[cyan]{current['color']}[/cyan], "
+            f"output=[cyan]{current['output_mode']}[/cyan], "
+            f"ascii=[cyan]{'on' if current['ascii'] else 'off'}[/cyan]"
+        )
+        return
+
+    if action in {"color", "output", "ascii", "theme"}:
+        if not rest:
+            console.print(f"[yellow]Usage: /config ui {action} <value>[/yellow]")
+            return
+        value = rest[0]
+        try:
+            if action == "color":
+                set_ui(color=value)
+            elif action == "output":
+                set_ui(output_mode=value)
+            elif action == "theme":
+                set_ui(theme=value)
+            else:
+                token = value.strip().lower()
+                if token in {"on", "true", "yes", "enable", "enabled"}:
+                    set_ui(ascii=True)
+                elif token in {"off", "false", "no", "disable", "disabled"}:
+                    set_ui(ascii=False)
+                else:
+                    console.print("[yellow]Usage: /config ui ascii <on|off>[/yellow]")
+                    return
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        current = get_ui()
+        console.print(
+            "[green]UI updated:[/green] "
+            f"theme=[cyan]{current['theme']}[/cyan], "
+            f"color=[cyan]{current['color']}[/cyan], "
+            f"output=[cyan]{current['output_mode']}[/cyan], "
+            f"ascii=[cyan]{'on' if current['ascii'] else 'off'}[/cyan]"
+        )
+        console.print(
+            "[dim]Restart the session for color, theme, ascii, and output "
+            "mode changes to apply.[/dim]"
+        )
+        return
+
+    console.print(f"[yellow]Usage: {_UI_USAGE}[/yellow]")
+
+
 def _config_style(action_parts: list[str], session: Session, console: Console) -> None:
     from kiwimatecoder.config import OUTPUT_STYLES
 
@@ -1871,6 +1949,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_budget(rest, session, console)
     elif section == "sampling":
         _config_sampling(rest, console)
+    elif section == "ui":
+        _config_ui(rest, console)
     elif section == "style":
         _config_style(rest, session, console)
     elif section == "prompt":
@@ -1921,6 +2001,7 @@ def _config_interact(
             CommandOption("trust", "Allow reads outside the workspace root"),
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
             CommandOption("style", "Show or set the output style"),
+            CommandOption("ui", "Theme, color, output mode, and ASCII mode"),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
             CommandOption("profile", "Save or apply configuration profiles"),
             CommandOption("cache", "Toggle Anthropic prompt caching"),
@@ -1960,6 +2041,7 @@ def _config_interact(
         "permissions",
         "sampling",
         "style",
+        "ui",
         "prompt",
         "profile",
         "cache",
@@ -2345,8 +2427,8 @@ _HELP_GROUPS = [
         [
             (
                 "/config",
-                "Show or change providers, API keys, model defaults, and "
-                "model filters.",
+                "Show or change providers, API keys, model defaults, model "
+                "filters, themes, output modes, and accessibility settings.",
             ),
             ("/config help", "List every /config command."),
             (
@@ -2431,6 +2513,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",
     "profiles": "Save, apply, or remove named configuration presets.",
+    "ui": "Set theme, color, output verbosity, and ASCII mode.",
     "cache": "Toggle prompt caching for native Anthropic providers.",
 }
 

@@ -54,7 +54,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from kiwimatecoder import __version__, events, hooks, mcp, plugins
+from kiwimatecoder import __version__, events, hooks, mcp, plugins, ui
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
@@ -65,6 +65,7 @@ from kiwimatecoder.commands import (
     slash_argument_completions,
     slash_command_completions,
 )
+from kiwimatecoder.config import get_ui
 from kiwimatecoder.hunks import Hunk, parse_hunk_selection, split_hunks
 from kiwimatecoder.permissions import ApprovalResult, ConfirmFn
 from kiwimatecoder.redaction import redact
@@ -129,6 +130,9 @@ def _git_info(root: Path) -> str | None:
 
 
 def _banner(session: Session) -> Panel:
+    accent = ui.theme_accent()
+    folder = ui.glyph("folder")
+    folder_prefix = f"{folder} " if folder else ""
     git_branch = _git_info(session.workspace_root)
     git_badge = f" · [magenta]git:{git_branch}[/magenta]" if git_branch else ""
     ctx_badge = (
@@ -147,19 +151,20 @@ def _banner(session: Session) -> Panel:
         provider_summary += f" [dim]+ {fallback_names}[/dim]"
 
     content = (
-        f"[bold green]KiwiMateCoder[/bold green] [dim]v{__version__}[/dim] — "
+        f"[bold {accent}]KiwiMateCoder[/bold {accent}] [dim]v{__version__}[/dim] — "
         f"{provider_summary}\n"
-        f"[dim]📁 {session.workspace_root.name}{git_badge} · mode:[bold]{session.mode.value}[/bold]{ctx_badge}{dry_badge}\n"
+        f"[dim]{folder_prefix}{session.workspace_root.name}{git_badge} · mode:[bold]{session.mode.value}[/bold]{ctx_badge}{dry_badge}\n"
         f"Type /help for commands · Alt+Enter for newline · Ctrl-C cancels · Ctrl-D exits[/dim]"
     )
     return Panel(
         content,
-        border_style="green",
+        border_style=accent,
         padding=(0, 1),
     )
 
 
 def _prompt_text(session: Session) -> HTML:
+    accent = f"ansi{ui.theme_accent()}"
     mode_color = (
         "ansimagenta"
         if session.mode.value == "plan"
@@ -171,9 +176,9 @@ def _prompt_text(session: Session) -> HTML:
     if len(session.active_provider_ids) > 1:
         provider_display += f" +{len(session.active_provider_ids) - 1}"
     return HTML(
-        f"<ansigreen><b>kiwi</b></ansigreen> "
+        f"<{accent}><b>kiwi</b></{accent}> "
         f"<{mode_color}>({provider_display} · {session.mode.value})</{mode_color}> "
-        f"<ansicyan>›</ansicyan> "
+        f"<{accent}>›</{accent}> "
     )
 
 
@@ -763,7 +768,15 @@ async def _run_interactive(
     _run_lifecycle_hooks(bus, events.SESSION_START, session)
     confirm = _make_confirm(session)
     session.ask_user = _make_ask_user(console)
-    agent = Agent(session, console, confirm, bus=bus)
+    ui_config = get_ui()
+    agent = Agent(
+        session,
+        console,
+        confirm,
+        bus=bus,
+        ascii_mode=ui_config["ascii"],
+        output_mode=ui_config["output_mode"],
+    )
 
     kb = KeyBindings()
 
@@ -851,4 +864,8 @@ async def _run_interactive(
 
 def run(session: Session, bus: events.EventBus | None = None) -> None:
     """Run the interactive loop until the user exits."""
+    global console
+    # Rebuild the console for this session so the persisted color setting and
+    # NO_COLOR/FORCE_COLOR take effect at launch (Rich auto-detects the TTY).
+    console = ui.make_console()
     asyncio.run(_run_interactive(session, bus=bus))

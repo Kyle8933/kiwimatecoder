@@ -24,6 +24,7 @@ def test_load_config_sets_version_and_new_defaults():
     assert cfg["sampling"] == {}
     assert cfg["output_style"] == "default"
     assert cfg["system_prompt"] is None
+    assert cfg["ui"] == {}
 
 
 def test_save_config_stamps_version():
@@ -425,3 +426,34 @@ def test_validate_flags_non_bool_prompt_cache():
         for issue in issues
     )
     assert config.validate_config() == []
+
+
+def test_validate_flags_bad_ui_values():
+    cfg = config.load_config()
+    cfg["ui"] = {
+        "color": "rainbow",
+        "output_mode": "loud",
+        "ascii": "yes",
+        "theme": "neon",
+    }
+
+    issues = config.validate_config(cfg)
+
+    error_keys = {issue["key"] for issue in issues if issue["level"] == "error"}
+    assert {
+        "ui.color",
+        "ui.output_mode",
+        "ui.ascii",
+        "ui.theme",
+    } <= error_keys
+
+
+def test_validate_flags_non_object_ui_section():
+    cfg = config.load_config()
+    cfg["ui"] = ["nope"]
+
+    issues = config.validate_config(cfg)
+
+    assert any(
+        issue["level"] == "error" and issue["key"] == "ui" for issue in issues
+    )

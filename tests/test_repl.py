@@ -3,6 +3,7 @@ from pathlib import Path
 
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.input import create_pipe_input
 
@@ -17,9 +18,11 @@ from kiwimatecoder.hunks import parse_hunk_selection
 from kiwimatecoder.permissions import ApprovalResult
 from kiwimatecoder.repl import (
     SlashCommandCompleter,
+    _banner,
     _build_history,
     _make_confirm,
     _process_deferred_commands,
+    _prompt_text,
     _resolve_slash_line,
     _route_steering_line,
     _select_command_option,
@@ -352,3 +355,77 @@ async def test_deferred_command_exit_stops_processing(session, monkeypatch):
     assert await _process_deferred_commands(session) is True
     assert calls == ["/exit"]
     assert list(session.deferred_commands) == []
+
+
+# ---------------------------------------------------------------------------
+# Themes, color, and ASCII mode
+# ---------------------------------------------------------------------------
+
+
+def test_banner_uses_folder_glyph_and_ascii_mode(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", session.workspace_root / "cfg.json")
+    monkeypatch.setattr(
+        config, "LEGACY_CONFIG_FILE", session.workspace_root / "legacy-config"
+    )
+
+    assert "📁" in str(_banner(session).renderable)
+
+    config.set_ui(ascii=True)
+
+    rendered = str(_banner(session).renderable)
+    assert "📁" not in rendered
+    assert session.workspace_root.name in rendered
+
+
+def test_banner_and_prompt_use_theme_accent(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", session.workspace_root / "cfg.json")
+    monkeypatch.setattr(
+        config, "LEGACY_CONFIG_FILE", session.workspace_root / "legacy-config"
+    )
+    config.set_ui(theme="magenta")
+
+    assert "magenta" in str(_banner(session).renderable)
+
+    fragments = to_formatted_text(_prompt_text(session))
+    styles = " ".join(fragment[0] for fragment in fragments)
+    assert "ansimagenta" in styles
+
+
+def test_prompt_keeps_mode_colors(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", session.workspace_root / "cfg.json")
+    monkeypatch.setattr(
+        config, "LEGACY_CONFIG_FILE", session.workspace_root / "legacy-config"
+    )
+
+    fragments = to_formatted_text(_prompt_text(session))
+    styles = " ".join(fragment[0] for fragment in fragments)
+    assert "ansiyellow" in styles
+
+
+def test_run_rebuilds_console_for_color_config(session, monkeypatch):
+    from kiwimatecoder import repl
+
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", session.workspace_root / "cfg.json")
+    monkeypatch.setattr(
+        config, "LEGACY_CONFIG_FILE", session.workspace_root / "legacy-config"
+    )
+    config.set_ui(color="never")
+
+    captured: dict[str, object] = {}
+
+    def fake_asyncio_run(coro):
+        coro.close()
+        captured["console"] = repl.console
+
+    monkeypatch.setattr(repl.asyncio, "run", fake_asyncio_run)
+    original = repl.console
+    try:
+        repl.run(session)
+    finally:
+        repl.console = original
+
+    assert captured["console"].no_color is True  # type: ignore[union-attr]
