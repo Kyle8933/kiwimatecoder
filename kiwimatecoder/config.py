@@ -84,6 +84,11 @@ def _empty_config() -> dict[str, Any]:
         "active_providers": [DEFAULT_PROVIDER_ID],
         "selected_model": None,
         "default_mode": DEFAULT_MODE,
+        "trusted_workspace": False,
+        "verify_command": "",
+        "budget": {},
+        "compact_at_tokens": 64000,
+        "context_window": 128000,
     }
 
 
@@ -192,6 +197,11 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("active_providers", [DEFAULT_PROVIDER_ID])
     cfg.setdefault("selected_model", None)
     cfg.setdefault("default_mode", DEFAULT_MODE)
+    cfg.setdefault("trusted_workspace", False)
+    cfg.setdefault("verify_command", "")
+    cfg.setdefault("budget", {})
+    cfg.setdefault("compact_at_tokens", 64000)
+    cfg.setdefault("context_window", 128000)
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
     # stored empty list, a non-list, or a list of junk is seeded the same way.
@@ -868,6 +878,144 @@ def clear_command_rules() -> dict[str, list[str]]:
     cfg["command_rules"] = {"allow": [], "deny": []}
     save_config(cfg)
     return {"allow": [], "deny": []}
+
+
+def get_trusted_workspace(cfg: dict[str, Any] | None = None) -> bool:
+    """Whether read-only tools may read outside the workspace root."""
+    cfg = cfg or load_config()
+    return bool(cfg.get("trusted_workspace", False))
+
+
+def set_trusted_workspace(enabled: bool) -> bool:
+    """Enable/disable trusted-workspace reads for new sessions."""
+    cfg = load_config()
+    cfg["trusted_workspace"] = bool(enabled)
+    save_config(cfg)
+    return bool(enabled)
+
+
+def get_verify_command(cfg: dict[str, Any] | None = None) -> str:
+    """Return the command run automatically after successful file edits."""
+    cfg = cfg or load_config()
+    return str(cfg.get("verify_command") or "").strip()
+
+
+def set_verify_command(command: str | None) -> str:
+    """Persist the auto-verify command (empty clears it)."""
+    cfg = load_config()
+    cfg["verify_command"] = (command or "").strip()
+    save_config(cfg)
+    return cfg["verify_command"]
+
+
+def get_budget(cfg: dict[str, Any] | None = None) -> dict[str, float]:
+    """Return the session budget: max_tokens and/or max_cost_usd."""
+    cfg = cfg or load_config()
+    stored = cfg.get("budget") or {}
+    if not isinstance(stored, dict):
+        return {}
+    budget: dict[str, float] = {}
+    try:
+        if stored.get("max_tokens") is not None:
+            budget["max_tokens"] = int(stored["max_tokens"])
+    except (TypeError, ValueError):
+        pass
+    try:
+        if stored.get("max_cost_usd") is not None:
+            budget["max_cost_usd"] = float(stored["max_cost_usd"])
+    except (TypeError, ValueError):
+        pass
+    return budget
+
+
+_UNSET: Any = object()
+
+
+def clear_budget() -> None:
+    """Remove every budget limit."""
+    cfg = load_config()
+    cfg["budget"] = {}
+    save_config(cfg)
+
+
+def set_budget(
+    max_tokens: int | str | None | Any = _UNSET,
+    max_cost_usd: float | str | None | Any = _UNSET,
+) -> dict[str, float]:
+    """Set/clear budget limits.
+
+    Omitted arguments keep their current value; passing None clears that limit.
+    Use :func:`clear_budget` to remove every limit at once.
+    """
+    cfg = load_config()
+    current = dict(cfg.get("budget") or {})
+    if max_tokens is not _UNSET:
+        if max_tokens is None:
+            current.pop("max_tokens", None)
+        else:
+            tokens = int(max_tokens)
+            if tokens < 1:
+                raise ValueError("max_tokens budget must be at least 1.")
+            current["max_tokens"] = tokens
+    if max_cost_usd is not _UNSET:
+        if max_cost_usd is None:
+            current.pop("max_cost_usd", None)
+        else:
+            cost = float(max_cost_usd)
+            if cost <= 0:
+                raise ValueError("max_cost_usd budget must be positive.")
+            current["max_cost_usd"] = cost
+    cfg["budget"] = current
+    save_config(cfg)
+    return get_budget(cfg)
+
+
+def get_compact_at_tokens(cfg: dict[str, Any] | None = None) -> int:
+    """Token budget above which history is trimmed before a request."""
+    cfg = cfg or load_config()
+    try:
+        value = int(cfg.get("compact_at_tokens", 64000))
+    except (TypeError, ValueError):
+        return 64000
+    return value if value > 0 else 64000
+
+
+def set_compact_at_tokens(tokens: int | str | None) -> int:
+    """Persist the auto-compaction threshold."""
+    cfg = load_config()
+    if tokens is None:
+        cfg["compact_at_tokens"] = 64000
+    else:
+        value = int(tokens)
+        if value < 1000:
+            raise ValueError("compact_at_tokens must be at least 1000.")
+        cfg["compact_at_tokens"] = value
+    save_config(cfg)
+    return get_compact_at_tokens(cfg)
+
+
+def get_context_window(cfg: dict[str, Any] | None = None) -> int:
+    """Approximate model context window used for the context gauge."""
+    cfg = cfg or load_config()
+    try:
+        value = int(cfg.get("context_window", 128000))
+    except (TypeError, ValueError):
+        return 128000
+    return value if value > 0 else 128000
+
+
+def set_context_window(tokens: int | str | None) -> int:
+    """Persist the context-window size used for the gauge."""
+    cfg = load_config()
+    if tokens is None:
+        cfg["context_window"] = 128000
+    else:
+        value = int(tokens)
+        if value < 1000:
+            raise ValueError("context_window must be at least 1000.")
+        cfg["context_window"] = value
+    save_config(cfg)
+    return get_context_window(cfg)
 
 
 def get_sampling(cfg: dict[str, Any] | None = None) -> dict[str, Any]:

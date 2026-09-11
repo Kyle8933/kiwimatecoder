@@ -6,7 +6,7 @@ from typing import Any
 
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
-from kiwimatecoder.tools.paths import PathError, resolve_in_workspace
+from kiwimatecoder.tools.paths import PathError, resolve_for_read
 
 MAX_BYTES = 256 * 1024
 
@@ -20,7 +20,11 @@ def _read_file(args: dict[str, Any], session: Session) -> ToolResult:
     if not path:
         return ToolResult.error("'path' is required")
     try:
-        resolved = resolve_in_workspace(path, session.workspace_root)
+        resolved = resolve_for_read(
+            path,
+            session.workspace_root,
+            trusted=bool(getattr(session, "trusted_workspace", False)),
+        )
     except PathError as exc:
         return ToolResult.error(str(exc))
 

@@ -901,3 +901,74 @@ def test_dry_run_command_toggles(session):
 
     dispatch("/dry-run", session, console)
     assert "off" in _output(console)
+
+
+def test_config_trust_toggles(session):
+    console = _console()
+
+    dispatch("/config trust on", session, console)
+    assert session.trusted_workspace is True
+    assert config.get_trusted_workspace() is True
+
+    dispatch("/config trust off", session, console)
+    assert session.trusted_workspace is False
+    assert config.get_trusted_workspace() is False
+
+    dispatch("/config trust", session, console)
+    assert "off" in _output(console)
+
+
+def test_todos_command_lists_tasks(session):
+    session.todos = [{"content": "ship it", "status": "in_progress"}]
+    console = _console()
+
+    dispatch("/todos", session, console)
+
+    output = _output(console)
+    assert "ship it" in output
+    assert "in progress" in output
+
+
+def test_compact_command_trims_history(session):
+    for index in range(12):
+        session.messages.append(
+            {"role": "user", "content": f"turn {index} " + "x" * 2000}
+        )
+        session.messages.append(
+            {"role": "assistant", "content": f"answer {index} " + "y" * 2000}
+        )
+    console = _console()
+
+    dispatch("/compact 2000", session, console)
+
+    output = _output(console)
+    assert "Compacted" in output
+    assert len(session.messages) < 24
+
+
+def test_config_verify_set_and_clear(session):
+    console = _console()
+
+    dispatch("/config verify set pytest -q", session, console)
+    assert session.verify_command == "pytest -q"
+    assert config.get_verify_command() == "pytest -q"
+
+    dispatch("/config verify clear", session, console)
+    assert session.verify_command == ""
+    assert config.get_verify_command() == ""
+
+
+def test_config_budget_set_show_clear(session):
+    console = _console()
+
+    dispatch("/config budget tokens 5000", session, console)
+    assert config.get_budget() == {"max_tokens": 5000}
+
+    dispatch("/config budget cost 2.5", session, console)
+    assert config.get_budget() == {"max_tokens": 5000, "max_cost_usd": 2.5}
+
+    dispatch("/config budget show", session, console)
+    assert "5000" in _output(console)
+
+    dispatch("/config budget clear", session, console)
+    assert config.get_budget() == {}

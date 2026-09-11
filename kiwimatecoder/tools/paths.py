@@ -194,6 +194,22 @@ def resolve_in_workspace(path: str, workspace_root: Path) -> Path:
     return resolved
 
 
+def resolve_for_read(
+    path: str, workspace_root: Path, trusted: bool = False
+) -> Path:
+    """Resolve a read-only path, allowing escapes only in trusted mode.
+
+    Trusted workspaces still prevent writes outside the root because only
+    read-only tools call this helper.
+    """
+    if not trusted:
+        return resolve_in_workspace(path, workspace_root)
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = workspace_root / candidate
+    return candidate.resolve()
+
+
 def display_path(path: Path, workspace_root: Path) -> str:
     """Return a path relative to the workspace root for display, if possible."""
     root = workspace_root.resolve()

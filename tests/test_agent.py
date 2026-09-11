@@ -7,7 +7,7 @@ import pytest
 from rich.console import Console
 
 from kiwimatecoder.agent import Agent
-from kiwimatecoder.client import Done, ProviderError, TextDelta, ToolCallDelta
+from kiwimatecoder.client import AssembledToolCall, Done, ProviderError, TextDelta, ToolCallDelta
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import Session
 from tests.conftest import track_console
@@ -621,3 +621,164 @@ async def test_agent_checkpoints_file_before_write(agent_session):
     agent_session.undo_checkpoints()
 
     assert existing.read_text() == "before"
+
+
+@pytest.mark.anyio
+async def test_agent_runs_read_only_tools_in_parallel(agent_session):
+    import threading
+    import time
+
+    from kiwimatecoder import tools as tools_module
+
+    (agent_session.workspace_root / "a.txt").write_text("a")
+    (agent_session.workspace_root / "b.txt").write_text("b")
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+
+    round_1 = [
+        ToolCallDelta(
+            index=0, id="call_a", name="read_file", args_fragment='{"path": "a.txt"}'
+        ),
+        ToolCallDelta(
+            index=1, id="call_b", name="read_file", args_fragment='{"path": "b.txt"}'
+        ),
+        Done(finish_reason="tool_calls"),
+    ]
+    round_2 = [TextDelta(text="done"), Done(finish_reason="stop")]
+    calls = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        calls["n"] += 1
+        for event in round_1 if calls["n"] == 1 else round_2:
+            yield event
+
+    active = {"count": 0, "max": 0}
+    lock = threading.Lock()
+    real_execute = tools_module.TOOLS["read_file"].execute
+
+    def slow_execute(args, session):
+        with lock:
+            active["count"] += 1
+            active["max"] = max(active["max"], active["count"])
+        time.sleep(0.05)
+        with lock:
+            active["count"] -= 1
+        return real_execute(args, session)
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch.object(
+            tools_module.TOOLS["read_file"], "execute", side_effect=slow_execute
+        ),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("read both")
+
+    assert active["max"] == 2
+    tool_messages = [m for m in agent_session.messages if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_messages] == ["call_a", "call_b"]
+
+
+@pytest.mark.anyio
+async def test_agent_keeps_writes_sequential(agent_session):
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+
+    calls = [
+        AssembledToolCall("call_a", "write_file", '{"path": "a.txt", "content": "a"}'),
+        AssembledToolCall("call_b", "write_file", '{"path": "b.txt", "content": "b"}'),
+    ]
+
+    assert agent._can_run_parallel(calls) is False  # noqa: SLF001
+
+
+@pytest.mark.anyio
+async def test_agent_auto_verify_runs_after_edits(agent_session):
+    agent_session.mode = PermissionMode.AUTO
+    agent_session.verify_command = "echo verified"
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+
+    round_1 = [
+        ToolCallDelta(
+            index=0,
+            id="call_write",
+            name="write_file",
+            args_fragment='{"path": "new.txt", "content": "hi"}',
+        ),
+        Done(finish_reason="tool_calls"),
+    ]
+    rounds = [
+        round_1,
+        [TextDelta(text="wrote it"), Done(finish_reason="stop")],
+        [TextDelta(text="all good"), Done(finish_reason="stop")],
+    ]
+    calls = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        events = rounds[calls["n"]]
+        calls["n"] += 1
+        for event in events:
+            yield event
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("edit something")
+
+    contents = [str(message.get("content")) for message in agent_session.messages]
+    assert any("[auto-verify]" in content for content in contents)
+    assert any("verified" in content for content in contents)
+    assert calls["n"] == 3
+
+
+@pytest.mark.anyio
+async def test_agent_budget_blocks_before_streaming(agent_session):
+    from kiwimatecoder import config
+
+    config.set_budget(max_tokens=10)
+    agent_session.prompt_tokens = 50
+    console = Console(quiet=True)
+    called = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        called["n"] += 1
+        yield Done(finish_reason="stop")
+
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    with patch(
+        "kiwimatecoder.client.UnifiedClient.stream_chat", side_effect=mock_stream
+    ):
+        await agent.run_turn("hello")
+
+    assert called["n"] == 0
+    assert agent_session.messages == []
+
+
+@pytest.mark.anyio
+async def test_agent_warns_when_near_budget(agent_session):
+    from kiwimatecoder import config
+
+    config.set_budget(max_tokens=100)
+    agent_session.prompt_tokens = 90
+    console = Console(quiet=True)
+    log = track_console(console)
+
+    async def mock_stream(*args, **kwargs):
+        yield TextDelta(text="hi")
+        yield Done(finish_reason="stop")
+
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    with patch(
+        "kiwimatecoder.client.UnifiedClient.stream_chat", side_effect=mock_stream
+    ):
+        await agent.run_turn("hello")
+
+    assert any("Budget warning" in text for _, text in log)

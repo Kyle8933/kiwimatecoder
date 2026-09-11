@@ -84,7 +84,28 @@ the session **and future sessions**. Persisted approvals survive restarts and
 provider switches; manage them with `/config permissions` or
 `config permissions list|remove|clear`.
 
+Every mutating action is checkpointed before it runs. Restore the last change
+with `/undo`, rewind several steps with `/undo 3`, and list them with
+`/checkpoints`.
+
 Reads, writes, edits, listings and searches are sandboxed to the workspace root (via symlink-aware path resolution). `run_bash` commands execute with the workspace root as their cwd but are otherwise unrestricted (subject to approval/mode); use them for git, tests, builds, etc.
+
+### Command rules
+
+Auto-approve trusted commands and hard-block dangerous ones with regex rules
+(deny rules block even in `auto-accept` mode):
+
+```text
+/config commands allow ^pytest\b
+/config commands deny rm\s+-rf
+/config commands list
+```
+
+### Dry run and trusted workspace
+
+`/dry-run` previews every mutating tool call (diffs and shell commands) without
+executing anything or prompting. `/config trust on` lets read-only tools read
+paths outside the workspace root; writes stay sandboxed.
 
 ## Slash commands
 
@@ -96,20 +117,25 @@ Reads, writes, edits, listings and searches are sandboxed to the workspace root 
 | `/model [name\|refresh\|list\|search <term>]` | Interactively choose a model (the list is refreshed from the provider), set one by name, refresh/show the list, or search the full catalog by name. The choice is remembered for the next session. |
 | `/provider [id]` | Choose a failover roster (checklist), or replace it with one provider by id. |
 | `/mode [ask\|auto-accept\|plan]` | Interactively choose, or directly set, the permission mode. |
+| `/dry-run [on\|off\|toggle]` | Preview mutating actions without running them. |
+| `/undo [count]`, `/checkpoints` | Restore files changed by recent tools, or list checkpoints. |
+| `/todos` | Show the agent's task list. |
+| `/compact [budget]` | Trim older history to fit a token budget. |
+| `/save`, `/load`, `/sessions`, `/fork [name]`, `/export [path]` | Save, resume, branch, or export sessions as Markdown. |
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
-| `/config` | Show or change providers, API keys, model defaults, model filters, permissions, sampling, and output styles. |
-| `/cost` | Show token usage and estimated USD cost for this session (per-model pricing). |
+| `/config` | Show or change providers, keys, models, filters, permissions, command rules, sampling, styles, verify, and budgets. |
+| `/cost` | Show token usage, context gauge, and estimated USD cost for this session (per-model pricing). |
 | `/doctor` | Run environment, config, provider, and workspace diagnostics. |
 
 Examples:
 
 ```text
 /context add README.md kiwimatecoder/*.py
-/context
-/context remove README.md
-/context clear
+/undo 2
+/export review.md
+/fork experiment
 ```
 
 Config examples:
@@ -126,11 +152,17 @@ Config examples:
 /config mode set plan
 /config permissions list
 /config permissions remove run_bash
+/config commands allow ^pytest\b
+/config commands deny rm\s+-rf
 /config sampling set temperature=0.2 max_tokens=4096
 /config sampling reset
 /config style set concise
 /config prompt set "Prefer functional style; never use classes."
 /config prompt clear
+/config verify set "pytest -q"
+/config budget tokens 500000
+/config budget cost 5.00
+/config trust on
 /config provider remove local
 ```
 
@@ -143,9 +175,14 @@ show which file or environment variable the active key comes from.
 
 The assistant has these capabilities, all scoped to the workspace:
 
-- `read_file`, `list_dir`, `search` (grep + glob) — read-only, always allowed.
-- `write_file`, `edit_file` — create/modify files (approval-gated).
-- `run_bash` — run shell commands (approval-gated).
+- `read_file`, `list_dir`, `search` (grep + glob) — read-only, always allowed;
+  batches of read-only calls run in parallel.
+- `write_file`, `edit_file` — create/modify files (approval-gated; each is
+  checkpointed first so `/undo` can restore it).
+- `run_bash` — run shell commands (approval-gated, subject to command rules).
+- `update_todos` — keep the visible task list in sync with multi-step work.
+- `ask_user` — ask a clarifying question with optional choices (interactive
+  sessions only).
 
 ## Providers
 
@@ -313,6 +350,35 @@ or `code`. Set one with `config style set <name>` (or `/config style set`). For
 a fully custom instruction, add a system-prompt suffix with
 `config prompt set "<text>"` and remove it with `config prompt clear`.
 
+## Auto-verify
+
+Point the agent at your test/lint command and it runs automatically after any
+successful file edit, feeding the output back so it can fix failures:
+
+```bash
+kiwimatecoder config verify set "pytest -q"
+kiwimatecoder config verify show
+kiwimatecoder config verify clear
+```
+
+## Budgets
+
+Cap a session's spend by tokens, cost, or both. The agent warns at 80% and
+stops starting new turns once a limit is reached:
+
+```bash
+kiwimatecoder config budget tokens 500000
+kiwimatecoder config budget cost 5.00
+kiwimatecoder config budget show
+kiwimatecoder config budget clear
+```
+
+## Audit log
+
+Every tool decision (allowed, denied, dry-run, auto-verify) is appended to
+`~/.kiwimatecoder/audit.log` as one JSON line per action. Secrets are redacted
+before writing; the file is owner-only and safe to delete.
+
 ## Configuration
 
 Global settings live in `~/.kiwimatecoder/config.json` (provider keys, default
@@ -346,8 +412,8 @@ mypy kiwimatecoder
 
 ## Roadmap
 
-The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). The P0 foundation
-batch (persistent history and sessions, accurate pricing, project config,
-persisted approvals, `/doctor`, sampling, project instructions, output styles)
-is implemented; P1 continues with checkpoints/undo, command allow-deny rules,
-and parallel tools.
+The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). P0 and all but two
+P1 items are implemented (checkpoints/undo, command rules, dry-run, redacted
+audit log, todos, ask-user, parallel reads, compaction, auto-verify, budgets,
+trusted workspace). Hunk-level diff approval and message steering are deferred;
+P2 continues with hooks, plugins, and MCP.

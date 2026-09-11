@@ -88,3 +88,30 @@ def test_build_system_prompt_default_style_has_no_style_block(tmp_path):
     prompt = build_system_prompt(session)["content"]
 
     assert "Output style:" not in prompt
+
+
+def test_build_system_prompt_mentions_trust_when_enabled(tmp_path):
+    session = Session(
+        provider_id="openrouter",
+        model="m",
+        workspace_root=tmp_path,
+        trusted_workspace=True,
+    )
+
+    prompt = build_system_prompt(session)["content"]
+
+    assert "Workspace trust" in prompt
+
+
+def test_build_system_prompt_includes_task_list(tmp_path):
+    session = Session(
+        provider_id="openrouter",
+        model="m",
+        workspace_root=tmp_path,
+        todos=[{"content": "write tests", "status": "in_progress"}],
+    )
+
+    prompt = build_system_prompt(session)["content"]
+
+    assert "Current task list" in prompt
+    assert "write tests" in prompt

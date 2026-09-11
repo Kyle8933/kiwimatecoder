@@ -189,3 +189,51 @@ def test_system_prompt_roundtrip():
 
     config.set_system_prompt("   ")
     assert config.get_system_prompt() is None
+
+
+def test_trusted_workspace_roundtrip():
+    assert config.get_trusted_workspace() is False
+    assert config.set_trusted_workspace(True) is True
+    assert config.get_trusted_workspace() is True
+    assert config.set_trusted_workspace(False) is False
+
+
+def test_verify_command_roundtrip():
+    assert config.get_verify_command() == ""
+
+    assert config.set_verify_command("pytest -q") == "pytest -q"
+    assert config.get_verify_command() == "pytest -q"
+
+    assert config.set_verify_command("") == ""
+    assert config.get_verify_command() == ""
+
+
+def test_budget_roundtrip_and_validation():
+    assert config.get_budget() == {}
+
+    assert config.set_budget(max_tokens=1000) == {"max_tokens": 1000}
+    assert config.set_budget(max_cost_usd=1.5) == {
+        "max_tokens": 1000,
+        "max_cost_usd": 1.5,
+    }
+
+    with pytest.raises(ValueError):
+        config.set_budget(max_tokens=0)
+    with pytest.raises(ValueError):
+        config.set_budget(max_cost_usd=-1)
+
+    assert config.set_budget(max_tokens=None) == {"max_cost_usd": 1.5}
+    config.clear_budget()
+    assert config.get_budget() == {}
+
+
+def test_compact_and_context_settings():
+    assert config.get_compact_at_tokens() == 64000
+    assert config.set_compact_at_tokens(20000) == 20000
+    with pytest.raises(ValueError):
+        config.set_compact_at_tokens(10)
+
+    assert config.get_context_window() == 128000
+    assert config.set_context_window(200000) == 200000
+    with pytest.raises(ValueError):
+        config.set_context_window(10)

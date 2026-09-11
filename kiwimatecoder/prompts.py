@@ -129,6 +129,19 @@ def _context_section(session: Session) -> str:
     return "\n\n" + "\n\n".join(rendered)
 
 
+_TODO_MARKERS = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+
+
+def _todos_section(session: Session) -> str:
+    if not session.todos:
+        return ""
+    lines = [
+        f"{_TODO_MARKERS.get(str(todo.get('status')), '[ ]')} {todo.get('content', '')}"
+        for todo in session.todos
+    ]
+    return "\n\nCurrent task list:\n" + "\n".join(lines)
+
+
 def build_system_prompt(session: Session) -> dict[str, Any]:
     """Return the system message tailored to the current session state."""
     context = _context_section(session)
@@ -144,6 +157,12 @@ def build_system_prompt(session: Session) -> dict[str, Any]:
     provider_line = f"{session.provider_id} / {session.model}"
     if fallbacks:
         provider_line += f" (fallbacks: {', '.join(fallbacks)})"
+    trust_line = (
+        "- Workspace trust: read-only tools may read outside the workspace root.\n"
+        if session.trusted_workspace
+        else ""
+    )
+    todos = _todos_section(session)
     content = f"""You are KiwiMateCoder, an expert agentic coding assistant that works \
 directly in the user's project from the command line.
 
@@ -152,17 +171,20 @@ Environment:
 - Operating system: {platform.system()} ({platform.release()})
 - Provider/model: {provider_line}
 - Permission mode: {session.mode.value}
-{context}{instructions}
+{trust_line}{context}{instructions}
 
 Tools: you can read files, list directories, search the codebase, write and \
 edit files, and run shell commands — all scoped to the workspace root. Use them \
-to gather context before answering, and to carry out the user's requests.
+to gather context before answering, and to carry out the user's requests. Keep \
+multi-step work visible with update_todos, and use ask_user when a decision \
+genuinely needs the user's input.
 
-{_MODE_GUIDANCE[session.mode]}
+{_MODE_GUIDANCE[session.mode]}{todos}
 
 Working style:
 - Prefer reading the relevant files before proposing or making changes.
 - Start substantial or ambiguous tasks with a simple plan: 2-4 short steps, no jargon.
+- Track multi-step work with update_todos: keep one task in_progress at a time and mark tasks completed as soon as they are done.
 - Include 2-3 clear options when the user needs to choose scope, risk, or tradeoffs; mark one as recommended and explain why in one sentence.
 - If the best path is obvious and low-risk, say the recommended path briefly and continue instead of over-planning.
 - Make focused edits with edit_file; include enough surrounding context that the \

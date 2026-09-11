@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -36,6 +37,7 @@ class Agent:
         self.session = session
         self.console = console
         self.confirm = confirm
+        self._budget_warned = False
 
     def _client(self, provider_id: str | None = None) -> UnifiedClient:
         from kiwimatecoder.config import get_key, get_provider_config, get_sampling
@@ -51,13 +53,21 @@ class Agent:
         return UnifiedClient(provider, key or "", sampling=get_sampling())
 
     def _request_messages(self) -> list[dict[str, Any]]:
-        self.session.trim_history()
+        self.session.trim_history(max_tokens=self.session.compact_at_tokens)
         return [build_system_prompt(self.session)] + self.session.messages
 
     async def run_turn(self, user_input: str) -> None:
         """Process one user message, looping over tool calls until the model stops."""
+        blocked, reason = self._budget_exceeded()
+        if blocked:
+            self.console.print(f"[red]{reason}[/red]")
+            return
+
+        self._budget_warned = False
         self.session.messages.append({"role": "user", "content": user_input})
 
+        edited = False
+        verified = False
         while True:
             try:
                 assistant_msg, tool_calls = await self._stream_once()
@@ -68,10 +78,120 @@ class Agent:
             self.session.messages.append(assistant_msg)
 
             if not tool_calls:
+                if edited and not verified and self._should_verify():
+                    verified = True
+                    await self._run_verification()
+                    continue
+                self._warn_budget()
                 return
 
-            for call in tool_calls:
-                self._handle_tool_call(call)
+            edited = await self._handle_tool_calls(tool_calls) or edited
+            self._warn_budget()
+
+    def _current_cost(self) -> float | None:
+        from kiwimatecoder.pricing import estimate_cost
+
+        return estimate_cost(
+            self.session.prompt_tokens,
+            self.session.completion_tokens,
+            self.session.model,
+            self.session.provider_id,
+            is_local=self.session.provider.is_local,
+        )
+
+    def _budget_exceeded(self) -> tuple[bool, str]:
+        """Whether a configured token/cost budget has already been spent."""
+        from kiwimatecoder.config import get_budget
+
+        budget = get_budget()
+        max_tokens = budget.get("max_tokens")
+        if max_tokens and self.session.total_tokens >= max_tokens:
+            return True, (
+                f"Budget reached: {self.session.total_tokens:,} tokens used "
+                f"(limit {int(max_tokens):,}). Raise it with "
+                "`/config budget tokens <n>` or clear it with `/config budget clear`."
+            )
+        max_cost = budget.get("max_cost_usd")
+        if max_cost:
+            cost = self._current_cost()
+            if cost is not None and cost >= max_cost:
+                return True, (
+                    f"Budget reached: ~${cost:.4f} spent "
+                    f"(limit ${max_cost:.4f}). Raise it with "
+                    "`/config budget cost <usd>` or clear it with `/config budget clear`."
+                )
+        return False, ""
+
+    def _warn_budget(self) -> None:
+        """Print one warning when usage crosses 80% of a configured budget."""
+        if self._budget_warned:
+            return
+        from kiwimatecoder.config import get_budget
+
+        budget = get_budget()
+        max_tokens = budget.get("max_tokens")
+        if max_tokens and self.session.total_tokens >= 0.8 * max_tokens:
+            self._budget_warned = True
+            self.console.print(
+                f"[yellow]Budget warning: {self.session.total_tokens:,} of "
+                f"{int(max_tokens):,} tokens used.[/yellow]"
+            )
+            return
+        max_cost = budget.get("max_cost_usd")
+        if max_cost:
+            cost = self._current_cost()
+            if cost is not None and cost >= 0.8 * max_cost:
+                self._budget_warned = True
+                self.console.print(
+                    f"[yellow]Budget warning: ~${cost:.4f} of "
+                    f"${max_cost:.4f} spent.[/yellow]"
+                )
+
+    def _should_verify(self) -> bool:
+        return bool(
+            self.session.verify_command.strip()
+            and self.session.mode is not PermissionMode.PLAN
+        )
+
+    async def _run_verification(self) -> None:
+        """Run the configured verify command and feed its output back."""
+        command = self.session.verify_command.strip()
+        verify_tool = tools.get_tool("run_bash")
+        if verify_tool is None:
+            return
+        self.console.print(f"\n[bold]Auto-verify:[/bold] [cyan]{command}[/cyan]")
+        t0 = time.perf_counter()
+        result = await asyncio.to_thread(
+            verify_tool.execute, {"command": command}, self.session
+        )
+        duration_ms = int((time.perf_counter() - t0) * 1000)
+        audit.record_tool_event(
+            tool="run_bash",
+            args={"command": command},
+            decision="auto_verify",
+            duration_ms=duration_ms,
+            ok=result.ok,
+        )
+        status = "[green]passed[/green]" if result.ok else "[red]failed[/red]"
+        self.console.print(f"Auto-verify {status} [dim]({duration_ms}ms)[/dim]")
+        content = result.content
+        if len(content) > 6000:
+            content = content[:6000] + "\n... [truncated]"
+        self.session.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"[auto-verify] `{command}` "
+                    f"{'passed' if result.ok else 'failed'}:\n"
+                    f"```text\n{content}\n```\n"
+                    + (
+                        "Fix the failures above, then re-run the verification."
+                        if not result.ok
+                        else "Briefly summarize what changed, then stop."
+                    )
+                ),
+            }
+        )
 
     async def _stream_once(self) -> tuple[dict[str, Any], list[AssembledToolCall]]:
         """Stream one assistant response, rendering text and collecting tool calls.
@@ -191,22 +311,63 @@ class Agent:
             cmd = str(args.get("command", "") or "")
             cmd_short = cmd if len(cmd) <= 40 else f"{cmd[:37]}..."
             return f"bash [dim]`{cmd_short}`[/dim]"
+        if name == "update_todos":
+            todos = args.get("todos")
+            count = len(todos) if isinstance(todos, list) else 0
+            return f"todos [dim]({count} item{'s' if count != 1 else ''})[/dim]"
+        if name == "ask_user":
+            question = str(args.get("question", "") or "")
+            short = question if len(question) <= 50 else f"{question[:47]}..."
+            return f"ask [dim]{short}[/dim]"
         return name
 
-    def _handle_tool_call(self, call: AssembledToolCall) -> None:
-        """Execute one tool call (with the permission gate) and append the result."""
+    # Only purely read-only tools are safe to run concurrently: they do not
+    # mutate session state or the workspace.
+    _PARALLEL_SAFE = frozenset({"read_file", "list_dir", "search"})
+
+    def _can_run_parallel(self, calls: list[AssembledToolCall]) -> bool:
+        if len(calls) < 2:
+            return False
+        for call in calls:
+            tool = tools.get_tool(call.name)
+            if tool is None or tool.needs_approval or call.name not in self._PARALLEL_SAFE:
+                return False
+        return True
+
+    async def _handle_tool_calls(self, calls: list[AssembledToolCall]) -> bool:
+        """Run a batch of tool calls; returns whether any file edit succeeded."""
+        if self._can_run_parallel(calls):
+            results = await asyncio.gather(
+                *(asyncio.to_thread(self._run_tool_call, call) for call in calls)
+            )
+        else:
+            results = [self._run_tool_call(call) for call in calls]
+        self.session.messages.extend(message for message, _edited in results)
+        return any(edited for _message, edited in results)
+
+    def _tool_message(self, tool_call_id: str, content: str) -> dict[str, Any]:
+        return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
+
+    def _run_tool_call(
+        self, call: AssembledToolCall
+    ) -> tuple[dict[str, Any], bool]:
+        """Execute one tool call; returns (tool message, edited_file)."""
         tool = tools.get_tool(call.name)
         if tool is None:
-            self._append_result(call.id, f"Error: unknown tool '{call.name}'")
-            return
+            return (
+                self._tool_message(call.id, f"Error: unknown tool '{call.name}'"),
+                False,
+            )
 
         try:
             args = call.parse_arguments()
         except json.JSONDecodeError as exc:
-            self._append_result(
-                call.id, f"Error: could not parse arguments as JSON: {exc}"
+            return (
+                self._tool_message(
+                    call.id, f"Error: could not parse arguments as JSON: {exc}"
+                ),
+                False,
             )
-            return
 
         summary = self._format_call_summary(call.name, args)
         preview_text = tools.preview(call.name, args, self.session)
@@ -224,19 +385,20 @@ class Agent:
                 reason=decision.reason,
             )
             self.console.print(f"[yellow]⊘ {summary}: {decision.reason}[/yellow]")
-            self._append_result(call.id, decision.reason)
-            return
+            return self._tool_message(call.id, decision.reason), False
 
         if self.session.dry_run and tool.needs_approval:
             audit.record_tool_event(tool=call.name, args=args, decision="dry_run")
             self.console.print(f"[yellow]dry-run[/yellow] {summary}")
             if preview_text:
                 self.console.print(preview_text, markup=False, highlight=False)
-            self._append_result(
-                call.id,
-                f"DRY RUN: {summary} was not executed; no files or state changed.",
+            return (
+                self._tool_message(
+                    call.id,
+                    f"DRY RUN: {summary} was not executed; no files or state changed.",
+                ),
+                False,
             )
-            return
 
         if call.name in ("write_file", "edit_file"):
             path = str(args.get("path") or "").strip()
@@ -262,9 +424,5 @@ class Agent:
             self.console.print(f"[bold green]✓[/bold green] {summary} [dim]({duration_ms}ms)[/dim]")
         else:
             self.console.print(f"[bold red]✗[/bold red] {summary} [red](failed)[/red] [dim]({duration_ms}ms)[/dim]")
-        self._append_result(call.id, result.content)
-
-    def _append_result(self, tool_call_id: str, content: str) -> None:
-        self.session.messages.append(
-            {"role": "tool", "tool_call_id": tool_call_id, "content": content}
-        )
+        edited = call.name in ("write_file", "edit_file") and result.ok
+        return self._tool_message(call.id, result.content), edited

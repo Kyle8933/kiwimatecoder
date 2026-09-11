@@ -19,11 +19,15 @@ from kiwimatecoder.config import (
     add_provider,
     apply_model_filter,
     clear_always_allowed_tools,
+    clear_budget,
     clear_command_rules,
     describe_key,
     get_active_provider_ids,
     get_always_allowed_tools,
+    get_budget,
     get_command_rules,
+    get_compact_at_tokens,
+    get_context_window,
     get_default_mode,
     get_key,
     get_model_catalog,
@@ -33,6 +37,8 @@ from kiwimatecoder.config import (
     get_sampling,
     get_selected_provider_id,
     get_system_prompt,
+    get_trusted_workspace,
+    get_verify_command,
     list_provider_configs,
     load_config,
     project_config_path,
@@ -43,6 +49,7 @@ from kiwimatecoder.config import (
     reset_default_mode,
     reset_sampling,
     resolve_default_model,
+    set_budget,
     set_default_mode,
     set_key,
     set_model_filter,
@@ -51,6 +58,8 @@ from kiwimatecoder.config import (
     set_selected_model,
     set_selected_provider,
     set_system_prompt,
+    set_trusted_workspace,
+    set_verify_command,
     update_provider,
 )
 from kiwimatecoder.permissions import PermissionMode
@@ -485,6 +494,111 @@ def commands_clear() -> None:
     console.print("[green]✓ Cleared all command rules.[/green]")
 
 
+@config_app.command("trusted-workspace")
+def trusted_workspace_cmd(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Allow or forbid read-only access outside the workspace root."""
+    if state is None:
+        current = "on" if get_trusted_workspace() else "off"
+        console.print(f"Trusted workspace: [cyan]{current}[/cyan]")
+        return
+    token = state.strip().lower()
+    if token in {"on", "true", "enable", "enabled"}:
+        set_trusted_workspace(True)
+        console.print(
+            "[yellow]✓ Trusted workspace on:[/yellow] read-only tools may read "
+            "outside the workspace root; writes stay sandboxed."
+        )
+    elif token in {"off", "false", "disable", "disabled"}:
+        set_trusted_workspace(False)
+        console.print("[green]✓ Trusted workspace off.[/green]")
+    else:
+        console.print("[red]Expected 'on' or 'off'.[/red]")
+        raise typer.Exit(1)
+
+
+@config_app.command("verify")
+def verify_cmd(
+    action: Annotated[str, typer.Argument(help="show, set, or clear")] = "show",
+    command: Annotated[
+        str | None, typer.Argument(help="Command to run when action is 'set'")
+    ] = None,
+) -> None:
+    """Show, set, or clear the command run automatically after edits."""
+    if action in {"show", "status"}:
+        current = get_verify_command()
+        if current:
+            console.print(f"Auto-verify: [cyan]{current}[/cyan]")
+        else:
+            console.print("[dim]Auto-verify is off.[/dim]")
+        return
+    if action in {"set", "update"}:
+        if not command:
+            console.print("[red]Usage: config verify set <command>[/red]")
+            raise typer.Exit(1)
+        set_verify_command(command)
+        console.print(f"[green]✓ Auto-verify set to:[/green] {command}")
+        return
+    if action in {"clear", "reset", "off"}:
+        set_verify_command("")
+        console.print("[green]✓ Auto-verify disabled.[/green]")
+        return
+    console.print("[red]Expected 'show', 'set', or 'clear'.[/red]")
+    raise typer.Exit(1)
+
+
+@config_app.command("budget")
+def budget_cmd(
+    action: Annotated[
+        str, typer.Argument(help="show, tokens, cost, or clear")
+    ] = "show",
+    value: Annotated[
+        str | None, typer.Argument(help="Token count or USD amount")
+    ] = None,
+) -> None:
+    """Set or clear session token/cost budget limits."""
+    if action in {"show", "status"}:
+        budget = get_budget()
+        if not budget:
+            console.print("[dim]No budget limits set.[/dim]")
+        else:
+            console.print(
+                "Budget: "
+                + ", ".join(f"[cyan]{key}[/cyan]={val}" for key, val in budget.items())
+            )
+        return
+    if action in {"clear", "reset"}:
+        clear_budget()
+        console.print("[green]✓ Budget limits cleared.[/green]")
+        return
+    if action in {"tokens", "token"}:
+        limit = None if value in (None, "clear", "none", "off") else value
+        try:
+            set_budget(max_tokens=limit)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+        console.print(f"[green]✓ Token budget:[/green] {get_budget().get('max_tokens')}")
+        return
+    if action in {"cost", "usd"}:
+        limit = None if value in (None, "clear", "none", "off") else value
+        try:
+            set_budget(max_cost_usd=limit)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+        console.print(
+            f"[green]✓ Cost budget:[/green] ${get_budget().get('max_cost_usd')}"
+        )
+        return
+    console.print("[red]Expected 'show', 'tokens', 'cost', or 'clear'.[/red]")
+    raise typer.Exit(1)
+
+
 # --- canonical `config sampling ...` ----------------------------------------
 
 sampling_app = typer.Typer(help="Get or set sampling parameters.")
@@ -626,7 +740,15 @@ def config_show() -> None:
         + f"(custom prompt: {'set' if get_system_prompt(cfg) else 'none'})\n"
         + f"Sampling: [cyan]{sampling_line}[/cyan]\n"
         + "Always-allowed tools: "
-        + f"[cyan]{', '.join(get_always_allowed_tools(cfg)) or 'none'}[/cyan]"
+        + f"[cyan]{', '.join(get_always_allowed_tools(cfg)) or 'none'}[/cyan]\n"
+        + f"Trusted workspace: [cyan]{'on' if get_trusted_workspace(cfg) else 'off'}[/cyan]\n"
+        + f"Auto-verify: [cyan]{get_verify_command(cfg) or 'off'}[/cyan]\n"
+        + "Budget: "
+        + (
+            f"[cyan]{get_budget(cfg)}[/cyan]"
+            if get_budget(cfg)
+            else "[cyan]none[/cyan]"
+        )
     )
     project_path = project_config_path()
     if project_path is not None:
@@ -820,12 +942,20 @@ def main(
             output_style=get_output_style(cfg),
             custom_system_prompt=get_system_prompt(cfg),
             command_rules=get_command_rules(cfg),
+            trusted_workspace=get_trusted_workspace(cfg),
+            verify_command=get_verify_command(cfg),
+            compact_at_tokens=get_compact_at_tokens(cfg),
+            context_window=get_context_window(cfg),
         )
 
     # Persisted approvals are user preferences, so a resumed session picks up
     # anything granted since its last save. Command rules come from config too.
     session.always_allowed.update(get_always_allowed_tools())
     session.command_rules = get_command_rules()
+    session.trusted_workspace = get_trusted_workspace()
+    session.verify_command = get_verify_command()
+    session.compact_at_tokens = get_compact_at_tokens()
+    session.context_window = get_context_window()
 
     repl.run(session)
 

@@ -21,9 +21,11 @@ from kiwimatecoder.config import (
     add_provider,
     apply_model_filter,
     clear_always_allowed_tools,
+    clear_budget,
     clear_command_rules,
     describe_key,
     get_always_allowed_tools,
+    get_budget,
     get_command_rules,
     get_default_mode,
     get_model_catalog,
@@ -41,6 +43,7 @@ from kiwimatecoder.config import (
     reset_sampling,
     search_model_catalog,
     set_active_providers,
+    set_budget,
     set_default_mode,
     set_key,
     set_model_filter,
@@ -49,6 +52,8 @@ from kiwimatecoder.config import (
     set_selected_model,
     set_selected_provider,
     set_system_prompt,
+    set_trusted_workspace,
+    set_verify_command,
     update_provider,
 )
 from kiwimatecoder.permissions import PermissionMode
@@ -761,6 +766,18 @@ def _config_help(console: Console) -> None:
             "Auto-approve or hard-block run_bash commands by regex.",
         ),
         (
+            "/config trust [on|off]",
+            "Allow or forbid read-only access outside the workspace root.",
+        ),
+        (
+            "/config verify [set <command>|clear]",
+            "Run a command automatically after successful file edits.",
+        ),
+        (
+            "/config budget [show|tokens <n>|cost <usd>|clear]",
+            "Set or clear session token/cost limits.",
+        ),
+        (
             "/config sampling [show|set key=value ...|reset]",
             "Get or set temperature, top_p, max_tokens, reasoning_effort.",
         ),
@@ -804,7 +821,8 @@ def _config_show(session: Session, console: Console) -> None:
         f"Output style: [cyan]{session.output_style}[/cyan]\n"
         f"Sampling: [cyan]{sampling_line}[/cyan]\n"
         f"Custom system prompt: [cyan]{'set' if session.custom_system_prompt else 'none'}[/cyan]\n"
-        f"Always-allowed tools: [cyan]{', '.join(sorted(session.always_allowed)) or 'none'}[/cyan]"
+        f"Always-allowed tools: [cyan]{', '.join(sorted(session.always_allowed)) or 'none'}[/cyan]\n"
+        f"Trusted workspace: [cyan]{'on' if session.trusted_workspace else 'off'}[/cyan]"
     )
     project_path = project_config_path()
     if project_path is not None:
@@ -1257,6 +1275,117 @@ def _config_permissions(
     )
 
 
+def _config_trust(action_parts: list[str], session: Session, console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+
+    if action in {"on", "true", "enable", "enabled"}:
+        session.trusted_workspace = True
+        set_trusted_workspace(True)
+        console.print(
+            "[yellow]Trusted workspace on:[/yellow] read-only tools may now "
+            "read paths outside the workspace root. Writes stay sandboxed."
+        )
+        return
+
+    if action in {"off", "false", "disable", "disabled"}:
+        session.trusted_workspace = False
+        set_trusted_workspace(False)
+        console.print("[green]Trusted workspace off: reads are sandboxed.[/green]")
+        return
+
+    if action in {"show", "status", "list"}:
+        state = "on" if session.trusted_workspace else "off"
+        console.print(f"Trusted workspace: [cyan]{state}[/cyan]")
+        return
+
+    console.print("[yellow]Usage: /config trust [on|off][/yellow]")
+
+
+def _config_verify(action_parts: list[str], session: Session, console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"set", "update"}:
+        command = " ".join(rest).strip()
+        if not command:
+            console.print("[yellow]Usage: /config verify set <command>[/yellow]")
+            return
+        set_verify_command(command)
+        session.verify_command = command
+        console.print(
+            f"[green]Auto-verify command set:[/green] {command}\n"
+            "[dim]Run after successful file edits, with output fed back to the model.[/dim]"
+        )
+        return
+
+    if action in {"clear", "reset", "off", "none"}:
+        set_verify_command("")
+        session.verify_command = ""
+        console.print("[green]Auto-verify disabled.[/green]")
+        return
+
+    if session.verify_command:
+        console.print(f"Auto-verify: [cyan]{session.verify_command}[/cyan]")
+    else:
+        console.print("[dim]Auto-verify is off. Set it with /config verify set <command>.[/dim]")
+
+
+def _config_budget(action_parts: list[str], session: Session, console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    def _limit(raw: str | None) -> str | None:
+        if raw is None or raw.strip().lower() in {"clear", "none", "off", ""}:
+            return None
+        return raw.strip()
+
+    if action in {"show", "list", "status"}:
+        budget = get_budget()
+        if not budget:
+            console.print("[dim]No budget limits set.[/dim]")
+            return
+        console.print(
+            "Budget: "
+            + ", ".join(f"[cyan]{key}[/cyan]={value}" for key, value in budget.items())
+        )
+        return
+
+    if action in {"tokens", "token"}:
+        try:
+            set_budget(max_tokens=_limit(rest[0] if rest else None))
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        budget = get_budget()
+        console.print(
+            "[green]Budget updated:[/green] "
+            + (", ".join(f"{key}={value}" for key, value in budget.items()) or "none")
+        )
+        return
+
+    if action in {"cost", "usd", "max-cost"}:
+        try:
+            set_budget(max_cost_usd=_limit(rest[0] if rest else None))
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        budget = get_budget()
+        console.print(
+            "[green]Budget updated:[/green] "
+            + (", ".join(f"{key}={value}" for key, value in budget.items()) or "none")
+        )
+        return
+
+    if action in {"clear", "reset"}:
+        clear_budget()
+        console.print("[green]Budget limits cleared.[/green]")
+        return
+
+    console.print(
+        "[yellow]Usage: /config budget [show|tokens <n>|cost <usd>|clear][/yellow]"
+    )
+
+
 def _config_commands(  # noqa: C901 - small parser, mirrors the other config sections
     action_parts: list[str], session: Session, console: Console
 ) -> None:
@@ -1471,6 +1600,12 @@ def _config(arg: str, session: Session, console: Console,
         _config_permissions(rest, session, console)
     elif section in {"commands", "command-rules", "rules"}:
         _config_commands(rest, session, console)
+    elif section in {"trust", "trusted", "trusted-workspace"}:
+        _config_trust(rest, session, console)
+    elif section == "verify":
+        _config_verify(rest, session, console)
+    elif section == "budget":
+        _config_budget(rest, session, console)
     elif section == "sampling":
         _config_sampling(rest, console)
     elif section == "style":
@@ -1516,6 +1651,7 @@ def _config_interact(
             CommandOption("mode", "Set the default permission mode"),
             CommandOption("permissions", "Manage tools approved with 'always'"),
             CommandOption("commands", "Manage shell command allow/deny rules"),
+            CommandOption("trust", "Allow reads outside the workspace root"),
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
             CommandOption("style", "Show or set the output style"),
             CommandOption("help", "Show all /config commands"),
@@ -1555,6 +1691,7 @@ def _config_interact(
         "sampling",
         "style",
         "commands",
+        "trust",
     }:
         _config(section, session, console, selector, prompt_input)
         return CommandResult.CONTINUE
@@ -1590,7 +1727,13 @@ def _cost(arg: str, session: Session, console: Console) -> str:
         rates = f"${price.input_per_mtok:g} in / ${price.output_per_mtok:g} out per Mtok"
         table.add_row("Estimated Cost (USD)", f"{cost_text} [dim]({rates})[/dim]")
     table.add_row("Conversation History Messages", f"{len(session.messages)}")
-    table.add_row("Estimated Context Tokens", f"~{session.estimated_history_tokens:,}")
+    window = max(1, session.context_window)
+    used = session.estimated_history_tokens
+    table.add_row(
+        "Context Gauge",
+        f"~{used * 100 // window}% of {window:,} tokens",
+    )
+    table.add_row("Estimated Context Tokens", f"~{used:,}")
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -1630,6 +1773,9 @@ def _load(arg: str, session: Session, console: Console) -> str:
         session.dry_run = loaded.dry_run
         session.todos = list(loaded.todos)
         session.trusted_workspace = loaded.trusted_workspace
+        session.verify_command = loaded.verify_command
+        session.compact_at_tokens = loaded.compact_at_tokens
+        session.context_window = loaded.context_window
         console.print(
             f"[green]Loaded session [bold]{arg.strip()}[/bold]: "
             f"{len(session.messages)} messages, provider={session.provider_id}:{session.model}[/green]"
@@ -1746,6 +1892,56 @@ def _checkpoints(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
+def _todos(arg: str, session: Session, console: Console) -> str:
+    if not session.todos:
+        console.print(
+            "[dim]No task list yet. The agent creates one for multi-step work.[/dim]"
+        )
+        return CommandResult.CONTINUE
+    labels = {
+        "pending": "[dim]pending[/dim]",
+        "in_progress": "[yellow]in progress[/yellow]",
+        "completed": "[green]done[/green]",
+    }
+    table = Table(title="Task list", show_header=True)
+    table.add_column("Status")
+    table.add_column("Task")
+    for todo in session.todos:
+        status = str(todo.get("status") or "pending")
+        table.add_row(labels.get(status, status), str(todo.get("content") or ""))
+    console.print(table)
+    return CommandResult.CONTINUE
+
+
+def _compact(arg: str, session: Session, console: Console) -> str:
+    target: int | None = None
+    token = arg.strip()
+    if token:
+        try:
+            target = int(token)
+        except ValueError:
+            console.print("[yellow]Usage: /compact [token_budget][/yellow]")
+            return CommandResult.CONTINUE
+
+    result = session.compact(target)
+    window = max(1, session.context_window)
+    if result["before"] <= result["after"] and result["after"] <= result["budget"]:
+        console.print(
+            f"[dim]History already within budget "
+            f"(~{result['after']:,} / {result['budget']:,} tokens).[/dim]"
+        )
+    else:
+        console.print(
+            f"[green]Compacted history:[/green] ~{result['before']:,} → "
+            f"~{result['after']:,} tokens (budget {result['budget']:,})."
+        )
+    console.print(
+        f"[dim]Context gauge: ~{result['after'] * 100 // window}% of "
+        f"{window:,} window.[/dim]"
+    )
+    return CommandResult.CONTINUE
+
+
 _COMMANDS = {
     "help": _help,
     "exit": _exit,
@@ -1771,6 +1967,8 @@ _COMMANDS = {
     "undo": _undo,
     "rewind": _undo,
     "checkpoints": _checkpoints,
+    "todos": _todos,
+    "compact": _compact,
 }
 
 _HELP_GROUPS = [
@@ -1791,6 +1989,8 @@ _HELP_GROUPS = [
             ("/export [path]", "Export the conversation as Markdown."),
             ("/undo [count]", "Restore files changed by recent tool actions."),
             ("/checkpoints", "List captured file checkpoints."),
+            ("/todos", "Show the agent's task list."),
+            ("/compact [budget]", "Trim older history to fit a token budget."),
         ],
     ),
     (
@@ -1865,6 +2065,8 @@ _COMMAND_DESCRIPTIONS = {
     "undo": "Restore files changed by recent tool actions.",
     "rewind": "Alias for /undo.",
     "checkpoints": "List captured file checkpoints.",
+    "todos": "Show the agent's task list.",
+    "compact": "Trim older history to fit a token budget.",
 }
 
 _CONTEXT_ACTION_DESCRIPTIONS = {
@@ -1899,6 +2101,9 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "mode": "Set or reset the default permission mode.",
     "permissions": "List or remove tools approved with 'always'.",
     "commands": "Manage run_bash allow/deny regex rules.",
+    "trust": "Allow or forbid reads outside the workspace root.",
+    "verify": "Set the command run automatically after edits.",
+    "budget": "Set or clear token/cost budget limits.",
     "sampling": "Show, set, or reset sampling parameters.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",

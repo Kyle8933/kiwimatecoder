@@ -464,10 +464,29 @@ def _autosave(session: Session) -> None:
         )
 
 
+def _make_ask_user(console: Console):
+    """Build the interactive callback used by the ask_user tool."""
+
+    def ask(question: str, options: list[str]) -> str:
+        console.print()
+        console.print(f"[bold yellow]{question}[/bold yellow]")
+        for index, option in enumerate(options, 1):
+            console.print(f"  [cyan]{index}[/cyan]. {option}")
+        answer = console.input("answer> ").strip()
+        if options and answer.isdigit():
+            position = int(answer)
+            if 1 <= position <= len(options):
+                return options[position - 1]
+        return answer
+
+    return ask
+
+
 def run(session: Session) -> None:
     """Run the interactive loop until the user exits."""
     console.print(_banner(session))
     confirm = _make_confirm(session)
+    session.ask_user = _make_ask_user(console)
     agent = Agent(session, console, confirm)
 
     kb = KeyBindings()

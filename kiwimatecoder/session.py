@@ -49,6 +49,12 @@ class Session:
     dry_run: bool = False
     # Whether reads outside the workspace are permitted.
     trusted_workspace: bool = False
+    # Command run automatically after successful file edits (empty disables).
+    verify_command: str = ""
+    # History is trimmed before a request once it exceeds this estimate.
+    compact_at_tokens: int = 64000
+    # Approximate model context window for gauges.
+    context_window: int = 128000
     # Agent-maintained task list.
     todos: list[dict[str, Any]] = field(default_factory=list)
     # File snapshots for /undo (in-memory; cleared when the process exits).
@@ -262,6 +268,17 @@ class Session:
         self.messages = new_messages
         return original_count - len(new_messages)
 
+    def compact(self, target_tokens: int | None = None) -> dict[str, int]:
+        """Trim history to a token budget; returns before/after estimates."""
+        before = self.estimated_history_tokens
+        budget = max(1, target_tokens or self.compact_at_tokens)
+        self.trim_history(max_tokens=budget)
+        return {
+            "before": before,
+            "after": self.estimated_history_tokens,
+            "budget": budget,
+        }
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize session state for persistence."""
         return {
@@ -283,6 +300,9 @@ class Session:
             "command_rules": self.command_rules,
             "dry_run": self.dry_run,
             "trusted_workspace": self.trusted_workspace,
+            "verify_command": self.verify_command,
+            "compact_at_tokens": self.compact_at_tokens,
+            "context_window": self.context_window,
             "todos": self.todos,
         }
 
@@ -323,6 +343,9 @@ class Session:
             },
             dry_run=bool(data.get("dry_run", False)),
             trusted_workspace=bool(data.get("trusted_workspace", False)),
+            verify_command=str(data.get("verify_command") or ""),
+            compact_at_tokens=int(data.get("compact_at_tokens") or 64000),
+            context_window=int(data.get("context_window") or 128000),
             todos=[
                 dict(todo)
                 for todo in (data.get("todos") or [])

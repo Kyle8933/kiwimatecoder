@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiwimatecoder.tools.ask import ask_user_tool
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
 from kiwimatecoder.tools.edit_file import edit_file_tool
 from kiwimatecoder.tools.edit_file import preview as _edit_preview
@@ -17,6 +18,7 @@ from kiwimatecoder.tools.read_file import read_file_tool
 from kiwimatecoder.tools.run_bash import preview as _bash_preview
 from kiwimatecoder.tools.run_bash import run_bash_tool
 from kiwimatecoder.tools.search import search_tool
+from kiwimatecoder.tools.todo import update_todos_tool
 from kiwimatecoder.tools.write_file import preview as _write_preview
 from kiwimatecoder.tools.write_file import write_file_tool
 
@@ -30,6 +32,8 @@ _ALL_TOOLS: list[FunctionTool] = [
     write_file_tool,
     edit_file_tool,
     run_bash_tool,
+    update_todos_tool,
+    ask_user_tool,
 ]
 
 TOOLS: dict[str, FunctionTool] = {t.name: t for t in _ALL_TOOLS}

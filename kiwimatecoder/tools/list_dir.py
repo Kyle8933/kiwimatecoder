@@ -9,7 +9,7 @@ from kiwimatecoder.tools.base import FunctionTool, ToolResult
 from kiwimatecoder.tools.paths import (
     PathError,
     get_workspace_ignore,
-    resolve_in_workspace,
+    resolve_for_read,
 )
 
 MAX_ENTRIES = 500
@@ -18,7 +18,11 @@ MAX_ENTRIES = 500
 def _list_dir(args: dict[str, Any], session: Session) -> ToolResult:
     path = str(args.get("path", ".") or ".")
     try:
-        resolved = resolve_in_workspace(path, session.workspace_root)
+        resolved = resolve_for_read(
+            path,
+            session.workspace_root,
+            trusted=bool(getattr(session, "trusted_workspace", False)),
+        )
     except PathError as exc:
         return ToolResult.error(str(exc))
 

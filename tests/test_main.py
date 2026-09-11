@@ -459,3 +459,34 @@ def test_config_show_mentions_new_settings():
     assert "Output style" in result.output
     assert "Sampling" in result.output
     assert "Always-allowed tools" in result.output
+
+
+def test_config_trusted_workspace_roundtrip():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "trusted-workspace", "on"])
+    assert result.exit_code == 0
+    assert config.get_trusted_workspace() is True
+
+    result = runner.invoke(main.app, ["config", "trusted-workspace"])
+    assert "on" in result.output
+
+    result = runner.invoke(main.app, ["config", "trusted-workspace", "off"])
+    assert result.exit_code == 0
+    assert config.get_trusted_workspace() is False
+
+
+def test_config_verify_and_budget_roundtrip():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "verify", "set", "pytest -q"])
+    assert result.exit_code == 0
+    assert config.get_verify_command() == "pytest -q"
+
+    result = runner.invoke(main.app, ["config", "budget", "tokens", "1000"])
+    assert result.exit_code == 0
+    assert config.get_budget() == {"max_tokens": 1000}
+
+    result = runner.invoke(main.app, ["config", "budget", "clear"])
+    assert result.exit_code == 0
+    assert config.get_budget() == {}
