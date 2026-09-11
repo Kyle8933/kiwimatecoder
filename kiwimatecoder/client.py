@@ -337,11 +337,16 @@ class UnifiedClient:
     """Streams chat completions against OpenAI-compatible or Anthropic providers."""
 
     def __init__(
-        self, provider: ProviderConfig, api_key: str, timeout: float = 120.0
+        self,
+        provider: ProviderConfig,
+        api_key: str,
+        timeout: float = 120.0,
+        sampling: dict[str, Any] | None = None,
     ):
         self.provider = provider
         self.api_key = api_key
         self.timeout = timeout
+        self.sampling = sampling or {}
 
     @property
     def is_anthropic(self) -> bool:
@@ -376,9 +381,13 @@ class UnifiedClient:
             payload: dict[str, Any] = {
                 "model": model,
                 "messages": anthropic_msgs,
-                "max_tokens": 8192,
+                "max_tokens": int(self.sampling.get("max_tokens") or 8192),
                 "stream": True,
             }
+            if self.sampling.get("temperature") is not None:
+                payload["temperature"] = self.sampling["temperature"]
+            if self.sampling.get("top_p") is not None:
+                payload["top_p"] = self.sampling["top_p"]
             if system_prompt:
                 payload["system"] = system_prompt
             if anthropic_tools:
@@ -391,6 +400,10 @@ class UnifiedClient:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        for key in ("temperature", "top_p", "max_tokens", "reasoning_effort"):
+            value = self.sampling.get(key)
+            if value is not None:
+                openai_payload[key] = value
         if tools:
             openai_payload["tools"] = tools
             # Ollama rejects tool_choice; "auto" is the default behavior anyway.

@@ -49,8 +49,11 @@ CONFIG_DIR = Path.home() / ".kiwimatecoder"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LEGACY_CONFIG_FILE = CONFIG_DIR / "config"
 MODEL_CACHE_NAME = "model_cache.json"
+PROJECT_CONFIG_NAME = ".kiwimatecoder.json"
+PROJECT_CONFIG_ENV = "KIWIMATECODER_PROJECT_CONFIG"
 
 DEFAULT_MODE = "ask"
+CONFIG_VERSION = 2
 MODEL_CACHE_VERSION = 1
 
 
@@ -69,9 +72,14 @@ _ensure_config_dir = ensure_config_dir
 
 def _empty_config() -> dict[str, Any]:
     return {
+        "version": CONFIG_VERSION,
         "keys": {},
         "providers": {},
         "model_filters": {},
+        "tool_permissions": {},
+        "sampling": {},
+        "system_prompt": None,
+        "output_style": "default",
         "selected_provider": DEFAULT_PROVIDER_ID,
         "active_providers": [DEFAULT_PROVIDER_ID],
         "selected_model": None,
@@ -88,11 +96,65 @@ def _read_legacy_key() -> str | None:
     return None
 
 
-def load_config() -> dict[str, Any]:
+def project_config_path(project_root: Path | str | None = None) -> Path | None:
+    """Return the project config file for ``project_root`` when it exists.
+
+    ``$KIWIMATECODER_PROJECT_CONFIG`` overrides the location (useful for
+    testing and monorepos). Otherwise the file is ``.kiwimatecoder.json`` in
+    ``project_root``, defaulting to the current working directory.
+    """
+    override = os.environ.get(PROJECT_CONFIG_ENV)
+    if override:
+        candidate = Path(override).expanduser()
+        return candidate if candidate.is_file() else None
+    root = Path(project_root) if project_root is not None else Path.cwd()
+    candidate = root / PROJECT_CONFIG_NAME
+    return candidate if candidate.is_file() else None
+
+
+def load_project_config(project_root: Path | str | None = None) -> dict[str, Any]:
+    """Load the project-level config overlay, tolerating absence/corruption.
+
+    Project config may not carry API keys; that section is ignored if present.
+    """
+    path = project_config_path(project_root)
+    if path is None:
+        return {}
+    try:
+        stored = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    stored.pop("keys", None)
+    return stored
+
+
+def _apply_project_overlay(cfg: dict[str, Any], project: dict[str, Any]) -> None:
+    """Deep-merge the project config onto ``cfg`` (project values win)."""
+    for key, value in project.items():
+        if isinstance(value, dict) and isinstance(cfg.get(key), dict):
+            merged = dict(cfg[key])
+            for sub_key, sub_value in value.items():
+                if isinstance(sub_value, dict) and isinstance(merged.get(sub_key), dict):
+                    merged[sub_key] = {**merged[sub_key], **sub_value}
+                else:
+                    merged[sub_key] = sub_value
+            cfg[key] = merged
+        else:
+            cfg[key] = value
+
+
+def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     """Load configuration, migrating from the legacy format when needed.
 
     The returned dict always has the full set of keys (with defaults filled in).
     Migration is non-destructive: the legacy file is left in place.
+
+    A project-level ``.kiwimatecoder.json`` (see :func:`project_config_path`)
+    is layered on top of the global config, so a repository can pin its
+    provider, model, mode, sampling, and tool-permission policies. API keys are
+    never read from project files.
     """
     cfg: dict[str, Any] = _empty_config()
     stored: dict[str, Any] = {}
@@ -122,6 +184,10 @@ def load_config() -> dict[str, Any]:
     cfg.setdefault("keys", {})
     cfg.setdefault("providers", {})
     cfg.setdefault("model_filters", {})
+    cfg.setdefault("tool_permissions", {})
+    cfg.setdefault("sampling", {})
+    cfg.setdefault("system_prompt", None)
+    cfg.setdefault("output_style", "default")
     cfg.setdefault("selected_provider", DEFAULT_PROVIDER_ID)
     cfg.setdefault("active_providers", [DEFAULT_PROVIDER_ID])
     cfg.setdefault("selected_model", None)
@@ -132,6 +198,17 @@ def load_config() -> dict[str, Any]:
     cfg["active_providers"] = _normalized_active_providers(
         stored, str(cfg.get("selected_provider") or DEFAULT_PROVIDER_ID)
     )
+    # Project overlay: values win over global config, secrets excluded.
+    project = load_project_config(project_root)
+    if project:
+        _apply_project_overlay(cfg, project)
+        if "selected_provider" in project and "active_providers" not in project:
+            cfg["active_providers"] = [str(project["selected_provider"])]
+        cfg["active_providers"] = _normalized_active_providers(
+            {"active_providers": cfg.get("active_providers")},
+            str(cfg.get("selected_provider") or DEFAULT_PROVIDER_ID),
+        )
+    cfg["version"] = CONFIG_VERSION
     return cfg
 
 
@@ -156,6 +233,7 @@ def save_config(cfg: dict[str, Any]) -> None:
     they may contain API keys.
     """
     ensure_config_dir()
+    cfg.setdefault("version", CONFIG_VERSION)
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n")
     try:
         os.chmod(CONFIG_FILE, 0o600)
@@ -642,6 +720,173 @@ def apply_model_filter(provider_id: str, models: Sequence[str]) -> list[str]:
         denied = set(filtered)
         return [model for model in models if model not in denied]
     return list(models)
+
+
+# ---------------------------------------------------------------------------
+# Tool permissions, sampling, and prompt customization
+# ---------------------------------------------------------------------------
+
+SAMPLING_KEYS = ("temperature", "top_p", "max_tokens", "reasoning_effort")
+REASONING_EFFORTS = ("minimal", "low", "medium", "high")
+OUTPUT_STYLES = ("default", "concise", "explanatory", "code")
+
+
+def get_always_allowed_tools(cfg: dict[str, Any] | None = None) -> list[str]:
+    """Return tools the user permanently approved with "always"."""
+    cfg = cfg or load_config()
+    perms = cfg.get("tool_permissions") or {}
+    raw = perms.get("always_allow") if isinstance(perms, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(str(name) for name in raw if str(name).strip()))
+
+
+def persist_always_allowed_tool(tool_name: str) -> list[str]:
+    """Persist a tool approval, returning the updated allowlist."""
+    name = tool_name.strip()
+    cfg = load_config()
+    current = get_always_allowed_tools(cfg)
+    if not name:
+        return current
+    allowed = list(dict.fromkeys([*current, name]))
+    perms = dict(cfg.get("tool_permissions") or {})
+    perms["always_allow"] = allowed
+    cfg["tool_permissions"] = perms
+    save_config(cfg)
+    return allowed
+
+
+def remove_always_allowed_tool(tool_name: str) -> bool:
+    """Drop a persisted tool approval. Returns whether it existed."""
+    cfg = load_config()
+    current = get_always_allowed_tools(cfg)
+    if tool_name not in current:
+        return False
+    perms = dict(cfg.get("tool_permissions") or {})
+    perms["always_allow"] = [name for name in current if name != tool_name]
+    cfg["tool_permissions"] = perms
+    save_config(cfg)
+    return True
+
+
+def clear_always_allowed_tools() -> int:
+    """Remove every persisted tool approval, returning how many were cleared."""
+    cfg = load_config()
+    current = get_always_allowed_tools(cfg)
+    perms = dict(cfg.get("tool_permissions") or {})
+    perms["always_allow"] = []
+    cfg["tool_permissions"] = perms
+    save_config(cfg)
+    return len(current)
+
+
+def get_sampling(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return validated sampling parameters (only explicitly set keys)."""
+    cfg = cfg or load_config()
+    stored = cfg.get("sampling") or {}
+    if not isinstance(stored, dict):
+        return {}
+    clean: dict[str, Any] = {}
+    for key in SAMPLING_KEYS:
+        value = stored.get(key)
+        if value is None:
+            continue
+        try:
+            if key == "temperature":
+                clean[key] = float(value)
+            elif key == "top_p":
+                clean[key] = float(value)
+            elif key == "max_tokens":
+                clean[key] = int(value)
+            else:
+                effort = str(value).strip().lower()
+                if effort:
+                    clean[key] = effort
+        except (TypeError, ValueError):
+            continue
+    return clean
+
+
+def _coerce_sampling(key: str, value: Any) -> Any:
+    if key in ("temperature", "top_p"):
+        number = float(value)
+        limit = 2.0 if key == "temperature" else 1.0
+        if not 0.0 <= number <= limit:
+            raise ValueError(f"{key} must be between 0 and {limit:g}.")
+        return number
+    if key == "max_tokens":
+        tokens = int(value)
+        if tokens < 1:
+            raise ValueError("max_tokens must be at least 1.")
+        return tokens
+    effort = str(value).strip().lower()
+    if effort not in REASONING_EFFORTS:
+        raise ValueError(
+            f"reasoning_effort must be one of: {', '.join(REASONING_EFFORTS)}."
+        )
+    return effort
+
+
+def set_sampling(updates: dict[str, Any]) -> dict[str, Any]:
+    """Set/clear sampling parameters (a value of None or "" clears a key)."""
+    cfg = load_config()
+    current = dict(cfg.get("sampling") or {})
+    for key, value in updates.items():
+        if key not in SAMPLING_KEYS:
+            raise ValueError(
+                f"Unknown sampling parameter '{key}'. "
+                f"Choose: {', '.join(SAMPLING_KEYS)}."
+            )
+        if value is None or str(value).strip() == "":
+            current.pop(key, None)
+        else:
+            current[key] = _coerce_sampling(key, value)
+    cfg["sampling"] = current
+    save_config(cfg)
+    return get_sampling(cfg)
+
+
+def reset_sampling() -> None:
+    """Clear every sampling parameter."""
+    cfg = load_config()
+    cfg["sampling"] = {}
+    save_config(cfg)
+
+
+def get_system_prompt(cfg: dict[str, Any] | None = None) -> str | None:
+    """Return the user's custom system-prompt addition, if any."""
+    cfg = cfg or load_config()
+    value = cfg.get("system_prompt")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def set_system_prompt(prompt: str | None) -> None:
+    """Persist a custom system-prompt addition (None/empty clears it)."""
+    cfg = load_config()
+    text = (prompt or "").strip()
+    cfg["system_prompt"] = text or None
+    save_config(cfg)
+
+
+def get_output_style(cfg: dict[str, Any] | None = None) -> str:
+    """Return the configured output style, falling back to 'default'."""
+    cfg = cfg or load_config()
+    style = str(cfg.get("output_style") or "default").strip().lower()
+    return style if style in OUTPUT_STYLES else "default"
+
+
+def set_output_style(style: str) -> str:
+    """Persist the output style and return the effective value."""
+    cleaned = style.strip().lower()
+    if cleaned not in OUTPUT_STYLES:
+        raise ValueError(f"Unknown output style '{style}'. Choose: {', '.join(OUTPUT_STYLES)}.")
+    cfg = load_config()
+    cfg["output_style"] = cleaned
+    save_config(cfg)
+    return cleaned
 
 
 # ---------------------------------------------------------------------------

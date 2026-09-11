@@ -6,9 +6,26 @@ from html import escape
 import platform
 from typing import Any
 
+from kiwimatecoder.instructions import instructions_section
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.paths import PathError, resolve_in_workspace
+
+_OUTPUT_STYLES = {
+    "default": "",
+    "concise": (
+        "Be terse. Lead with the answer or the change, keep prose to a minimum, "
+        "and do not restate the request."
+    ),
+    "explanatory": (
+        "Explain your reasoning and tradeoffs as you go. Call out assumptions "
+        "and alternatives before making changes."
+    ),
+    "code": (
+        "Lead with code. Show complete, runnable snippets or diffs and keep "
+        "prose to short captions."
+    ),
+}
 
 _MODE_GUIDANCE = {
     PermissionMode.ASK: (
@@ -115,6 +132,14 @@ def _context_section(session: Session) -> str:
 def build_system_prompt(session: Session) -> dict[str, Any]:
     """Return the system message tailored to the current session state."""
     context = _context_section(session)
+    instructions = instructions_section(session.workspace_root)
+    style = _OUTPUT_STYLES.get(session.output_style, "")
+    style_block = f"\n\nOutput style:\n{style}" if style else ""
+    custom_block = (
+        f"\n\nAdditional user instructions:\n{session.custom_system_prompt}"
+        if session.custom_system_prompt
+        else ""
+    )
     fallbacks = [provider.id for provider in session.active_providers[1:]]
     provider_line = f"{session.provider_id} / {session.model}"
     if fallbacks:
@@ -127,7 +152,7 @@ Environment:
 - Operating system: {platform.system()} ({platform.release()})
 - Provider/model: {provider_line}
 - Permission mode: {session.mode.value}
-{context}
+{context}{instructions}
 
 Tools: you can read files, list directories, search the codebase, write and \
 edit files, and run shell commands — all scoped to the workspace root. Use them \
@@ -145,5 +170,5 @@ target text is unique.
 - After changing code, run tests or builds with run_bash when it makes sense.
 - Keep explanations concise; show code and concrete steps over prose.
 - When you have completed the user's request, stop calling tools and give a short \
-summary of what you did."""
+summary of what you did.{style_block}{custom_block}"""
     return {"role": "system", "content": content}

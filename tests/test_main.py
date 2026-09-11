@@ -306,3 +306,137 @@ def test_ask_with_unsloth_and_key_proceeds(monkeypatch):
     assert result.exit_code == 0
     assert captured["api_key"] == "sk-unsloth-test"
     assert captured["provider"].id == "unsloth"
+
+
+def test_continue_resumes_autosave(tmp_path, monkeypatch):
+    from kiwimatecoder import repl
+    from kiwimatecoder.session import Session, save_session
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+    saved = Session(
+        provider_id="anthropic",
+        model="claude-sonnet-5",
+        workspace_root=tmp_path,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    save_session(saved, "last")
+
+    captured = {}
+    monkeypatch.setattr(repl, "run", lambda session: captured.setdefault("session", session))
+
+    result = CliRunner().invoke(main.app, ["--continue"])
+
+    assert result.exit_code == 0
+    assert captured["session"].provider_id == "anthropic"
+    assert captured["session"].model == "claude-sonnet-5"
+
+
+def test_continue_without_saved_session_starts_fresh(tmp_path, monkeypatch):
+    from kiwimatecoder import repl
+
+    monkeypatch.setattr(
+        "kiwimatecoder.session._sessions_dir", lambda: tmp_path / "sessions"
+    )
+    captured = {}
+    monkeypatch.setattr(
+        repl, "run", lambda session: captured.setdefault("session", session)
+    )
+
+    result = CliRunner().invoke(main.app, ["--continue"])
+
+    assert result.exit_code == 0
+    assert "Starting fresh" in result.output
+    assert captured["session"].provider_id == "openrouter"
+
+
+def test_resume_missing_session_exits_nonzero(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "kiwimatecoder.session._sessions_dir", lambda: tmp_path / "sessions"
+    )
+
+    result = CliRunner().invoke(main.app, ["--resume", "nope"])
+
+    assert result.exit_code == 1
+    assert "Could not resume" in result.output
+
+
+def test_doctor_command_runs():
+    result = CliRunner().invoke(main.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "diagnostics" in result.output.lower()
+
+
+def test_config_sampling_set_show_reset():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "sampling", "set", "temperature=0.2"])
+    assert result.exit_code == 0
+    assert config.get_sampling() == {"temperature": 0.2}
+
+    result = runner.invoke(main.app, ["config", "sampling", "show"])
+    assert result.exit_code == 0
+    assert "0.2" in result.output
+
+    result = runner.invoke(main.app, ["config", "sampling", "reset"])
+    assert result.exit_code == 0
+    assert config.get_sampling() == {}
+
+
+def test_config_sampling_rejects_invalid():
+    result = CliRunner().invoke(main.app, ["config", "sampling", "set", "temperature=9"])
+
+    assert result.exit_code == 1
+    assert config.get_sampling() == {}
+
+
+def test_config_style_roundtrip():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "style", "set", "concise"])
+    assert result.exit_code == 0
+    assert config.get_output_style() == "concise"
+
+    result = runner.invoke(main.app, ["config", "style", "show"])
+    assert "concise" in result.output
+
+    result = runner.invoke(main.app, ["config", "style", "set", "fancy"])
+    assert result.exit_code == 1
+
+
+def test_config_prompt_set_show_clear():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "prompt", "set", "Always use type hints."])
+    assert result.exit_code == 0
+    assert config.get_system_prompt() == "Always use type hints."
+
+    result = runner.invoke(main.app, ["config", "prompt", "show"])
+    assert "Always use type hints." in result.output
+
+    result = runner.invoke(main.app, ["config", "prompt", "clear"])
+    assert result.exit_code == 0
+    assert config.get_system_prompt() is None
+
+
+def test_config_permissions_roundtrip():
+    runner = CliRunner()
+
+    config.persist_always_allowed_tool("run_bash")
+    result = runner.invoke(main.app, ["config", "permissions", "list"])
+    assert "run_bash" in result.output
+
+    result = runner.invoke(main.app, ["config", "permissions", "remove", "run_bash"])
+    assert result.exit_code == 0
+    assert config.get_always_allowed_tools() == []
+
+
+def test_config_show_mentions_new_settings():
+    result = CliRunner().invoke(main.app, ["config", "show"])
+
+    assert result.exit_code == 0
+    assert "Output style" in result.output
+    assert "Sampling" in result.output
+    assert "Always-allowed tools" in result.output

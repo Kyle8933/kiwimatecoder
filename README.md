@@ -45,6 +45,11 @@ kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.p
 
 - **Ctrl-C** cancels the current turn and returns you to the prompt.
 - **Ctrl-D** exits the session.
+- Your prompt history is saved; the up-arrow recalls commands from previous
+  sessions.
+- Every session is auto-saved when you exit. Pick it back up with
+  `kiwimatecoder --continue` (same as `--resume last`), or from inside the REPL
+  with `/load last`.
 - Type `/` to open the slash-command menu. It filters as you keep typing.
 - Run `/model`, `/provider`, or `/mode` without an argument to open a
   keyboard-driven selector. `/provider` is a checklist: check every provider you
@@ -74,6 +79,11 @@ it can do without asking, and you can switch it at any time with `/mode`:
 | `auto-accept` | Actions run without prompting. |
 | `plan` | Read-only: the agent can inspect and explain, but cannot write or run anything. |
 
+At an approval prompt, answer `a` (always) to approve that tool for the rest of
+the session **and future sessions**. Persisted approvals survive restarts and
+provider switches; manage them with `/config permissions` or
+`config permissions list|remove|clear`.
+
 Reads, writes, edits, listings and searches are sandboxed to the workspace root (via symlink-aware path resolution). `run_bash` commands execute with the workspace root as their cwd but are otherwise unrestricted (subject to approval/mode); use them for git, tests, builds, etc.
 
 ## Slash commands
@@ -89,8 +99,9 @@ Reads, writes, edits, listings and searches are sandboxed to the workspace root 
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
-| `/config` | Show or change providers, API keys, model defaults, and model filters. |
-| `/cost` | Show token usage for this session. |
+| `/config` | Show or change providers, API keys, model defaults, model filters, permissions, sampling, and output styles. |
+| `/cost` | Show token usage and estimated USD cost for this session (per-model pricing). |
+| `/doctor` | Run environment, config, provider, and workspace diagnostics. |
 
 Examples:
 
@@ -113,6 +124,13 @@ Config examples:
 /config models deny noisy-model
 /config models refresh
 /config mode set plan
+/config permissions list
+/config permissions remove run_bash
+/config sampling set temperature=0.2 max_tokens=4096
+/config sampling reset
+/config style set concise
+/config prompt set "Prefer functional style; never use classes."
+/config prompt clear
 /config provider remove local
 ```
 
@@ -156,12 +174,11 @@ providers with `config provider add`.
 These defaults are a starting point; the live catalog below is what `/model`
 actually offers once a provider is in use.
 
-Note: The `anthropic` provider id is kept for key configuration and future expansion.
-Its current base URL points at Anthropic's native API; the client assumes
-OpenAI-compatible chat+tools streaming for all providers today. For Anthropic
-models, routing via `openrouter` (or another gateway) is the most reliable path
-until native support is added. (Model listing already speaks Anthropic's native
-`/v1/models` scheme, so `/model` works there today.)
+The `anthropic` provider talks to Anthropic's native Messages API, including
+streaming tool calls and native model listing. Custom providers can opt into the
+same path with `config provider add ... --compat anthropic` (or
+`/config provider edit <id> compat=anthropic`); everything else speaks the
+OpenAI-compatible chat+tools protocol.
 
 ### Local providers (Ollama, LM Studio & Unsloth)
 
@@ -274,24 +291,63 @@ fallback runs
 `pip install --upgrade --force-reinstall git+https://github.com/Kyle8933/kiwimatecoder.git`.
 
 
+## Project instructions
+
+Drop an `AGENTS.md` (or `CLAUDE.md`, `.kiwimatecoder/AGENTS.md`,
+`.kiwimatecoder/instructions.md`) at the workspace root and its contents are
+loaded into the system prompt on every turn — build commands, style rules,
+testing conventions. Files are capped at 32KB each and 48KB total.
+
+## Sampling and output styles
+
+Sampling parameters apply to every provider and are sent when set:
+
+```bash
+kiwimatecoder config sampling set temperature=0.2 top_p=0.9 max_tokens=4096 reasoning_effort=medium
+kiwimatecoder config sampling show
+kiwimatecoder config sampling reset
+```
+
+Output styles shape the agent's replies: `default`, `concise`, `explanatory`,
+or `code`. Set one with `config style set <name>` (or `/config style set`). For
+a fully custom instruction, add a system-prompt suffix with
+`config prompt set "<text>"` and remove it with `config prompt clear`.
+
 ## Configuration
 
-Settings live in `~/.kiwimatecoder/config.json` (provider keys, default
-provider/model, default mode). The original single-key `~/.kiwimatecoder/config`
+Global settings live in `~/.kiwimatecoder/config.json` (provider keys, default
+provider/model, default mode, sampling, output style, custom prompt, and
+persisted tool approvals). The original single-key `~/.kiwimatecoder/config`
 format is read automatically, so existing setups keep working.
+
+A project can pin its own settings in `.kiwimatecoder.json` at the repository
+root (or wherever `KIWIMATECODER_PROJECT_CONFIG` points). Project values
+override global config — useful for pinning a provider, model, mode, sampling,
+or permissions per repository. API keys are never read from project files.
 
 Fetched model catalogs are cached separately in
 `~/.kiwimatecoder/model_cache.json`. It holds no secrets and can be deleted at
 any time; the next `/model` rebuilds it.
+
+Prompt history lives in `~/.kiwimatecoder/history` and session autosaves in
+`~/.kiwimatecoder/sessions/last.json`. Both can be deleted at any time.
+
+Run `kiwimatecoder doctor` (or `/doctor`) to check config paths, key status,
+provider reachability, the model catalog, and the workspace.
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
 pytest
+ruff check kiwimatecoder tests
+mypy kiwimatecoder
 ```
 
 ## Roadmap
 
-- Media generation (images/video) — a clean extension point exists in
-  `kiwimatecoder/media.py` but is not yet implemented.
+The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). The P0 foundation
+batch (persistent history and sessions, accurate pricing, project config,
+persisted approvals, `/doctor`, sampling, project instructions, output styles)
+is implemented; P1 continues with checkpoints/undo, command allow-deny rules,
+and parallel tools.

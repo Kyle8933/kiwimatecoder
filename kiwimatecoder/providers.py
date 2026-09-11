@@ -1,10 +1,10 @@
 """Built-in registry of model providers.
 
 Most providers expose an OpenAI-compatible ``/chat/completions`` API so a single
-:class:`~kiwimatecoder.client.UnifiedClient` can drive them. The ``compat`` field
-and the ``anthropic`` entry are reserved for future native code paths (e.g.
-Anthropic's native Messages API). Callers must not assume every registered id
-yields a fully compatible endpoint today.
+:class:`~kiwimatecoder.client.UnifiedClient` can drive them. Providers whose
+``compat`` is ``"anthropic"`` (Anthropic itself, or a custom provider configured
+that way) are driven through the native Messages API with SSE streaming and
+tool-use support instead.
 
 Model ids drift fast — the defaults and ``models`` catalogs below were verified
 in July 2026. They are only the offline starting point: once a provider is in
@@ -46,7 +46,7 @@ class ProviderConfig:
     # Set for local servers that enforce auth anyway (Unsloth's sk-unsloth-…
     # key). Keyless locals (Ollama, LM Studio) and custom providers leave it off.
     requires_key: bool = False
-    compat: str = "openai"  # "openai" | "anthropic" (reserved; native paths not yet implemented)
+    compat: str = "openai"  # "openai" | "anthropic" (native Messages API)
     extra_headers: dict[str, str] = field(default_factory=dict)
     # Curated catalog offered by /model; not exhaustive, and any id can still
     # be set by name. The default model is always offered even if absent here.

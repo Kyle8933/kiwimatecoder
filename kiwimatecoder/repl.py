@@ -23,7 +23,7 @@ from prompt_toolkit.formatted_text import (
     StyleAndTextTuples,
     to_formatted_text,
 )
-from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.layout.containers import (
@@ -421,10 +421,46 @@ def _make_confirm(session: Session):
         if answer in ("a", "always"):
             tool_name = summary.split("(", 1)[0].strip()
             session.allow_always(tool_name)
+            try:
+                from kiwimatecoder.config import persist_always_allowed_tool
+
+                persist_always_allowed_tool(tool_name)
+                console.print(
+                    f"[dim]'{tool_name}' will be allowed in future sessions "
+                    f"(remove with /config permissions remove {tool_name}).[/dim]"
+                )
+            except OSError:
+                pass
             return True
         return answer in ("y", "yes")
 
     return confirm
+
+
+def _build_history() -> History:
+    """Return the prompt history, persisted between sessions when possible."""
+    try:
+        from kiwimatecoder.config import ensure_config_dir
+
+        return FileHistory(str(ensure_config_dir() / "history"))
+    except OSError:
+        # Unwritable home directory: keep history for this session only.
+        return InMemoryHistory()
+
+
+def _autosave(session: Session) -> None:
+    """Silently persist the session so ``--continue`` can pick it up."""
+    from kiwimatecoder.session import save_autosave
+
+    try:
+        path = save_autosave(session)
+    except OSError:
+        return
+    if path is not None:
+        console.print(
+            "[dim]Session saved — resume with "
+            "[bold]kiwimatecoder --continue[/bold].[/dim]"
+        )
 
 
 def run(session: Session) -> None:
@@ -441,7 +477,7 @@ def run(session: Session) -> None:
         event.current_buffer.insert_text("\n")
 
     pt_session: PromptSession[str] = PromptSession(
-        history=InMemoryHistory(),
+        history=_build_history(),
         completer=SlashCommandCompleter(session),
         complete_while_typing=True,
         complete_style=CompleteStyle.MULTI_COLUMN,
@@ -451,63 +487,66 @@ def run(session: Session) -> None:
     multiline_buffer: list[str] = []
     in_multiline_block = False
 
-    while True:
-        try:
-            prompt_str = (
-                HTML("<ansicyan>... </ansicyan>")
-                if in_multiline_block
-                else _prompt_text(session)
-            )
-            line = pt_session.prompt(prompt_str)
-        except KeyboardInterrupt:
-            # Ctrl-C at the prompt: clear the line / buffer, keep going.
-            multiline_buffer.clear()
-            in_multiline_block = False
-            continue
-        except EOFError:
-            # Ctrl-D: exit.
-            console.print("[dim]Goodbye![/dim]")
-            break
-
-        # Check for triple-quote multiline block mode
-        stripped = line.strip()
-        if not in_multiline_block and stripped.startswith('"""') and not (
-            len(stripped) > 3 and stripped.endswith('"""')
-        ):
-            in_multiline_block = True
-            multiline_buffer.append(stripped[3:])
-            continue
-
-        if in_multiline_block:
-            if stripped.endswith('"""'):
-                in_multiline_block = False
-                multiline_buffer.append(stripped[:-3])
-                line = "\n".join(multiline_buffer).strip()
+    try:
+        while True:
+            try:
+                prompt_str = (
+                    HTML("<ansicyan>... </ansicyan>")
+                    if in_multiline_block
+                    else _prompt_text(session)
+                )
+                line = pt_session.prompt(prompt_str)
+            except KeyboardInterrupt:
+                # Ctrl-C at the prompt: clear the line / buffer, keep going.
                 multiline_buffer.clear()
-            else:
-                multiline_buffer.append(line)
+                in_multiline_block = False
+                continue
+            except EOFError:
+                # Ctrl-D: exit.
+                console.print("[dim]Goodbye![/dim]")
+                break
+
+            # Check for triple-quote multiline block mode
+            stripped = line.strip()
+            if not in_multiline_block and stripped.startswith('"""') and not (
+                len(stripped) > 3 and stripped.endswith('"""')
+            ):
+                in_multiline_block = True
+                multiline_buffer.append(stripped[3:])
                 continue
 
-        line = line.strip()
-        if not line:
-            continue
+            if in_multiline_block:
+                if stripped.endswith('"""'):
+                    in_multiline_block = False
+                    multiline_buffer.append(stripped[:-3])
+                    line = "\n".join(multiline_buffer).strip()
+                    multiline_buffer.clear()
+                else:
+                    multiline_buffer.append(line)
+                    continue
 
-        if line.startswith("/"):
-            if (
-                dispatch(
-                    line,
-                    session,
-                    console,
-                    selector=_select_command_option,
-                    multi_selector=_select_command_options,
-                )
-                == CommandResult.EXIT
-            ):
-                break
-            continue
+            line = line.strip()
+            if not line:
+                continue
 
-        try:
-            asyncio.run(agent.run_turn(line))
-        except KeyboardInterrupt:
-            # Ctrl-C during a turn: cancel and return to the prompt.
-            console.print("\n[yellow]Interrupted.[/yellow]")
+            if line.startswith("/"):
+                if (
+                    dispatch(
+                        line,
+                        session,
+                        console,
+                        selector=_select_command_option,
+                        multi_selector=_select_command_options,
+                    )
+                    == CommandResult.EXIT
+                ):
+                    break
+                continue
+
+            try:
+                asyncio.run(agent.run_turn(line))
+            except KeyboardInterrupt:
+                # Ctrl-C during a turn: cancel and return to the prompt.
+                console.print("\n[yellow]Interrupted.[/yellow]")
+    finally:
+        _autosave(session)

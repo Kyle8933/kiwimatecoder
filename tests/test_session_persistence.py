@@ -4,9 +4,11 @@ from pathlib import Path
 
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import (
+    AUTOSAVE_NAME,
     Session,
     list_saved_sessions,
     load_session,
+    save_autosave,
     save_session,
 )
 
@@ -24,6 +26,9 @@ def test_session_serialization_roundtrip(tmp_path):
         context_files=["README.md"],
         active_provider_ids=["openai", "openrouter"],
         models={"openrouter": "anthropic/claude-sonnet-5"},
+        always_allowed={"run_bash"},
+        output_style="concise",
+        custom_system_prompt="Always use type hints.",
     )
 
     data = sess.to_dict()
@@ -40,6 +45,9 @@ def test_session_serialization_roundtrip(tmp_path):
     assert restored.context_files == ["README.md"]
     assert restored.active_provider_ids == ["openai", "openrouter"]
     assert restored.models == {"openrouter": "anthropic/claude-sonnet-5"}
+    assert restored.always_allowed == {"run_bash"}
+    assert restored.output_style == "concise"
+    assert restored.custom_system_prompt == "Always use type hints."
 
 
 def test_session_from_dict_seeds_roster_from_provider_id():
@@ -98,7 +106,7 @@ def test_set_active_providers_switches_model_when_primary_changes():
 
     assert sess.provider_id == "openai"
     assert sess.model != "my-custom-model"
-    assert not sess.is_always_allowed("run_bash")
+    assert sess.is_always_allowed("run_bash")
 
 
 def test_session_save_and_load(tmp_path, monkeypatch):
@@ -129,6 +137,88 @@ def test_session_save_and_load(tmp_path, monkeypatch):
     assert loaded.provider_id == "anthropic"
     assert loaded.model == "claude-sonnet-5"
     assert len(loaded.messages) == 1
+
+
+def test_autosave_skips_empty_session(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+
+    empty = Session(provider_id="openai", model="m", workspace_root=tmp_path)
+
+    assert save_autosave(empty) is None
+    assert list(sessions_dir.glob("*.json")) == []
+
+
+def test_autosave_roundtrip(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+
+    sess = Session(
+        provider_id="anthropic",
+        model="claude-sonnet-5",
+        workspace_root=tmp_path,
+        messages=[{"role": "user", "content": "remember this"}],
+    )
+
+    path = save_autosave(sess)
+    assert path is not None
+    assert path.name == f"{AUTOSAVE_NAME}.json"
+
+    loaded = load_session("last", workspace_root=tmp_path)
+    assert loaded.provider_id == "anthropic"
+    assert loaded.messages == sess.messages
+
+
+def test_load_last_falls_back_to_newest_session(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+
+    first = Session(
+        provider_id="openai",
+        model="gpt-5.6-sol",
+        workspace_root=tmp_path,
+        messages=[{"role": "user", "content": "first"}],
+    )
+    save_session(first, "older")
+    second = Session(
+        provider_id="anthropic",
+        model="claude-sonnet-5",
+        workspace_root=tmp_path,
+        messages=[{"role": "user", "content": "second"}],
+    )
+    save_session(second, "newer")
+
+    loaded = load_session("last", workspace_root=tmp_path)
+
+    assert loaded.provider_id == "anthropic"
+
+
+def test_load_last_prefers_autosave_file(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+
+    other = Session(
+        provider_id="openai",
+        model="gpt-5.6-sol",
+        workspace_root=tmp_path,
+        messages=[{"role": "user", "content": "other"}],
+    )
+    save_session(other, "newer")
+    autosave = Session(
+        provider_id="anthropic",
+        model="claude-sonnet-5",
+        workspace_root=tmp_path,
+        messages=[{"role": "user", "content": "auto"}],
+    )
+    save_session(autosave, AUTOSAVE_NAME)
+
+    loaded = load_session("last", workspace_root=tmp_path)
+
+    assert loaded.provider_id == "anthropic"
 
 
 def test_session_trim_history():

@@ -720,3 +720,95 @@ def test_config_provider_list_marks_local_kind(session):
     assert "Ollama (local)" in output
     assert "LM Studio (local)" in output
     assert "local" in output  # the type column
+
+
+def test_doctor_command_reports_diagnostics(session):
+    console = _console()
+
+    result = dispatch("/doctor", session, console)
+
+    assert result == CommandResult.CONTINUE
+    output = _output(console)
+    assert "diagnostics" in output.lower()
+    assert "openrouter" in output
+
+
+def test_config_permissions_list_and_remove(session):
+    config.persist_always_allowed_tool("run_bash")
+    session.allow_always("run_bash")
+    console = _console()
+
+    dispatch("/config permissions list", session, console)
+    assert "run_bash" in _output(console)
+
+    dispatch("/config permissions remove run_bash", session, console)
+    assert config.get_always_allowed_tools() == []
+    assert not session.is_always_allowed("run_bash")
+
+
+def test_config_permissions_clear(session):
+    config.persist_always_allowed_tool("run_bash")
+    session.allow_always("run_bash")
+    console = _console()
+
+    dispatch("/config permissions clear", session, console)
+
+    assert config.get_always_allowed_tools() == []
+    assert session.always_allowed == set()
+
+
+def test_config_sampling_set_show_reset(session):
+    console = _console()
+
+    dispatch("/config sampling set temperature=0.2 max_tokens=4096", session, console)
+    assert config.get_sampling() == {"temperature": 0.2, "max_tokens": 4096}
+
+    dispatch("/config sampling show", session, console)
+    assert "0.2" in _output(console)
+
+    dispatch("/config sampling reset", session, console)
+    assert config.get_sampling() == {}
+
+
+def test_config_sampling_rejects_bad_values(session):
+    console = _console()
+
+    dispatch("/config sampling set temperature=9", session, console)
+
+    output = _output(console)
+    assert "between 0 and 2" in output
+    assert config.get_sampling() == {}
+
+
+def test_config_style_updates_session(session):
+    console = _console()
+
+    dispatch("/config style set concise", session, console)
+
+    assert session.output_style == "concise"
+    assert config.get_output_style() == "concise"
+
+
+def test_config_style_rejects_unknown(session):
+    console = _console()
+
+    dispatch("/config style set fancy", session, console)
+
+    assert session.output_style == "default"
+    assert "Unknown output style" in _output(console)
+
+
+def test_config_prompt_set_show_clear(session):
+    console = _console()
+
+    dispatch("/config prompt set Always use type hints.", session, console)
+    assert session.custom_system_prompt == "Always use type hints."
+    assert config.get_system_prompt() == "Always use type hints."
+
+    dispatch("/config prompt", session, console)
+    assert "Always use type hints." in _output(console)
+
+    dispatch("/config prompt clear", session, console)
+    assert session.custom_system_prompt is None
+    assert config.get_system_prompt() is None
+

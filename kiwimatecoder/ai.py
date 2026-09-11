@@ -13,6 +13,7 @@ from typing import Any
 from rich.console import Console
 
 from kiwimatecoder.client import ProviderError, TextDelta, UnifiedClient
+from kiwimatecoder.config import get_sampling
 from kiwimatecoder.providers import ProviderConfig, default_provider
 
 console = Console()
@@ -32,7 +33,7 @@ async def stream_response(
     """Stream a single answer to the console."""
     provider = provider or default_provider()
     model = model or provider.default_model
-    client = UnifiedClient(provider, api_key)
+    client = UnifiedClient(provider, api_key, sampling=get_sampling())
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},

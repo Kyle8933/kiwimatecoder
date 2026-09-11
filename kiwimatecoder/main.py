@@ -17,25 +17,36 @@ from kiwimatecoder.catalog import probe, summarize_ids
 from kiwimatecoder.config import (
     add_provider,
     apply_model_filter,
+    clear_always_allowed_tools,
     describe_key,
     get_active_provider_ids,
+    get_always_allowed_tools,
     get_default_mode,
     get_key,
     get_model_catalog,
     get_model_filter,
+    get_output_style,
     get_provider_config,
+    get_sampling,
     get_selected_provider_id,
+    get_system_prompt,
     list_provider_configs,
     load_config,
+    project_config_path,
+    remove_always_allowed_tool,
     remove_key,
     remove_provider,
     reset_default_mode,
+    reset_sampling,
     resolve_default_model,
     set_default_mode,
     set_key,
     set_model_filter,
+    set_output_style,
+    set_sampling,
     set_selected_model,
     set_selected_provider,
+    set_system_prompt,
     update_provider,
 )
 from kiwimatecoder.permissions import PermissionMode
@@ -356,6 +367,157 @@ def models_clear(
     console.print(f"[green]✓ Cleared model visibility for {pid}.[/green]")
 
 
+# --- canonical `config permissions ...` -------------------------------------
+
+permissions_app = typer.Typer(help="Manage persisted 'always allow' tool approvals.")
+config_app.add_typer(permissions_app, name="permissions")
+
+
+@permissions_app.command("list")
+def permissions_list() -> None:
+    """List tools approved with 'always'."""
+    names = get_always_allowed_tools()
+    if not names:
+        console.print(
+            "[dim]No persisted tool approvals. Answer 'always' at an approval "
+            "prompt to add one.[/dim]"
+        )
+        return
+    table = Table(title="Always-allowed tools", show_header=True)
+    table.add_column("Tool", style="cyan")
+    for name in names:
+        table.add_row(name)
+    console.print(table)
+
+
+@permissions_app.command("remove")
+def permissions_remove(
+    tool: Annotated[str, typer.Argument(help="Tool name")],
+) -> None:
+    """Remove a persisted tool approval."""
+    if remove_always_allowed_tool(tool):
+        console.print(f"[green]✓ Removed persisted approval for {tool}.[/green]")
+    else:
+        console.print(f"[dim]No persisted approval for {tool}.[/dim]")
+
+
+@permissions_app.command("clear")
+def permissions_clear() -> None:
+    """Remove every persisted tool approval."""
+    count = clear_always_allowed_tools()
+    console.print(f"[green]✓ Cleared {count} persisted tool approval(s).[/green]")
+
+
+# --- canonical `config sampling ...` ----------------------------------------
+
+sampling_app = typer.Typer(help="Get or set sampling parameters.")
+config_app.add_typer(sampling_app, name="sampling")
+
+
+def _print_sampling(sampling: dict[str, object]) -> None:
+    if not sampling:
+        console.print("[dim]Sampling: provider defaults (nothing set).[/dim]")
+        return
+    console.print(
+        "Sampling: " + ", ".join(f"[cyan]{key}[/cyan]={value}" for key, value in sampling.items())
+    )
+
+
+@sampling_app.command("show")
+def sampling_show() -> None:
+    """Show the configured sampling parameters."""
+    _print_sampling(get_sampling())
+
+
+@sampling_app.command("set")
+def sampling_set(
+    values: Annotated[
+        list[str],
+        typer.Argument(help="key=value pairs, e.g. temperature=0.2 max_tokens=4096"),
+    ],
+) -> None:
+    """Set sampling parameters (temperature, top_p, max_tokens, reasoning_effort)."""
+    updates: dict[str, str] = {}
+    for item in values:
+        if "=" not in item:
+            console.print(f"[red]Expected key=value, got '{item}'.[/red]")
+            raise typer.Exit(1)
+        key, value = item.split("=", 1)
+        updates[key.strip()] = value.strip()
+    try:
+        effective = set_sampling(updates)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]✓ Sampling set:[/green] {effective}")
+
+
+@sampling_app.command("reset")
+def sampling_reset() -> None:
+    """Reset sampling parameters to provider defaults."""
+    reset_sampling()
+    console.print("[green]✓ Sampling reset to provider defaults.[/green]")
+
+
+# --- canonical `config style ...` and `config prompt ...` -------------------
+
+style_app = typer.Typer(help="Show or set the output style.")
+config_app.add_typer(style_app, name="style")
+
+
+@style_app.command("show")
+def style_show() -> None:
+    """Show the current output style."""
+    console.print(f"Output style: [cyan]{get_output_style()}[/cyan]")
+
+
+@style_app.command("set")
+def style_set(
+    style: Annotated[str, typer.Argument(help="default, concise, explanatory, or code")],
+) -> None:
+    """Set the output style."""
+    try:
+        effective = set_output_style(style)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]✓ Output style set to [cyan]{effective}[/cyan].[/green]")
+
+
+prompt_app = typer.Typer(help="Show, set, or clear a custom system prompt.")
+config_app.add_typer(prompt_app, name="prompt")
+
+
+@prompt_app.command("show")
+def prompt_show() -> None:
+    """Show the custom system-prompt addition."""
+    text = get_system_prompt()
+    if text:
+        console.print(text)
+    else:
+        console.print("[dim]No custom system prompt set.[/dim]")
+
+
+@prompt_app.command("set")
+def prompt_set(
+    text: Annotated[list[str], typer.Argument(help="Prompt text (quote it)")],
+) -> None:
+    """Set a custom system-prompt addition."""
+    joined = " ".join(text).strip()
+    if not joined:
+        console.print("[red]Prompt text is required.[/red]")
+        raise typer.Exit(1)
+    set_system_prompt(joined)
+    console.print("[green]✓ Custom system prompt saved.[/green]")
+
+
+@prompt_app.command("clear")
+def prompt_clear() -> None:
+    """Clear the custom system-prompt addition."""
+    set_system_prompt(None)
+    console.print("[green]✓ Custom system prompt cleared.[/green]")
+
+
 # --- `config show` ----------------------------------------------------------
 
 
@@ -377,6 +539,21 @@ def config_show() -> None:
         + f"Key: [cyan]{describe_key(provider_id)}[/cyan] ({provider.key_env})\n"
         + f"Model visibility: [cyan]{get_model_filter(provider_id)['mode']}[/cyan]"
     )
+    sampling = get_sampling(cfg)
+    sampling_line = (
+        ", ".join(f"{key}={value}" for key, value in sampling.items())
+        or "provider defaults"
+    )
+    console.print(
+        f"Output style: [cyan]{get_output_style(cfg)}[/cyan] "
+        + f"(custom prompt: {'set' if get_system_prompt(cfg) else 'none'})\n"
+        + f"Sampling: [cyan]{sampling_line}[/cyan]\n"
+        + "Always-allowed tools: "
+        + f"[cyan]{', '.join(get_always_allowed_tools(cfg)) or 'none'}[/cyan]"
+    )
+    project_path = project_config_path()
+    if project_path is not None:
+        console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
 
 
 def _print_models(provider: str | None, *, refresh: bool) -> None:
@@ -489,9 +666,17 @@ def main(
         typer.Option(
             "-resume",
             "--resume",
-            help="Resume a saved session by name or path.",
+            help="Resume a saved session by name or path ('last' = autosave).",
         ),
     ] = None,
+    continue_: Annotated[
+        bool,
+        typer.Option(
+            "--continue",
+            "-c",
+            help="Continue the most recent session (same as --resume last).",
+        ),
+    ] = False,
 ) -> None:
     """Launch the interactive session when run with no subcommand."""
     if version:
@@ -506,19 +691,26 @@ def main(
 
     from kiwimatecoder import repl
 
-    if resume:
+    session: Session | None = None
+    if resume or continue_:
         from kiwimatecoder.session import load_session
 
+        target = resume or "last"
         try:
-            session = load_session(resume, workspace_root=Path.cwd())
+            session = load_session(target, workspace_root=Path.cwd())
             console.print(
-                f"[bold green]Resumed session '{resume}'[/bold green] "
+                f"[bold green]Resumed session '{target}'[/bold green] "
                 + f"([dim]{len(session.messages)} messages, {session.total_tokens:,} tokens[/dim])"
             )
         except Exception as exc:
-            console.print(f"[red]Could not resume session '{resume}': {exc}[/red]")
-            raise typer.Exit(1)
-    else:
+            if resume:
+                console.print(f"[red]Could not resume session '{resume}': {exc}[/red]")
+                raise typer.Exit(1)
+            console.print(
+                f"[dim]No previous session to continue ({exc}). Starting fresh.[/dim]"
+            )
+
+    if session is None:
         cfg = load_config()
         provider_id = get_selected_provider_id(cfg)
         provider = get_provider_config(provider_id, cfg)
@@ -547,7 +739,14 @@ def main(
             mode=mode,
             workspace_root=Path.cwd(),
             active_provider_ids=get_active_provider_ids(cfg),
+            always_allowed=set(get_always_allowed_tools(cfg)),
+            output_style=get_output_style(cfg),
+            custom_system_prompt=get_system_prompt(cfg),
         )
+
+    # Persisted approvals are user preferences, so a resumed session picks up
+    # anything granted since its last save.
+    session.always_allowed.update(get_always_allowed_tools())
 
     repl.run(session)
 
@@ -749,6 +948,32 @@ def ask(
         )
     )
     console.print()
+
+
+@app.command("doctor")
+def doctor_cmd() -> None:
+    """Run environment, config, provider, and workspace diagnostics."""
+    from kiwimatecoder import diagnostics
+
+    cfg = load_config()
+    provider_id = get_selected_provider_id(cfg)
+    provider = get_provider_config(provider_id, cfg)
+    model = str(cfg.get("selected_model") or "") or resolve_default_model(provider)
+    try:
+        mode = PermissionMode.from_str(str(cfg.get("default_mode", "ask")))
+    except ValueError:
+        mode = PermissionMode.ASK
+    session = Session(
+        provider_id=provider_id,
+        model=model,
+        mode=mode,
+        workspace_root=Path.cwd(),
+        active_provider_ids=get_active_provider_ids(cfg),
+        always_allowed=set(get_always_allowed_tools(cfg)),
+        output_style=get_output_style(cfg),
+        custom_system_prompt=get_system_prompt(cfg),
+    )
+    diagnostics.render(diagnostics.run_checks(session), console)
 
 
 @app.command("update")

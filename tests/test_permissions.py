@@ -42,10 +42,11 @@ def test_always_allowed_skips_confirm(session):
     assert gate(write_file_tool, {"path": "x", "content": ""}, session, _never).allowed
 
 
-def test_provider_switch_clears_always_allowed(session):
+def test_provider_switch_keeps_always_allowed(session):
+    """Approvals are persisted user preferences, so they survive a switch."""
     session.allow_always("run_bash")
     session.set_provider("openai")
-    assert not session.is_always_allowed("run_bash")
+    assert session.is_always_allowed("run_bash")
     assert session.model == "gpt-5.6-sol"
 
 

@@ -18,23 +18,32 @@ from kiwimatecoder.catalog import ModelCatalog, summarize_ids
 from kiwimatecoder.config import (
     add_provider,
     apply_model_filter,
+    clear_always_allowed_tools,
     describe_key,
+    get_always_allowed_tools,
     get_default_mode,
     get_model_catalog,
     get_model_filter,
     get_provider_config,
+    get_sampling,
     list_provider_configs,
     list_visible_models,
+    project_config_path,
+    remove_always_allowed_tool,
     remove_key,
     remove_provider,
     reset_default_mode,
+    reset_sampling,
     search_model_catalog,
     set_active_providers,
     set_default_mode,
     set_key,
     set_model_filter,
+    set_output_style,
+    set_sampling,
     set_selected_model,
     set_selected_provider,
+    set_system_prompt,
     update_provider,
 )
 from kiwimatecoder.permissions import PermissionMode
@@ -709,6 +718,23 @@ def _config_help(console: Console) -> None:
             "/config models refresh",
             "Fetch the provider's live model list, dropping deprecated ids.",
         ),
+        (
+            "/config permissions [list|remove <tool>|clear]",
+            "Manage tools you approved with 'always'.",
+        ),
+        (
+            "/config sampling [show|set key=value ...|reset]",
+            "Get or set temperature, top_p, max_tokens, reasoning_effort.",
+        ),
+        (
+            "/config style [set <default|concise|explanatory|code>]",
+            "Show or set the output style.",
+        ),
+        (
+            "/config prompt [set <text>|clear]",
+            "Show, set, or clear a custom system-prompt addition.",
+        ),
+        ("/doctor", "Run environment, config, and provider diagnostics."),
     ]
     for command, description in rows:
         table.add_row(escape(command), description)
@@ -731,6 +757,20 @@ def _config_show(session: Session, console: Console) -> None:
     )
     if model_filter["models"]:
         console.print("Models: " + ", ".join(model_filter["models"]))
+    sampling = get_sampling()
+    sampling_line = (
+        ", ".join(f"{key}={value}" for key, value in sampling.items())
+        or "provider defaults"
+    )
+    console.print(
+        f"Output style: [cyan]{session.output_style}[/cyan]\n"
+        f"Sampling: [cyan]{sampling_line}[/cyan]\n"
+        f"Custom system prompt: [cyan]{'set' if session.custom_system_prompt else 'none'}[/cyan]\n"
+        f"Always-allowed tools: [cyan]{', '.join(sorted(session.always_allowed)) or 'none'}[/cyan]"
+    )
+    project_path = project_config_path()
+    if project_path is not None:
+        console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
 
 
 def _config_providers(
@@ -1127,6 +1167,165 @@ def _config_models(action_parts: list[str], session: Session, console: Console) 
     console.print("[yellow]Unknown models config action. Try /config help.[/yellow]")
 
 
+def _config_permissions(
+    action_parts: list[str], session: Session, console: Console
+) -> None:
+    action = action_parts[0].lower() if action_parts else "list"
+    rest = action_parts[1:]
+
+    if action in {"list", "ls", "show"}:
+        allowed = sorted(session.always_allowed)
+        if not allowed:
+            console.print(
+                "[dim]No persisted tool approvals. Answer 'always' at an "
+                "approval prompt to add one.[/dim]"
+            )
+            return
+        table = Table(title="Always-allowed tools", show_header=True)
+        table.add_column("Tool", style="cyan")
+        for name in allowed:
+            table.add_row(name)
+        console.print(table)
+        return
+
+    if action in {"remove", "rm", "delete", "unallow"}:
+        if not rest:
+            console.print("[yellow]Usage: /config permissions remove <tool>[/yellow]")
+            return
+        name = rest[0]
+        removed = remove_always_allowed_tool(name)
+        session.always_allowed.discard(name)
+        if removed:
+            console.print(f"[green]Removed persisted approval for {name}.[/green]")
+        else:
+            console.print(f"[dim]No persisted approval for {name}.[/dim]")
+        return
+
+    if action in {"clear", "reset"}:
+        count = clear_always_allowed_tools()
+        session.always_allowed.clear()
+        console.print(f"[green]Cleared {count} persisted tool approval(s).[/green]")
+        return
+
+    console.print(
+        "[yellow]Usage: /config permissions [list|remove <tool>|clear][/yellow]"
+    )
+
+
+def _config_sampling(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "ls"}:
+        sampling = get_sampling()
+        if not sampling:
+            console.print("[dim]Sampling: provider defaults (nothing set).[/dim]")
+            return
+        console.print(
+            "Sampling: "
+            + ", ".join(f"[cyan]{key}[/cyan]={value}" for key, value in sampling.items())
+        )
+        return
+
+    if action in {"set", "update"}:
+        if not rest:
+            console.print(
+                "[yellow]Usage: /config sampling set temperature=0.2 top_p=0.9 "
+                "max_tokens=4096 reasoning_effort=medium[/yellow]"
+            )
+            return
+        updates: dict[str, str] = {}
+        for item in rest:
+            if "=" not in item:
+                console.print(f"[red]Expected key=value, got '{item}'.[/red]")
+                return
+            key, value = item.split("=", 1)
+            updates[key.strip()] = value.strip()
+        try:
+            effective = set_sampling(updates)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            "[green]Sampling set:[/green] "
+            + ", ".join(f"{key}={value}" for key, value in effective.items())
+        )
+        return
+
+    if action in {"reset", "clear"}:
+        reset_sampling()
+        console.print("[green]Sampling reset to provider defaults.[/green]")
+        return
+
+    console.print(
+        "[yellow]Usage: /config sampling [show|set key=value ...|reset][/yellow]"
+    )
+
+
+def _config_style(action_parts: list[str], session: Session, console: Console) -> None:
+    from kiwimatecoder.config import OUTPUT_STYLES
+
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"set", "use"}:
+        if not rest:
+            console.print(
+                "[yellow]Usage: /config style set <"
+                + "|".join(OUTPUT_STYLES)
+                + ">[/yellow]"
+            )
+            return
+        try:
+            style = set_output_style(rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        session.output_style = style
+        console.print(f"[green]Output style set to {style}.[/green]")
+        return
+
+    console.print(
+        "Output style: "
+        + f"[cyan]{session.output_style}[/cyan] "
+        + f"(available: {', '.join(OUTPUT_STYLES)})"
+    )
+
+
+def _config_prompt(action_parts: list[str], session: Session, console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"set", "update"}:
+        text = " ".join(rest).strip()
+        if not text:
+            console.print("[yellow]Usage: /config prompt set <text>[/yellow]")
+            return
+        set_system_prompt(text)
+        session.custom_system_prompt = text
+        console.print("[green]Custom system prompt saved.[/green]")
+        return
+
+    if action in {"clear", "reset"}:
+        set_system_prompt(None)
+        session.custom_system_prompt = None
+        console.print("[green]Custom system prompt cleared.[/green]")
+        return
+
+    if session.custom_system_prompt:
+        console.print("[bold]Custom system prompt:[/bold]")
+        console.print(session.custom_system_prompt)
+    else:
+        console.print("[dim]No custom system prompt set.[/dim]")
+
+
+def _doctor(arg: str, session: Session, console: Console) -> str:
+    from kiwimatecoder import diagnostics
+
+    diagnostics.render(diagnostics.run_checks(session), console)
+    return CommandResult.CONTINUE
+
+
 def _config(arg: str, session: Session, console: Console,
             selector: CommandSelector | None = None,
             prompt_input: Callable[[str], str] | None = None) -> str:
@@ -1156,6 +1355,14 @@ def _config(arg: str, session: Session, console: Console,
         _config_models(rest, session, console)
     elif section == "mode":
         _config_mode(rest, session, console)
+    elif section in {"permissions", "perm"}:
+        _config_permissions(rest, session, console)
+    elif section == "sampling":
+        _config_sampling(rest, console)
+    elif section == "style":
+        _config_style(rest, session, console)
+    elif section == "prompt":
+        _config_prompt(rest, session, console)
     else:
         console.print("[yellow]Unknown config command. Try /config help.[/yellow]")
     return CommandResult.CONTINUE
@@ -1193,6 +1400,9 @@ def _config_interact(
             CommandOption("model", "Set or reset the default model"),
             CommandOption("models", "Manage model visibility / refresh catalog"),
             CommandOption("mode", "Set the default permission mode"),
+            CommandOption("permissions", "Manage tools approved with 'always'"),
+            CommandOption("sampling", "Set temperature/top_p/max_tokens"),
+            CommandOption("style", "Show or set the output style"),
             CommandOption("help", "Show all /config commands"),
         ),
     )
@@ -1221,24 +1431,50 @@ def _config_interact(
     if section in {"providers", "provider"}:
         _config_providers([], session, console)
         return CommandResult.CONTINUE
-    if section in {"model", "models", "mode", "help"}:
+    if section in {
+        "model",
+        "models",
+        "mode",
+        "help",
+        "permissions",
+        "sampling",
+        "style",
+    }:
         _config(section, session, console, selector, prompt_input)
         return CommandResult.CONTINUE
     return CommandResult.CONTINUE
 
 
 def _cost(arg: str, session: Session, console: Console) -> str:
+    from kiwimatecoder.pricing import estimate_cost, find_price
+
     total = session.prompt_tokens + session.completion_tokens
-    est_cost = (session.prompt_tokens * 0.0000025) + (session.completion_tokens * 0.00001)
+    is_local = session.provider.is_local
+    price = find_price(session.model, session.provider_id, is_local=is_local)
+    cost = estimate_cost(
+        session.prompt_tokens,
+        session.completion_tokens,
+        session.model,
+        session.provider_id,
+        is_local=is_local,
+    )
     table = Table(title="Session Token & Cost Usage", show_header=True)
     table.add_column("Metric", style="cyan")
     table.add_column("Value", justify="right")
+    table.add_row("Model", f"{session.provider_id}:{session.model}")
     table.add_row("Prompt Tokens", f"{session.prompt_tokens:,}")
     table.add_row("Completion Tokens", f"{session.completion_tokens:,}")
     table.add_row("Total Tokens", f"[bold]{total:,}[/bold]")
-    table.add_row("Estimated Cost (USD)", f"~${est_cost:.4f}")
+    if is_local:
+        table.add_row("Estimated Cost (USD)", "~$0.0000 [dim](local provider)[/dim]")
+    elif price is None:
+        table.add_row("Estimated Cost (USD)", "[dim]unknown model — no price entry[/dim]")
+    else:
+        cost_text = f"~${cost:.4f}" if cost is not None else "—"
+        rates = f"${price.input_per_mtok:g} in / ${price.output_per_mtok:g} out per Mtok"
+        table.add_row("Estimated Cost (USD)", f"{cost_text} [dim]({rates})[/dim]")
     table.add_row("Conversation History Messages", f"{len(session.messages)}")
-    table.add_row("Estimated Context Tokens", f"{session.estimated_history_tokens:,}")
+    table.add_row("Estimated Context Tokens", f"~{session.estimated_history_tokens:,}")
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -1270,6 +1506,10 @@ def _load(arg: str, session: Session, console: Console) -> str:
         session.context_files = loaded.context_files
         session.active_provider_ids = loaded.active_provider_ids
         session.models = loaded.models
+        session.always_allowed = set(loaded.always_allowed)
+        session.always_allowed.update(get_always_allowed_tools())
+        session.output_style = loaded.output_style
+        session.custom_system_prompt = loaded.custom_system_prompt
         console.print(
             f"[green]Loaded session [bold]{arg.strip()}[/bold]: "
             f"{len(session.messages)} messages, provider={session.provider_id}:{session.model}[/green]"
@@ -1318,6 +1558,7 @@ _COMMANDS = {
     "ctx": _context,
     "config": _config,
     "cost": _cost,
+    "doctor": _doctor,
     "save": _save,
     "load": _load,
     "sessions": _sessions,
@@ -1331,6 +1572,7 @@ _HELP_GROUPS = [
             ("/exit, /quit", "Leave the session."),
             ("/clear", "Clear the conversation history."),
             ("/cost", "Show token usage for this session."),
+            ("/doctor", "Run environment, config, and provider diagnostics."),
             ("/files", "List files changed this session."),
             ("/tools", "List available tools."),
             ("/save [name]", "Save the active session state."),
@@ -1395,6 +1637,7 @@ _COMMAND_DESCRIPTIONS = {
         "Show or change providers, API keys, model defaults, and model filters."
     ),
     "cost": "Show token usage for this session.",
+    "doctor": "Run environment, config, and provider diagnostics.",
     "save": "Save the current session to disk.",
     "load": "Load a saved session from disk.",
     "sessions": "List all saved sessions.",
@@ -1430,6 +1673,10 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "model": "Set or reset the default model.",
     "models": "Refresh the model catalog or manage allow/deny filters.",
     "mode": "Set or reset the default permission mode.",
+    "permissions": "List or remove tools approved with 'always'.",
+    "sampling": "Show, set, or reset sampling parameters.",
+    "style": "Show or set the output style.",
+    "prompt": "Show, set, or clear a custom system prompt.",
 }
 
 

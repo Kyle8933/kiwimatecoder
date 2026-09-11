@@ -38,7 +38,7 @@ class Agent:
         self.confirm = confirm
 
     def _client(self, provider_id: str | None = None) -> UnifiedClient:
-        from kiwimatecoder.config import get_key, get_provider_config
+        from kiwimatecoder.config import get_key, get_provider_config, get_sampling
 
         provider = get_provider_config(provider_id) if provider_id else self.session.provider
         key = get_key(provider.id)
@@ -48,7 +48,7 @@ class Agent:
                 + f"`config set-key --provider {provider.id} <KEY>` or the "
                 + f"{provider.key_env} environment variable."
             )
-        return UnifiedClient(provider, key or "")
+        return UnifiedClient(provider, key or "", sampling=get_sampling())
 
     def _request_messages(self) -> list[dict[str, Any]]:
         self.session.trim_history()

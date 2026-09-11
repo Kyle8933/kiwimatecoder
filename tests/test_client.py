@@ -87,3 +87,53 @@ def test_payload_omits_tool_choice_for_local_providers():
 
     cloud = UnifiedClient(REGISTRY["openai"], "sk-test")
     assert cloud._payload([], tools, "gpt-5.6-sol")["tool_choice"] == "auto"
+
+
+def test_payload_defaults_omit_sampling_params():
+    client = UnifiedClient(REGISTRY["openai"], "sk-test")
+
+    payload = client._payload([], None, "gpt-5.6-sol")
+
+    assert "temperature" not in payload
+    assert "top_p" not in payload
+    assert "max_tokens" not in payload
+    assert "reasoning_effort" not in payload
+
+
+def test_payload_applies_openai_sampling_params():
+    client = UnifiedClient(
+        REGISTRY["openai"],
+        "sk-test",
+        sampling={
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "max_tokens": 4096,
+            "reasoning_effort": "medium",
+        },
+    )
+
+    payload = client._payload([], None, "gpt-5.6-sol")
+
+    assert payload["temperature"] == 0.2
+    assert payload["top_p"] == 0.9
+    assert payload["max_tokens"] == 4096
+    assert payload["reasoning_effort"] == "medium"
+
+
+def test_payload_anthropic_uses_sampling_and_max_tokens_default():
+    default_client = UnifiedClient(REGISTRY["anthropic"], "sk-test")
+    default_payload = default_client._payload(
+        [{"role": "user", "content": "hi"}], None, "claude-sonnet-5"
+    )
+    assert default_payload["max_tokens"] == 8192
+
+    client = UnifiedClient(
+        REGISTRY["anthropic"],
+        "sk-test",
+        sampling={"max_tokens": 2048, "temperature": 0.1, "top_p": 0.8},
+    )
+    payload = client._payload([{"role": "user", "content": "hi"}], None, "claude-sonnet-5")
+
+    assert payload["max_tokens"] == 2048
+    assert payload["temperature"] == 0.1
+    assert payload["top_p"] == 0.8

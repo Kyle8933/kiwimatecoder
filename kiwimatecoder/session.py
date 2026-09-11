@@ -15,6 +15,7 @@ from kiwimatecoder.config import (
     resolve_default_model,
 )
 from kiwimatecoder.permissions import PermissionMode
+from kiwimatecoder.pricing import estimate_messages_tokens
 from kiwimatecoder.providers import ProviderConfig
 
 
@@ -35,6 +36,9 @@ class Session:
     active_provider_ids: list[str] = field(default_factory=list)
     # Per-provider model overrides; empty value means "use the provider default".
     models: dict[str, str] = field(default_factory=dict)
+    # Output style name and a user-supplied system-prompt addition.
+    output_style: str = "default"
+    custom_system_prompt: str | None = None
 
     @property
     def provider(self) -> ProviderConfig:
@@ -82,9 +86,7 @@ class Session:
 
     @property
     def estimated_history_tokens(self) -> int:
-        return sum(
-            len(str(m.get("content") or "")) // 4 + 10 for m in self.messages
-        )
+        return estimate_messages_tokens(self.messages)
 
     def set_provider(self, provider_id: str, model: str | None = None) -> None:
         """Switch provider; reset to the provider default model unless given.
@@ -95,8 +97,8 @@ class Session:
         provider = get_provider_config(provider_id)
         self.provider_id = provider_id
         self.model = model or resolve_default_model(provider)
-        # Tool/command approvals don't carry across providers.
-        self.always_allowed.clear()
+        # Tool approvals are persisted user preferences, so they survive both
+        # provider switches and restarts.
 
     def set_active_providers(self, provider_ids: list[str]) -> None:
         """Set the active-provider roster; the first id becomes the primary.
@@ -203,9 +205,7 @@ class Session:
         # Drop oldest intermediate turns starting from index 1
         while len(turns) > 2 and current_tokens > max_tokens:
             dropped_turn = turns.pop(1)
-            dropped_tokens = sum(
-                len(str(m.get("content") or "")) // 4 + 10 for m in dropped_turn
-            )
+            dropped_tokens = estimate_messages_tokens(dropped_turn)
             current_tokens -= dropped_tokens
 
         new_messages: list[dict[str, Any]] = []
@@ -226,8 +226,11 @@ class Session:
             "completion_tokens": self.completion_tokens,
             "touched_files": self.touched_files,
             "context_files": self.context_files,
+            "always_allowed": sorted(self.always_allowed),
             "active_provider_ids": self.active_provider_ids,
             "models": self.models,
+            "output_style": self.output_style,
+            "custom_system_prompt": self.custom_system_prompt,
         }
 
     @classmethod
@@ -248,10 +251,19 @@ class Session:
             completion_tokens=int(data.get("completion_tokens", 0)),
             touched_files=list(data.get("touched_files", [])),
             context_files=list(data.get("context_files", [])),
+            always_allowed={
+                str(name) for name in (data.get("always_allowed") or []) if str(name)
+            },
             active_provider_ids=active_provider_ids or [provider_id],
             models={
                 str(k): str(v) for k, v in (data.get("models") or {}).items()
             },
+            output_style=str(data.get("output_style") or "default"),
+            custom_system_prompt=(
+                str(data["custom_system_prompt"])
+                if data.get("custom_system_prompt")
+                else None
+            ),
         )
 
 
@@ -259,6 +271,11 @@ def _sessions_dir() -> Path:
     s_dir = ensure_config_dir() / "sessions"
     s_dir.mkdir(mode=0o700, exist_ok=True)
     return s_dir
+
+
+# Name used by the implicit end-of-session autosave. ``--continue`` and
+# ``/load last`` resolve to it (or to the newest saved session when it is gone).
+AUTOSAVE_NAME = "last"
 
 
 def save_session(session: Session, name: str | None = None) -> Path:
@@ -277,11 +294,21 @@ def save_session(session: Session, name: str | None = None) -> Path:
 
 
 def load_session(name_or_path: str, workspace_root: Path | None = None) -> Session:
-    """Load session state from name or path."""
+    """Load session state from name or path.
+
+    ``"last"``/``"latest"`` resolve to the end-of-session autosave, falling
+    back to the newest saved session when that file is missing.
+    """
     target = Path(name_or_path)
     if not target.is_file():
         cleaned = name_or_path if name_or_path.endswith(".json") else f"{name_or_path}.json"
         target = _sessions_dir() / cleaned
+        if (
+            not target.is_file()
+            and name_or_path.lower() in {AUTOSAVE_NAME, "latest"}
+            and (latest := latest_saved_session())
+        ):
+            target = _sessions_dir() / latest
     if not target.is_file():
         raise FileNotFoundError(f"Session '{name_or_path}' not found.")
 
@@ -290,6 +317,26 @@ def load_session(name_or_path: str, workspace_root: Path | None = None) -> Sessi
     if workspace_root is not None:
         sess.workspace_root = workspace_root
     return sess
+
+
+def save_autosave(session: Session) -> Path | None:
+    """Save the session as the implicit ``last`` autosave.
+
+    Empty sessions are not written so ``--continue`` keeps pointing at the most
+    recent session that actually had a conversation. Returns the written path,
+    or None when nothing was saved.
+    """
+    if not session.messages:
+        return None
+    return save_session(session, AUTOSAVE_NAME)
+
+
+def latest_saved_session() -> str | None:
+    """Return the file name of the most recently saved session, if any."""
+    saved = list_saved_sessions()
+    if not saved:
+        return None
+    return str(saved[0]["file"])
 
 
 def list_saved_sessions() -> list[dict[str, Any]]:

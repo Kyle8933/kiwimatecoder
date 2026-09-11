@@ -1,10 +1,15 @@
+from pathlib import Path
+
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.input import create_pipe_input
 
+from kiwimatecoder import config
 from kiwimatecoder.commands import CommandOption, MultiSelectionPrompt, SelectionPrompt
 from kiwimatecoder.repl import (
     SlashCommandCompleter,
+    _build_history,
     _select_command_option,
     _select_command_options,
     checkbox_choice,
@@ -134,3 +139,12 @@ def test_checkbox_choice_keyboard_interaction():
             input=pipe_input,
         )
         assert result == ["openrouter", "openai"]
+
+
+def test_build_history_uses_config_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+
+    history = _build_history()
+
+    assert isinstance(history, FileHistory)
+    assert Path(history.filename) == tmp_path / "history"
