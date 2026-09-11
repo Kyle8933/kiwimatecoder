@@ -20,6 +20,7 @@ from kiwimatecoder.repl import (
     _build_history,
     _make_confirm,
     _process_deferred_commands,
+    _resolve_slash_line,
     _route_steering_line,
     _select_command_option,
     _select_command_options,
@@ -287,6 +288,40 @@ def test_route_steering_line_defers_slash_commands(session):
     assert _route_steering_line(session, "/undo") == "deferred"
     assert list(session.deferred_commands) == ["/undo"]
     assert not session.steering
+
+
+def test_route_steering_line_steers_template_commands(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    commands_dir = session.workspace_root / ".kiwimatecoder" / "commands"
+    commands_dir.mkdir(parents=True)
+    (commands_dir / "review.md").write_text("Review $ARGUMENTS")
+
+    assert _route_steering_line(session, "/review now") == "steered"
+    assert list(session.steering) == ["Review now"]
+    assert not session.deferred_commands
+
+
+def test_resolve_slash_line_returns_rendered_template(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    commands_dir = session.workspace_root / ".kiwimatecoder" / "commands"
+    commands_dir.mkdir(parents=True)
+    (commands_dir / "review.md").write_text("Review $ARGUMENTS carefully.")
+
+    assert _resolve_slash_line("/review src/main.py", session) == (
+        "template",
+        "Review src/main.py carefully.",
+    )
+
+
+def test_resolve_slash_line_leaves_builtins_and_unknown_alone(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    commands_dir = session.workspace_root / ".kiwimatecoder" / "commands"
+    commands_dir.mkdir(parents=True)
+    (commands_dir / "undo.md").write_text("shadow the builtin")
+
+    assert _resolve_slash_line("/undo", session) is None
+    assert _resolve_slash_line("/no-such-command", session) is None
+    assert _resolve_slash_line("plain text", session) is None
 
 
 async def test_deferred_commands_run_fifo(session, monkeypatch):

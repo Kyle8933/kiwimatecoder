@@ -972,3 +972,45 @@ def test_config_budget_set_show_clear(session):
 
     dispatch("/config budget clear", session, console)
     assert config.get_budget() == {}
+
+
+# ---------------------------------------------------------------------------
+# Custom prompt templates
+# ---------------------------------------------------------------------------
+
+
+def _write_template(session, name, text):
+    commands_dir = session.workspace_root / ".kiwimatecoder" / "commands"
+    commands_dir.mkdir(parents=True, exist_ok=True)
+    (commands_dir / f"{name}.md").write_text(text)
+
+
+def test_templates_command_lists_custom_templates(session):
+    _write_template(session, "review", "# Review the diff\nCheck for bugs.")
+    console = _console()
+
+    assert dispatch("/templates", session, console) == CommandResult.CONTINUE
+
+    output = _output(console)
+    assert "/review" in output
+    assert "Review the diff" in output
+    assert ".md" in output
+
+
+def test_templates_command_without_templates(session):
+    console = _console()
+
+    dispatch("/templates", session, console)
+
+    assert "No custom command templates" in _output(console)
+
+
+def test_help_includes_custom_commands_group(session):
+    _write_template(session, "review", "# Review the change")
+    console = _console()
+
+    dispatch("/help", session, console)
+
+    output = _output(console)
+    assert "Custom commands" in output
+    assert "/review" in output

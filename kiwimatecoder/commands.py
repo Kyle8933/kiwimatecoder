@@ -66,6 +66,7 @@ from kiwimatecoder.session import (
     load_session,
     save_session,
 )
+from kiwimatecoder.templates import discover_templates
 from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_workspace
 
 
@@ -176,10 +177,46 @@ def _help(arg: str, session: Session, console: Console) -> str:
             # tags and would drop them from the table.
             table.add_row(escape(cmd), desc)
         console.print(table)
+    _print_custom_commands(session, console)
     console.print(
         "[dim]Tip: no API key yet? From the shell run "
         "`kiwimatecoder setup`.[/dim]"
     )
+    return CommandResult.CONTINUE
+
+
+def _print_custom_commands(session: Session, console: Console) -> None:
+    """Append the discovered prompt templates as a help group."""
+    templates = discover_templates(session.workspace_root)
+    if not templates:
+        return
+    table = Table(title="Custom commands", show_header=True, expand=False)
+    table.add_column("Command", style="cyan", no_wrap=True)
+    table.add_column("Description")
+    for name, template in templates.items():
+        table.add_row(escape(f"/{name}"), escape(template.description))
+    console.print(table)
+
+
+def _templates(arg: str, session: Session, console: Console) -> str:
+    templates = discover_templates(session.workspace_root)
+    if not templates:
+        console.print(
+            "[dim]No custom command templates. Add .md files to "
+            ".kiwimatecoder/commands/ or ~/.kiwimatecoder/commands/.[/dim]"
+        )
+        return CommandResult.CONTINUE
+    table = Table(title="Custom command templates", show_header=True)
+    table.add_column("Command", style="cyan", no_wrap=True)
+    table.add_column("Description")
+    table.add_column("Path", style="dim", overflow="fold")
+    for name, template in templates.items():
+        table.add_row(
+            escape(f"/{name}"),
+            escape(template.description),
+            escape(str(template.path)),
+        )
+    console.print(table)
     return CommandResult.CONTINUE
 
 
@@ -1969,7 +2006,14 @@ _COMMANDS = {
     "checkpoints": _checkpoints,
     "todos": _todos,
     "compact": _compact,
+    "templates": _templates,
 }
+
+
+def has_command(name: str) -> bool:
+    """Whether ``name`` (with or without a leading slash) is registered."""
+    return name.strip().lstrip("/").lower() in _COMMANDS
+
 
 _HELP_GROUPS = [
     (
@@ -1991,6 +2035,7 @@ _HELP_GROUPS = [
             ("/checkpoints", "List captured file checkpoints."),
             ("/todos", "Show the agent's task list."),
             ("/compact [budget]", "Trim older history to fit a token budget."),
+            ("/templates", "List custom prompt templates."),
         ],
     ),
     (
@@ -2067,6 +2112,7 @@ _COMMAND_DESCRIPTIONS = {
     "checkpoints": "List captured file checkpoints.",
     "todos": "Show the agent's task list.",
     "compact": "Trim older history to fit a token budget.",
+    "templates": "List custom prompt templates.",
 }
 
 _CONTEXT_ACTION_DESCRIPTIONS = {

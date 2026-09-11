@@ -61,6 +61,7 @@ from kiwimatecoder.commands import (
     MultiSelectionPrompt,
     SelectionPrompt,
     dispatch,
+    has_command,
     slash_argument_completions,
     slash_command_completions,
 )
@@ -68,6 +69,7 @@ from kiwimatecoder.hunks import Hunk, parse_hunk_selection, split_hunks
 from kiwimatecoder.permissions import ApprovalResult, ConfirmFn
 from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
+from kiwimatecoder.templates import find_template, render_template
 
 console = Console()
 
@@ -550,17 +552,42 @@ _STEERING_PROMPT = HTML(
 )
 
 
+def _resolve_slash_line(line: str, session: Session) -> tuple[str, str] | None:
+    """Resolve a line to a custom-template prompt, if one matches.
+
+    Registered slash commands always win. Returns ``("template", prompt)`` for
+    a discovered template, or None when the line is a command or unknown.
+    """
+    text = line.strip()
+    if not text.startswith("/"):
+        return None
+    parts = text[1:].strip().split(maxsplit=1)
+    name = parts[0].lower() if parts else ""
+    if not name or has_command(name):
+        return None
+    template = find_template(name, session.workspace_root)
+    if template is None:
+        return None
+    arguments = parts[1] if len(parts) > 1 else ""
+    return ("template", render_template(template.body, arguments))
+
+
 def _route_steering_line(session: Session, line: str) -> str:
     """Route a line typed while a turn is running.
 
     Blank input is ignored, slash commands are queued to run after the turn,
-    and anything else is queued as steering for the agent. Returns one of
-    ``"steered"``, ``"deferred"``, or ``"ignored"``.
+    custom template commands are steered like normal text, and anything else is
+    queued as steering for the agent. Returns one of ``"steered"``,
+    ``"deferred"``, or ``"ignored"``.
     """
     text = line.strip()
     if not text:
         return "ignored"
     if text.startswith("/"):
+        resolved = _resolve_slash_line(text, session)
+        if resolved is not None:
+            session.steering.append(resolved[1])
+            return "steered"
         session.deferred_commands.append(text)
         console.print("[dim]Command queued; it will run after this turn.[/dim]")
         return "deferred"
@@ -779,6 +806,14 @@ async def _run_interactive(
                 continue
 
             if line.startswith("/"):
+                resolved = _resolve_slash_line(line, session)
+                if resolved is not None:
+                    # A custom template runs as a normal agent turn.
+                    if await _run_turn_with_steering(
+                        agent, pt_session, session, resolved[1]
+                    ):
+                        break
+                    continue
                 if await _dispatch_command(line, session) == CommandResult.EXIT:
                     break
                 continue
