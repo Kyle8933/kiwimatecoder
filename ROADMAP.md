@@ -27,8 +27,8 @@ Goal: nothing users touch gets lost, config is future-proof, and docs are accura
 Goal: users can let the agent edit freely because every action is undoable,
 reviewable, and bounded.
 
-- [ ] 1.1 Session store v2: versioned format, fork/branch, export/import (M)
-- [ ] 1.2 Checkpoints + `/undo` + `/rewind` (L; depends 1.1)
+- [x] 1.1 Session store v2: versioned format, fork/branch, export/import (M)
+- [x] 1.2 Checkpoints + `/undo` + `/rewind` (L; depends 1.1)
 - [ ] 1.3 Command allow/deny rules, e.g. deny `rm -rf` (M; depends 0.5, 0.6)
 - [ ] 1.4 Hunk-level diff accept/reject in approvals (M)
 - [ ] 1.5 Secrets scanning/redaction in context and logs (M)

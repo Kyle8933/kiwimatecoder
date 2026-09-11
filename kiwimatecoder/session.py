@@ -5,10 +5,12 @@ from __future__ import annotations
 import datetime
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kiwimatecoder.checkpoints import Checkpoint, CheckpointStore
 from kiwimatecoder.config import (
     ensure_config_dir,
     get_provider_config,
@@ -17,6 +19,8 @@ from kiwimatecoder.config import (
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.pricing import estimate_messages_tokens
 from kiwimatecoder.providers import ProviderConfig
+
+SESSION_FORMAT_VERSION = 2
 
 
 @dataclass
@@ -39,6 +43,23 @@ class Session:
     # Output style name and a user-supplied system-prompt addition.
     output_style: str = "default"
     custom_system_prompt: str | None = None
+    # Command allow/deny regexes (see permissions.gate).
+    command_rules: dict[str, list[str]] = field(default_factory=dict)
+    # Show actions without running them when True.
+    dry_run: bool = False
+    # Whether reads outside the workspace are permitted.
+    trusted_workspace: bool = False
+    # Agent-maintained task list.
+    todos: list[dict[str, Any]] = field(default_factory=list)
+    # File snapshots for /undo (in-memory; cleared when the process exits).
+    checkpoints: list[Checkpoint] = field(default_factory=list)
+    checkpoint_store: CheckpointStore | None = field(default=None, repr=False)
+    # Injected by the REPL so the ask_user tool can prompt interactively.
+    ask_user: Callable[[str, list[str]], str] | None = field(default=None, repr=False)
+
+    @property
+    def format_version(self) -> int:
+        return SESSION_FORMAT_VERSION
 
     @property
     def provider(self) -> ProviderConfig:
@@ -127,6 +148,33 @@ class Session:
     def record_touched(self, path: str) -> None:
         if path not in self.touched_files:
             self.touched_files.append(path)
+
+    def checkpoint(self, paths: list[str], label: str) -> Checkpoint | None:
+        """Snapshot ``paths`` before a mutation so it can be undone."""
+        if self.checkpoint_store is None:
+            self.checkpoint_store = CheckpointStore()
+        try:
+            captured = self.checkpoint_store.capture(self.workspace_root, paths, label)
+        except OSError:
+            return None
+        self.checkpoints.append(captured)
+        return captured
+
+    def undo_checkpoints(self, count: int = 1) -> list[Checkpoint]:
+        """Restore the most recent ``count`` checkpoints and drop them.
+
+        Snapshots are restored newest-first so the oldest selected checkpoint
+        wins, which rewinds the workspace to just before that action.
+        """
+        if not self.checkpoints:
+            return []
+        count = max(1, min(count, len(self.checkpoints)))
+        selected = self.checkpoints[-count:]
+        if self.checkpoint_store is not None:
+            for item in reversed(selected):
+                self.checkpoint_store.restore(self.workspace_root, item)
+        self.checkpoints = self.checkpoints[: len(self.checkpoints) - count]
+        return selected
 
     def add_context_file(self, path: str) -> bool:
         """Track a workspace-relative file as pinned context.
@@ -217,6 +265,7 @@ class Session:
     def to_dict(self) -> dict[str, Any]:
         """Serialize session state for persistence."""
         return {
+            "format_version": SESSION_FORMAT_VERSION,
             "provider_id": self.provider_id,
             "model": self.model,
             "mode": self.mode.value,
@@ -231,6 +280,10 @@ class Session:
             "models": self.models,
             "output_style": self.output_style,
             "custom_system_prompt": self.custom_system_prompt,
+            "command_rules": self.command_rules,
+            "dry_run": self.dry_run,
+            "trusted_workspace": self.trusted_workspace,
+            "todos": self.todos,
         }
 
     @classmethod
@@ -264,6 +317,17 @@ class Session:
                 if data.get("custom_system_prompt")
                 else None
             ),
+            command_rules={
+                str(kind): [str(pattern) for pattern in (patterns or []) if str(pattern)]
+                for kind, patterns in (data.get("command_rules") or {}).items()
+            },
+            dry_run=bool(data.get("dry_run", False)),
+            trusted_workspace=bool(data.get("trusted_workspace", False)),
+            todos=[
+                dict(todo)
+                for todo in (data.get("todos") or [])
+                if isinstance(todo, dict)
+            ],
         )
 
 
@@ -337,6 +401,55 @@ def latest_saved_session() -> str | None:
     if not saved:
         return None
     return str(saved[0]["file"])
+
+
+def fork_session(session: Session, name: str | None = None) -> Path:
+    """Persist an independent copy of ``session`` under a new name."""
+    if not name:
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = f"fork_{stamp}"
+    return save_session(session, name)
+
+
+def export_session_markdown(session: Session, max_tool_chars: int = 2000) -> str:
+    """Render the conversation as a Markdown transcript."""
+    lines = [
+        "# KiwiMateCoder session",
+        "",
+        f"- Provider: `{session.provider_id}`",
+        f"- Model: `{session.model}`",
+        f"- Mode: `{session.mode.value}`",
+        f"- Messages: {len(session.messages)}",
+        f"- Tokens: {session.total_tokens:,}",
+        "",
+    ]
+    for message in session.messages:
+        role = str(message.get("role") or "?")
+        content = message.get("content")
+        if isinstance(content, list):
+            text = "\n".join(str(block) for block in content)
+        else:
+            text = str(content or "")
+        if role == "tool":
+            clipped = text[:max_tool_chars]
+            if len(text) > max_tool_chars:
+                clipped += f"\n\n[truncated {len(text) - max_tool_chars} chars]"
+            lines.extend(["## Tool result", "", "```text", clipped, "```", ""])
+            continue
+        lines.extend([f"## {role.capitalize()}", "", text, ""])
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            lines.extend(
+                [
+                    f"- Tool call `{function.get('name', '?')}`:",
+                    "",
+                    "```json",
+                    str(function.get("arguments") or "{}"),
+                    "```",
+                    "",
+                ]
+            )
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def list_saved_sessions() -> list[dict[str, Any]]:

@@ -812,3 +812,58 @@ def test_config_prompt_set_show_clear(session):
     assert session.custom_system_prompt is None
     assert config.get_system_prompt() is None
 
+
+def test_undo_command_restores_file(session):
+    target = session.workspace_root / "a.txt"
+    target.write_text("v0")
+    session.checkpoint(["a.txt"], "edit_file a.txt")
+    target.write_text("v1")
+    console = _console()
+
+    result = dispatch("/undo", session, console)
+
+    assert result == CommandResult.CONTINUE
+    assert target.read_text() == "v0"
+    assert "a.txt" in _output(console)
+
+
+def test_undo_command_without_checkpoints(session):
+    console = _console()
+
+    dispatch("/undo", session, console)
+
+    assert "No checkpoints" in _output(console)
+
+
+def test_checkpoints_command_lists(session):
+    (session.workspace_root / "a.txt").write_text("x")
+    session.checkpoint(["a.txt"], "edit_file a.txt")
+    console = _console()
+
+    dispatch("/checkpoints", session, console)
+
+    output = _output(console)
+    assert "edit_file a.txt" in output
+    assert "Checkpoints" in output
+
+
+def test_export_command_writes_markdown(session):
+    session.messages.append({"role": "user", "content": "hello"})
+    console = _console()
+
+    dispatch("/export notes.md", session, console)
+
+    destination = session.workspace_root / "notes.md"
+    assert destination.is_file()
+    assert "hello" in destination.read_text()
+
+
+def test_fork_command_saves_copy(session):
+    session.messages.append({"role": "user", "content": "branch me"})
+    console = _console()
+
+    dispatch("/fork mybranch", session, console)
+
+    assert config.CONFIG_DIR.joinpath("sessions", "mybranch.json").is_file()
+    assert "mybranch" in _output(console)
+

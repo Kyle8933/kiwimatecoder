@@ -212,6 +212,11 @@ class Agent:
             self._append_result(call.id, decision.reason)
             return
 
+        if call.name in ("write_file", "edit_file"):
+            path = str(args.get("path") or "").strip()
+            if path:
+                self.session.checkpoint([path], f"{call.name} {path}")
+
         t0 = time.perf_counter()
         try:
             with self.console.status(f"{summary}…"):

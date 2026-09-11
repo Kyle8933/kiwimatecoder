@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import shlex
 import time
 from collections.abc import Callable, Sequence
@@ -50,6 +51,8 @@ from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY, ProviderConfig
 from kiwimatecoder.session import (
     Session,
+    export_session_markdown,
+    fork_session,
     list_saved_sessions,
     load_session,
     save_session,
@@ -1544,6 +1547,88 @@ def _sessions(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
+def _fork(arg: str, session: Session, console: Console) -> str:
+    try:
+        path = fork_session(session, arg.strip() or None)
+    except Exception as exc:
+        console.print(f"[red]Failed to fork session: {exc}[/red]")
+        return CommandResult.CONTINUE
+    console.print(
+        f"[green]Forked session to [bold]{path.name}[/bold][/green] "
+        f"({len(session.messages)} messages)."
+    )
+    return CommandResult.CONTINUE
+
+
+def _export(arg: str, session: Session, console: Console) -> str:
+    if arg.strip():
+        candidate = Path(arg.strip()).expanduser()
+        destination = (
+            candidate
+            if candidate.is_absolute()
+            else session.workspace_root / candidate
+        )
+    else:
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        destination = session.workspace_root / f"session_{stamp}.md"
+    try:
+        destination.write_text(
+            export_session_markdown(session), encoding="utf-8"
+        )
+    except OSError as exc:
+        console.print(f"[red]Failed to export session: {exc}[/red]")
+        return CommandResult.CONTINUE
+    console.print(f"[green]Exported session to [bold]{destination}[/bold].[/green]")
+    return CommandResult.CONTINUE
+
+
+def _undo(arg: str, session: Session, console: Console) -> str:
+    if not session.checkpoints:
+        console.print(
+            "[dim]No checkpoints yet. File edits are checkpointed as they run.[/dim]"
+        )
+        return CommandResult.CONTINUE
+    count = 1
+    token = arg.strip()
+    if token:
+        try:
+            count = int(token)
+        except ValueError:
+            console.print("[yellow]Usage: /undo [count][/yellow]")
+            return CommandResult.CONTINUE
+    restored = session.undo_checkpoints(count)
+    if not restored:
+        console.print("[dim]Nothing to undo.[/dim]")
+        return CommandResult.CONTINUE
+    for item in restored:
+        console.print(f"[green]Undid[/green] {item.label} [dim](#{item.id})[/dim]")
+    paths = sorted({path for item in restored for path in item.paths})
+    if paths:
+        console.print("[dim]Restored:[/dim] " + ", ".join(paths))
+    return CommandResult.CONTINUE
+
+
+def _checkpoints(arg: str, session: Session, console: Console) -> str:
+    if not session.checkpoints:
+        console.print("[dim]No checkpoints captured this session.[/dim]")
+        return CommandResult.CONTINUE
+    table = Table(title="Checkpoints", show_header=True)
+    table.add_column("#", style="cyan", justify="right")
+    table.add_column("Action")
+    table.add_column("Files")
+    table.add_column("Captured", style="dim")
+    for item in session.checkpoints:
+        table.add_row(
+            str(item.id),
+            item.label,
+            ", ".join(item.paths) or "-",
+            item.created_at.split(".")[0].replace("T", " "),
+        )
+    console.print(table)
+    console.print("[dim]Use /undo [count] to restore.[/dim]")
+    return CommandResult.CONTINUE
+
+
 _COMMANDS = {
     "help": _help,
     "exit": _exit,
@@ -1562,6 +1647,11 @@ _COMMANDS = {
     "save": _save,
     "load": _load,
     "sessions": _sessions,
+    "fork": _fork,
+    "export": _export,
+    "undo": _undo,
+    "rewind": _undo,
+    "checkpoints": _checkpoints,
 }
 
 _HELP_GROUPS = [
@@ -1578,6 +1668,10 @@ _HELP_GROUPS = [
             ("/save [name]", "Save the active session state."),
             ("/load <name>", "Load a previously saved session."),
             ("/sessions", "List all saved sessions."),
+            ("/fork [name]", "Save an independent copy of this session."),
+            ("/export [path]", "Export the conversation as Markdown."),
+            ("/undo [count]", "Restore files changed by recent tool actions."),
+            ("/checkpoints", "List captured file checkpoints."),
         ],
     ),
     (
@@ -1641,6 +1735,11 @@ _COMMAND_DESCRIPTIONS = {
     "save": "Save the current session to disk.",
     "load": "Load a saved session from disk.",
     "sessions": "List all saved sessions.",
+    "fork": "Save an independent copy of this session.",
+    "export": "Export the conversation as Markdown.",
+    "undo": "Restore files changed by recent tool actions.",
+    "rewind": "Alias for /undo.",
+    "checkpoints": "List captured file checkpoints.",
 }
 
 _CONTEXT_ACTION_DESCRIPTIONS = {
