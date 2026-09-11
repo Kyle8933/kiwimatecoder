@@ -21,6 +21,7 @@ from kiwimatecoder.config import (
     add_command_rule,
     add_provider,
     apply_model_filter,
+    apply_profile,
     clear_always_allowed_tools,
     clear_budget,
     clear_command_rules,
@@ -32,6 +33,8 @@ from kiwimatecoder.config import (
     get_mcp_servers,
     get_model_catalog,
     get_model_filter,
+    get_profile,
+    get_profiles,
     get_provider_config,
     get_sampling,
     list_provider_configs,
@@ -40,9 +43,11 @@ from kiwimatecoder.config import (
     remove_always_allowed_tool,
     remove_command_rule,
     remove_key,
+    remove_profile,
     remove_provider,
     reset_default_mode,
     reset_sampling,
+    save_profile,
     search_model_catalog,
     set_active_providers,
     set_budget,
@@ -62,6 +67,7 @@ from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY, ProviderConfig
 from kiwimatecoder.session import (
     Session,
+    apply_session_profile,
     export_session_markdown,
     fork_session,
     list_saved_sessions,
@@ -916,6 +922,10 @@ def _config_help(console: Console) -> None:
             "/config prompt [set <text>|clear]",
             "Show, set, or clear a custom system-prompt addition.",
         ),
+        (
+            "/config profile [list|show <name>|save <name>|use <name>|remove <name>]",
+            "Save or apply named configuration presets.",
+        ),
         ("/doctor", "Run environment, config, and provider diagnostics."),
     ]
     for command, description in rows:
@@ -1687,6 +1697,98 @@ def _config_prompt(action_parts: list[str], session: Session, console: Console) 
         console.print("[dim]No custom system prompt set.[/dim]")
 
 
+def _config_profile(
+    action_parts: list[str], session: Session, console: Console
+) -> None:
+    action = action_parts[0].lower() if action_parts else "list"
+    rest = action_parts[1:]
+
+    if action in {"list", "ls"}:
+        profiles = get_profiles()
+        if not profiles:
+            console.print(
+                "[dim]No profiles saved. Save one with "
+                "/config profile save <name>.[/dim]"
+            )
+            return
+        table = Table(title="Profiles", show_header=True)
+        table.add_column("Name", style="cyan")
+        table.add_column("Provider")
+        table.add_column("Model")
+        table.add_column("Mode")
+        for name in sorted(profiles):
+            values = profiles[name]
+            table.add_row(
+                name,
+                str(values.get("provider") or ""),
+                str(values.get("model") or "(provider default)"),
+                str(values.get("mode") or ""),
+            )
+        console.print(table)
+        return
+
+    if action == "show":
+        if not rest:
+            console.print("[yellow]Usage: /config profile show <name>[/yellow]")
+            return
+        profile = get_profile(rest[0])
+        if profile is None:
+            console.print(f"[red]Unknown profile '{rest[0]}'.[/red]")
+            return
+        console.print(f"[bold]{rest[0]}[/bold]")
+        console.print_json(data=profile)
+        return
+
+    if action in {"save", "add", "capture"}:
+        if not rest:
+            console.print("[yellow]Usage: /config profile save <name>[/yellow]")
+            return
+        try:
+            profile = save_profile(rest[0])
+        except (ValueError, KeyError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Saved profile [cyan]{rest[0]}[/cyan][/green] "
+            f"({len(profile)} setting(s))."
+        )
+        return
+
+    if action in {"use", "apply", "load"}:
+        if not rest:
+            console.print("[yellow]Usage: /config profile use <name>[/yellow]")
+            return
+        name = rest[0]
+        try:
+            profile = apply_profile(name)
+        except (ValueError, KeyError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        apply_session_profile(session, profile)
+        console.print(
+            f"[green]Applied profile [cyan]{name}[/cyan][/green] — "
+            f"provider: [cyan]{session.provider_id}[/cyan], "
+            f"model: [cyan]{session.model}[/cyan], "
+            f"mode: [cyan]{session.mode.value}[/cyan]."
+        )
+        return
+
+    if action in {"remove", "rm", "delete"}:
+        if not rest:
+            console.print("[yellow]Usage: /config profile remove <name>[/yellow]")
+            return
+        if remove_profile(rest[0]):
+            console.print(f"[green]Removed profile {rest[0]}.[/green]")
+        else:
+            console.print(f"[dim]No profile named {rest[0]}.[/dim]")
+        return
+
+    console.print(
+        "[yellow]Usage: /config profile "
+        "[list|show <name>|save <name>|use <name>|remove <name>][/yellow]"
+    )
+
+
 def _doctor(arg: str, session: Session, console: Console) -> str:
     from kiwimatecoder import diagnostics
 
@@ -1739,6 +1841,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_style(rest, session, console)
     elif section == "prompt":
         _config_prompt(rest, session, console)
+    elif section in {"profile", "profiles"}:
+        _config_profile(rest, session, console)
     else:
         console.print("[yellow]Unknown config command. Try /config help.[/yellow]")
     return CommandResult.CONTINUE
@@ -1781,6 +1885,8 @@ def _config_interact(
             CommandOption("trust", "Allow reads outside the workspace root"),
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
             CommandOption("style", "Show or set the output style"),
+            CommandOption("prompt", "Show, set, or clear a custom system prompt"),
+            CommandOption("profile", "Save or apply configuration profiles"),
             CommandOption("help", "Show all /config commands"),
         ),
     )
@@ -1817,6 +1923,8 @@ def _config_interact(
         "permissions",
         "sampling",
         "style",
+        "prompt",
+        "profile",
         "commands",
         "trust",
     }:
@@ -2283,6 +2391,8 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "sampling": "Show, set, or reset sampling parameters.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",
+    "profile": "Save, apply, or remove named configuration presets.",
+    "profiles": "Save, apply, or remove named configuration presets.",
 }
 
 _MCP_ACTION_DESCRIPTIONS = {

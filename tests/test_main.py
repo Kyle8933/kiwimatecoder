@@ -490,3 +490,139 @@ def test_config_verify_and_budget_roundtrip():
     result = runner.invoke(main.app, ["config", "budget", "clear"])
     assert result.exit_code == 0
     assert config.get_budget() == {}
+
+
+# ---------------------------------------------------------------------------
+# Profiles and config validation
+# ---------------------------------------------------------------------------
+
+
+def test_config_profile_save_list_show_use_remove_roundtrip():
+    runner = CliRunner()
+    config.set_selected_provider("openai")
+    config.set_selected_model("gpt-test")
+
+    result = runner.invoke(main.app, ["config", "profile", "save", "work"])
+    assert result.exit_code == 0
+    assert config.get_profile("work")["provider"] == "openai"
+
+    result = runner.invoke(main.app, ["config", "profile", "list"])
+    assert result.exit_code == 0
+    assert "work" in result.output
+
+    result = runner.invoke(main.app, ["config", "profile", "show", "work"])
+    assert result.exit_code == 0
+    assert "gpt-test" in result.output
+
+    config.set_selected_provider("deepseek")
+    result = runner.invoke(main.app, ["config", "profile", "use", "work"])
+    assert result.exit_code == 0
+    assert config.get_selected_provider_id() == "openai"
+
+    result = runner.invoke(main.app, ["config", "profile", "remove", "work"])
+    assert result.exit_code == 0
+    assert config.get_profile("work") is None
+
+
+def test_config_profile_use_and_show_unknown_exit_nonzero():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "profile", "use", "nope"])
+    assert result.exit_code == 1
+
+    result = runner.invoke(main.app, ["config", "profile", "show", "nope"])
+    assert result.exit_code == 1
+
+
+def test_config_profile_rename():
+    config.save_profile("one", {"mode": "plan"})
+
+    result = CliRunner().invoke(main.app, ["config", "profile", "rename", "one", "two"])
+
+    assert result.exit_code == 0
+    assert config.get_profile("two") == {"mode": "plan"}
+
+
+def test_config_validate_clean_and_broken():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "validate"])
+    assert result.exit_code == 0
+    assert "valid" in result.output.lower()
+
+    cfg = config.load_config()
+    cfg["default_mode"] = "bogus"
+    config.save_config(cfg)
+
+    result = runner.invoke(main.app, ["config", "validate"])
+    assert result.exit_code == 1
+    assert "default_mode" in result.output
+
+
+def test_launch_with_profile_applies_session_without_persisting(monkeypatch):
+    from kiwimatecoder import repl
+
+    config.set_selected_provider("openai")
+    config.set_selected_model("gpt-profile")
+    config.set_default_mode("plan")
+    config.save_profile("work")
+    config.set_selected_provider("deepseek")
+    config.set_selected_model(None)
+    config.set_default_mode("ask")
+
+    captured = {}
+    monkeypatch.setattr(
+        repl, "run", lambda session: captured.setdefault("session", session)
+    )
+
+    result = CliRunner().invoke(main.app, ["--profile", "work"])
+
+    assert result.exit_code == 0
+    assert captured["session"].provider_id == "openai"
+    assert captured["session"].model == "gpt-profile"
+    assert captured["session"].mode.value == "plan"
+    # The overlay must not touch persisted config.
+    assert config.get_selected_provider_id() == "deepseek"
+    assert config.get_default_mode() == "ask"
+
+
+def test_launch_with_unknown_profile_exits_nonzero(monkeypatch):
+    from kiwimatecoder import repl
+
+    monkeypatch.setattr(repl, "run", lambda session: None)
+
+    result = CliRunner().invoke(main.app, ["--profile", "nope"])
+
+    assert result.exit_code == 1
+    assert "Unknown profile" in result.output
+
+
+def test_profile_with_resume_overlays_mode_and_model(tmp_path, monkeypatch):
+    from kiwimatecoder import repl
+    from kiwimatecoder.session import Session, save_session
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+    save_session(
+        Session(
+            provider_id="anthropic",
+            model="claude-old",
+            workspace_root=tmp_path,
+            messages=[{"role": "user", "content": "hi"}],
+        ),
+        "keep",
+    )
+    config.save_profile("work", {"mode": "plan", "model": "claude-new"})
+
+    captured = {}
+    monkeypatch.setattr(
+        repl, "run", lambda session: captured.setdefault("session", session)
+    )
+
+    result = CliRunner().invoke(main.app, ["--resume", "keep", "--profile", "work"])
+
+    assert result.exit_code == 0
+    assert captured["session"].provider_id == "anthropic"
+    assert captured["session"].model == "claude-new"
+    assert captured["session"].mode.value == "plan"

@@ -19,6 +19,7 @@ from kiwimatecoder.config import (
     add_command_rule,
     add_provider,
     apply_model_filter,
+    apply_profile,
     clear_always_allowed_tools,
     clear_budget,
     clear_command_rules,
@@ -35,6 +36,8 @@ from kiwimatecoder.config import (
     get_model_catalog,
     get_model_filter,
     get_output_style,
+    get_profile,
+    get_profiles,
     get_provider_config,
     get_sampling,
     get_selected_provider_id,
@@ -48,10 +51,13 @@ from kiwimatecoder.config import (
     remove_command_rule,
     remove_key,
     remove_mcp_server,
+    remove_profile,
     remove_provider,
+    rename_profile,
     reset_default_mode,
     reset_sampling,
     resolve_default_model,
+    save_profile,
     set_budget,
     set_default_mode,
     set_key,
@@ -65,10 +71,11 @@ from kiwimatecoder.config import (
     set_trusted_workspace,
     set_verify_command,
     update_provider,
+    validate_config,
 )
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import ProviderConfig
-from kiwimatecoder.session import Session
+from kiwimatecoder.session import Session, apply_session_profile
 from kiwimatecoder.updater import run_update
 
 app = typer.Typer(
@@ -810,6 +817,133 @@ def prompt_clear() -> None:
     console.print("[green]✓ Custom system prompt cleared.[/green]")
 
 
+# --- canonical `config profile ...` -----------------------------------------
+
+profile_app = typer.Typer(help="Save, apply, or remove named configuration profiles.")
+config_app.add_typer(profile_app, name="profile")
+
+
+@profile_app.command("list")
+def profile_list() -> None:
+    """List saved configuration profiles."""
+    profiles = get_profiles()
+    if not profiles:
+        console.print(
+            "[dim]No profiles saved. Capture one with "
+            "`config profile save <name>`.[/dim]"
+        )
+        return
+    table = Table(title="Profiles", show_header=True)
+    table.add_column("name", style="cyan")
+    table.add_column("provider")
+    table.add_column("model")
+    table.add_column("mode")
+    for name in sorted(profiles):
+        values = profiles[name]
+        table.add_row(
+            name,
+            str(values.get("provider") or ""),
+            str(values.get("model") or "(provider default)"),
+            str(values.get("mode") or ""),
+        )
+    console.print(table)
+
+
+@profile_app.command("show")
+def profile_show(name: Annotated[str, typer.Argument(help="Profile name")]) -> None:
+    """Show one profile's settings."""
+    profile = get_profile(name)
+    if profile is None:
+        console.print(f"[red]Unknown profile '{name}'.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[bold]{name}[/bold]")
+    console.print_json(data=profile)
+
+
+@profile_app.command("save")
+def profile_save_cmd(
+    name: Annotated[str, typer.Argument(help="Profile name")],
+) -> None:
+    """Capture the current effective settings under ``name``."""
+    try:
+        profile = save_profile(name)
+    except (ValueError, KeyError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]✓ Saved profile [cyan]{name}[/cyan][/green] "
+        f"({len(profile)} setting(s))."
+    )
+
+
+@profile_app.command("use")
+def profile_use(name: Annotated[str, typer.Argument(help="Profile name")]) -> None:
+    """Apply a profile's settings to the global config."""
+    try:
+        apply_profile(name)
+    except (ValueError, KeyError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    cfg = load_config()
+    provider_id = get_selected_provider_id(cfg)
+    console.print(
+        f"[green]✓ Applied profile [cyan]{name}[/cyan][/green] — "
+        f"provider: [cyan]{provider_id}[/cyan], "
+        f"model: [cyan]{cfg.get('selected_model') or '(provider default)'}[/cyan], "
+        f"mode: [cyan]{get_default_mode(cfg)}[/cyan]."
+    )
+
+
+@profile_app.command("remove")
+def profile_remove(name: Annotated[str, typer.Argument(help="Profile name")]) -> None:
+    """Remove a saved profile."""
+    if remove_profile(name):
+        console.print(f"[green]✓ Removed profile {name}.[/green]")
+    else:
+        console.print(f"[dim]No profile named {name}.[/dim]")
+
+
+@profile_app.command("rename")
+def profile_rename(
+    old: Annotated[str, typer.Argument(help="Current name")],
+    new: Annotated[str, typer.Argument(help="New name")],
+) -> None:
+    """Rename a saved profile."""
+    try:
+        renamed = rename_profile(old, new)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if renamed:
+        console.print(f"[green]✓ Renamed profile {old} to {new}.[/green]")
+    else:
+        console.print(f"[dim]No profile named {old}.[/dim]")
+
+
+@config_app.command("validate")
+def validate_cmd() -> None:
+    """Validate the stored configuration; exit 1 when errors are found."""
+    issues = validate_config()
+    if not issues:
+        console.print("[green]✓ Configuration is valid.[/green]")
+        return
+    table = Table(title="Configuration issues", show_header=True)
+    table.add_column("level", style="cyan")
+    table.add_column("key")
+    table.add_column("message")
+    for issue in issues:
+        color = "red" if issue["level"] == "error" else "yellow"
+        table.add_row(
+            f"[{color}]{issue['level']}[/{color}]", issue["key"], issue["message"]
+        )
+    console.print(table)
+    errors = sum(1 for issue in issues if issue["level"] == "error")
+    warnings = len(issues) - errors
+    console.print(f"[dim]{errors} error(s), {warnings} warning(s).[/dim]")
+    if errors:
+        raise typer.Exit(1)
+
+
 # --- `config show` ----------------------------------------------------------
 
 
@@ -977,6 +1111,13 @@ def main(
             help="Continue the most recent session (same as --resume last).",
         ),
     ] = False,
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile",
+            help="Apply a saved config profile for this session (not persisted).",
+        ),
+    ] = None,
 ) -> None:
     """Launch the interactive session when run with no subcommand."""
     if version:
@@ -992,12 +1133,14 @@ def main(
     from kiwimatecoder import repl
 
     session: Session | None = None
+    resumed = False
     if resume or continue_:
         from kiwimatecoder.session import load_session
 
         target = resume or "last"
         try:
             session = load_session(target, workspace_root=Path.cwd())
+            resumed = True
             console.print(
                 f"[bold green]Resumed session '{target}'[/bold green] "
                 + f"([dim]{len(session.messages)} messages, {session.total_tokens:,} tokens[/dim])"
@@ -1057,6 +1200,22 @@ def main(
     session.verify_command = get_verify_command()
     session.compact_at_tokens = get_compact_at_tokens()
     session.context_window = get_context_window()
+
+    # A --profile overlay is session-local: it never writes config. On resume
+    # only the mode and model are overlaid so the saved conversation keeps its
+    # original provider.
+    if profile is not None:
+        profile_values = get_profile(profile)
+        if profile_values is None:
+            console.print(f"[red]Unknown profile '{profile}'.[/red]")
+            raise typer.Exit(1)
+        if resumed:
+            profile_values = {
+                key: value
+                for key, value in profile_values.items()
+                if key in {"mode", "model"}
+            }
+        apply_session_profile(session, profile_values)
 
     # repl.run loads user (and opted-in project) plugins before the agent is
     # constructed, turning any failure into a dim warning rather than a crash.

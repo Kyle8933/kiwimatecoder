@@ -358,6 +358,44 @@ class Session:
         )
 
 
+def apply_session_profile(session: Session, profile: dict[str, Any]) -> None:
+    """Overlay a config profile onto a live session without persisting it.
+
+    Only keys present in ``profile`` are touched. Sampling and budget are
+    config-level settings (persist a profile with ``config profile use`` for
+    those); every other profile key maps to a session field.
+    """
+    if "provider" in profile:
+        provider_id = str(profile["provider"])
+        if provider_id != session.provider_id:
+            session.set_active_providers([provider_id])
+    if profile.get("model"):
+        session.model = str(profile["model"])
+    if "mode" in profile:
+        try:
+            session.mode = PermissionMode.from_str(str(profile["mode"]))
+        except ValueError:
+            pass
+    if "output_style" in profile:
+        session.output_style = str(profile["output_style"])
+    if "system_prompt" in profile:
+        session.custom_system_prompt = profile["system_prompt"]
+    if "verify_command" in profile:
+        session.verify_command = str(profile["verify_command"])
+    if "trusted_workspace" in profile:
+        session.trusted_workspace = bool(profile["trusted_workspace"])
+    if "command_rules" in profile:
+        rules = profile["command_rules"]
+        session.command_rules = {
+            "allow": [str(pattern) for pattern in rules.get("allow") or []],
+            "deny": [str(pattern) for pattern in rules.get("deny") or []],
+        }
+    if "always_allowed" in profile:
+        session.always_allowed.update(
+            str(name) for name in profile["always_allowed"] if str(name).strip()
+        )
+
+
 def _sessions_dir() -> Path:
     s_dir = ensure_config_dir() / "sessions"
     s_dir.mkdir(mode=0o700, exist_ok=True)

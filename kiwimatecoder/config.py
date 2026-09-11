@@ -97,9 +97,15 @@ def _empty_config() -> dict[str, Any]:
         "hooks": {},
         "plugins": {},
         "mcp_servers": {},
+        "profiles": {},
         "compact_at_tokens": 64000,
         "context_window": 128000,
     }
+
+
+# Top-level keys a stored config may contain. Anything else is a warning in
+# :func:`validate_config` (forward compatibility: newer files stay loadable).
+_KNOWN_CONFIG_KEYS = frozenset(_empty_config()) | {"version", "command_rules"}
 
 
 def _read_legacy_key() -> str | None:
@@ -213,6 +219,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("hooks", {})
     cfg.setdefault("plugins", {})
     cfg.setdefault("mcp_servers", {})
+    cfg.setdefault("profiles", {})
     cfg.setdefault("compact_at_tokens", 64000)
     cfg.setdefault("context_window", 128000)
     # Active-provider roster. Configs written before this feature lack the key;
@@ -1403,6 +1410,543 @@ def set_output_style(style: str) -> str:
     cfg["output_style"] = cleaned
     save_config(cfg)
     return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Profiles (named presets)
+# ---------------------------------------------------------------------------
+
+PROFILE_KEYS = (
+    "provider",
+    "model",
+    "mode",
+    "sampling",
+    "output_style",
+    "system_prompt",
+    "verify_command",
+    "budget",
+    "trusted_workspace",
+    "command_rules",
+    "always_allowed",
+)
+
+
+def _profile_name(name: object) -> str:
+    cleaned = str(name).strip()
+    if not cleaned:
+        raise ValueError("Profile name is required.")
+    return cleaned
+
+
+def _normalize_sampling(raw: object) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("Profile sampling must be an object.")
+    clean: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key not in SAMPLING_KEYS:
+            raise ValueError(
+                f"Unknown sampling parameter '{key}'. "
+                f"Choose: {', '.join(SAMPLING_KEYS)}."
+            )
+        if value is None or str(value).strip() == "":
+            continue
+        clean[key] = _coerce_sampling(key, value)
+    return clean
+
+
+def _normalize_budget(raw: object) -> dict[str, float]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("Profile budget must be an object.")
+    unknown = set(raw) - {"max_tokens", "max_cost_usd"}
+    if unknown:
+        raise ValueError(
+            "Unknown budget key(s): "
+            + ", ".join(sorted(str(key) for key in unknown))
+            + ". Choose: max_tokens, max_cost_usd."
+        )
+    budget: dict[str, float] = {}
+    if raw.get("max_tokens") is not None:
+        tokens = int(raw["max_tokens"])
+        if tokens < 1:
+            raise ValueError("max_tokens budget must be at least 1.")
+        budget["max_tokens"] = tokens
+    if raw.get("max_cost_usd") is not None:
+        cost = float(raw["max_cost_usd"])
+        if cost <= 0:
+            raise ValueError("max_cost_usd budget must be positive.")
+        budget["max_cost_usd"] = cost
+    return budget
+
+
+def _normalize_command_rules(raw: object) -> dict[str, list[str]]:
+    if raw is None:
+        return {"allow": [], "deny": []}
+    if not isinstance(raw, dict):
+        raise ValueError("Profile command_rules must be an object.")
+    unknown = set(raw) - {"allow", "deny"}
+    if unknown:
+        raise ValueError(
+            "Unknown command_rules key(s): "
+            + ", ".join(sorted(str(key) for key in unknown))
+            + ". Choose: allow, deny."
+        )
+    rules: dict[str, list[str]] = {}
+    for kind in ("allow", "deny"):
+        values = raw.get(kind) or []
+        if not isinstance(values, list):
+            raise ValueError(f"Profile command_rules.{kind} must be a list.")
+        rules[kind] = list(
+            dict.fromkeys(_validate_command_pattern(str(pattern)) for pattern in values)
+        )
+    return rules
+
+
+def _normalize_always_allowed(raw: object) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("Profile always_allowed must be a list of tool names.")
+    names: list[str] = []
+    for name in raw:
+        text = str(name).strip()
+        if not text:
+            raise ValueError("Profile always_allowed entries must be non-empty.")
+        if text not in names:
+            names.append(text)
+    return names
+
+
+def _normalize_profile(
+    name: object, values: object, cfg: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Validate and normalize one profile's values, raising ``ValueError``."""
+    profile_name = _profile_name(name)
+    if values is None:
+        values = {}
+    if not isinstance(values, dict):
+        raise ValueError(f"Profile '{profile_name}' must be an object.")
+    unknown = set(values) - set(PROFILE_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Unknown profile key(s): {', '.join(sorted(str(k) for k in unknown))}. "
+            f"Choose: {', '.join(PROFILE_KEYS)}."
+        )
+
+    normalized: dict[str, Any] = {}
+    if "provider" in values:
+        provider_id = str(values["provider"]).strip()
+        try:
+            get_provider_config(provider_id, cfg)
+        except KeyError as exc:
+            raise ValueError(str(exc)) from exc
+        normalized["provider"] = provider_id
+    if "model" in values:
+        normalized["model"] = str(values["model"] or "").strip() or None
+    if "mode" in values:
+        normalized["mode"] = PermissionMode.from_str(str(values["mode"])).value
+    if "sampling" in values:
+        normalized["sampling"] = _normalize_sampling(values["sampling"])
+    if "output_style" in values:
+        style = str(values["output_style"] or "").strip().lower()
+        if style not in OUTPUT_STYLES:
+            raise ValueError(
+                f"Unknown output style '{values['output_style']}'. "
+                f"Choose: {', '.join(OUTPUT_STYLES)}."
+            )
+        normalized["output_style"] = style
+    if "system_prompt" in values:
+        normalized["system_prompt"] = str(values["system_prompt"] or "").strip() or None
+    if "verify_command" in values:
+        normalized["verify_command"] = str(values["verify_command"] or "").strip()
+    if "budget" in values:
+        normalized["budget"] = _normalize_budget(values["budget"])
+    if "trusted_workspace" in values:
+        normalized["trusted_workspace"] = bool(values["trusted_workspace"])
+    if "command_rules" in values:
+        normalized["command_rules"] = _normalize_command_rules(values["command_rules"])
+    if "always_allowed" in values:
+        normalized["always_allowed"] = _normalize_always_allowed(values["always_allowed"])
+    return normalized
+
+
+def _capture_profile_values(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot the current effective global settings as profile values."""
+    captured: dict[str, Any] = {
+        "provider": get_selected_provider_id(cfg),
+        "mode": get_default_mode(cfg),
+    }
+    model = cfg.get("selected_model")
+    if model:
+        captured["model"] = str(model)
+    sampling = get_sampling(cfg)
+    if sampling:
+        captured["sampling"] = sampling
+    style = get_output_style(cfg)
+    if style != "default":
+        captured["output_style"] = style
+    prompt = get_system_prompt(cfg)
+    if prompt:
+        captured["system_prompt"] = prompt
+    verify = get_verify_command(cfg)
+    if verify:
+        captured["verify_command"] = verify
+    budget = get_budget(cfg)
+    if budget:
+        captured["budget"] = budget
+    if get_trusted_workspace(cfg):
+        captured["trusted_workspace"] = True
+    rules = get_command_rules(cfg)
+    if rules["allow"] or rules["deny"]:
+        captured["command_rules"] = rules
+    allowed = get_always_allowed_tools(cfg)
+    if allowed:
+        captured["always_allowed"] = allowed
+    return captured
+
+
+def get_profiles(cfg: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    """Return saved profiles, dropping entries that no longer validate."""
+    cfg = cfg or load_config()
+    stored = cfg.get("profiles") or {}
+    if not isinstance(stored, dict):
+        return {}
+    profiles: dict[str, dict[str, Any]] = {}
+    for name, values in stored.items():
+        try:
+            profiles[_profile_name(name)] = _normalize_profile(name, values, cfg)
+        except (ValueError, KeyError, TypeError):
+            continue
+    return profiles
+
+
+def get_profile(name: str, cfg: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Return one validated profile, or None when it does not exist/is invalid."""
+    cleaned = str(name).strip()
+    if not cleaned:
+        return None
+    return get_profiles(cfg).get(cleaned)
+
+
+def save_profile(
+    name: str, values: dict[str, Any] | None = None, cfg: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Save a named profile, capturing current settings when ``values`` is None."""
+    cfg = cfg or load_config()
+    if values is None:
+        values = _capture_profile_values(cfg)
+    profile = _normalize_profile(name, values, cfg)
+    stored = dict(cfg.get("profiles") or {})
+    stored[_profile_name(name)] = profile
+    cfg["profiles"] = stored
+    save_config(cfg)
+    return profile
+
+
+def _apply_profile_values(cfg: dict[str, Any], profile: dict[str, Any]) -> None:
+    if "provider" in profile:
+        provider_id = str(profile["provider"])
+        cfg["selected_provider"] = provider_id
+        # A profile pins a single primary provider; clear per-provider state
+        # that would otherwise point at the previous vendor.
+        cfg["active_providers"] = [provider_id]
+    if "model" in profile:
+        cfg["selected_model"] = profile["model"]
+    if "mode" in profile:
+        cfg["default_mode"] = profile["mode"]
+    if "sampling" in profile:
+        cfg["sampling"] = dict(profile["sampling"])
+    if "output_style" in profile:
+        cfg["output_style"] = profile["output_style"]
+    if "system_prompt" in profile:
+        cfg["system_prompt"] = profile["system_prompt"]
+    if "verify_command" in profile:
+        cfg["verify_command"] = profile["verify_command"]
+    if "budget" in profile:
+        cfg["budget"] = dict(profile["budget"])
+    if "trusted_workspace" in profile:
+        cfg["trusted_workspace"] = profile["trusted_workspace"]
+    if "command_rules" in profile:
+        cfg["command_rules"] = {
+            "allow": list(profile["command_rules"]["allow"]),
+            "deny": list(profile["command_rules"]["deny"]),
+        }
+    if "always_allowed" in profile:
+        perms = dict(cfg.get("tool_permissions") or {})
+        perms["always_allow"] = list(profile["always_allowed"])
+        cfg["tool_permissions"] = perms
+
+
+def apply_profile(name: str, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Write a profile's values into the global config and persist them.
+
+    Raises ``ValueError`` when the profile does not exist or fails validation.
+    """
+    cfg = cfg or load_config()
+    profile = get_profile(name, cfg)
+    if profile is None:
+        raise ValueError(f"Unknown profile '{name}'.")
+    _apply_profile_values(cfg, profile)
+    save_config(cfg)
+    return profile
+
+
+def remove_profile(name: str) -> bool:
+    """Remove a saved profile. Returns whether it existed."""
+    cleaned = str(name).strip()
+    if not cleaned:
+        return False
+    cfg = load_config()
+    stored = dict(cfg.get("profiles") or {})
+    if cleaned not in stored:
+        return False
+    del stored[cleaned]
+    cfg["profiles"] = stored
+    save_config(cfg)
+    return True
+
+
+def rename_profile(old: str, new: str) -> bool:
+    """Rename a saved profile. Returns whether the old name existed."""
+    cfg = load_config()
+    stored = dict(cfg.get("profiles") or {})
+    old_clean = str(old).strip()
+    if old_clean not in stored:
+        return False
+    new_clean = _profile_name(new)
+    stored[new_clean] = _normalize_profile(new_clean, stored.pop(old_clean), cfg)
+    cfg["profiles"] = stored
+    save_config(cfg)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Config schema validation
+# ---------------------------------------------------------------------------
+
+
+def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    """Validate a config and return issues as level/key/message dicts.
+
+    The getters elsewhere in this module tolerate bad stored data silently
+    (dropping it); validation surfaces exactly what would be dropped. Unknown
+    top-level keys are warnings so configs written by newer releases still
+    pass; every other structural problem is an error.
+    """
+    cfg = cfg if cfg is not None else load_config()
+    issues: list[dict[str, str]] = []
+
+    def add(level: str, key: str, message: str) -> None:
+        issues.append({"level": level, "key": key, "message": message})
+
+    if not isinstance(cfg, dict):
+        add("error", "", "Configuration must be a JSON object.")
+        return issues
+
+    for key in cfg:
+        if key not in _KNOWN_CONFIG_KEYS:
+            add("warning", str(key), f"Unknown top-level key '{key}' is ignored.")
+
+    keys = cfg.get("keys")
+    if not isinstance(keys, dict):
+        add("error", "keys", "'keys' must be an object mapping provider -> key.")
+    else:
+        for provider_id, value in keys.items():
+            if not isinstance(value, str):
+                add("error", f"keys.{provider_id}", "API key must be a string.")
+
+    providers = cfg.get("providers")
+    if not isinstance(providers, dict):
+        add("error", "providers", "'providers' must be an object.")
+    else:
+        for provider_id, data in providers.items():
+            if _provider_from_config(str(provider_id), data) is None:
+                add(
+                    "error",
+                    f"providers.{provider_id}",
+                    "Provider needs non-empty name, base_url, and default_model.",
+                )
+
+    filters = cfg.get("model_filters")
+    if not isinstance(filters, dict):
+        add("error", "model_filters", "'model_filters' must be an object.")
+    else:
+        for provider_id, data in filters.items():
+            if not isinstance(data, dict):
+                add("error", f"model_filters.{provider_id}", "Filter must be an object.")
+                continue
+            mode = data.get("mode") or "all"
+            if mode not in {"all", "allow", "deny"}:
+                add(
+                    "error",
+                    f"model_filters.{provider_id}.mode",
+                    "Mode must be all, allow, or deny.",
+                )
+            models = data.get("models") or []
+            if not isinstance(models, list):
+                add(
+                    "error",
+                    f"model_filters.{provider_id}.models",
+                    "'models' must be a list.",
+                )
+            elif mode in {"allow", "deny"} and not [
+                model for model in models if str(model).strip()
+            ]:
+                add(
+                    "error",
+                    f"model_filters.{provider_id}.models",
+                    f"Mode '{mode}' requires at least one model.",
+                )
+
+    sampling = cfg.get("sampling")
+    if not isinstance(sampling, dict):
+        add("error", "sampling", "'sampling' must be an object.")
+    else:
+        for key, value in sampling.items():
+            if key not in SAMPLING_KEYS:
+                add("error", f"sampling.{key}", "Unknown sampling parameter.")
+                continue
+            if value is None or str(value).strip() == "":
+                continue
+            try:
+                _coerce_sampling(key, value)
+            except (TypeError, ValueError) as exc:
+                add("error", f"sampling.{key}", str(exc))
+
+    if "budget" in cfg:
+        try:
+            _normalize_budget(cfg.get("budget"))
+        except (TypeError, ValueError) as exc:
+            add("error", "budget", str(exc))
+
+    hooks = cfg.get("hooks")
+    if not isinstance(hooks, dict):
+        add("error", "hooks", "'hooks' must be an object.")
+    else:
+        for event, commands in hooks.items():
+            if event not in HOOK_EVENTS:
+                add("error", f"hooks.{event}", "Unknown hook event.")
+                continue
+            if not isinstance(commands, list):
+                add("error", f"hooks.{event}", "Hook commands must be a list of strings.")
+                continue
+            for index, command in enumerate(commands):
+                if not str(command).strip():
+                    add(
+                        "error",
+                        f"hooks.{event}[{index}]",
+                        "Hook command must be non-empty.",
+                    )
+
+    rules = cfg.get("command_rules")
+    if rules is not None:
+        if not isinstance(rules, dict):
+            add("error", "command_rules", "'command_rules' must be an object.")
+        else:
+            for kind, patterns in rules.items():
+                if kind not in {"allow", "deny"}:
+                    add(
+                        "warning",
+                        f"command_rules.{kind}",
+                        "Unknown rule kind; expected allow or deny.",
+                    )
+                    continue
+                if not isinstance(patterns, list):
+                    add("error", f"command_rules.{kind}", "Patterns must be a list.")
+                    continue
+                for index, pattern in enumerate(patterns):
+                    try:
+                        _validate_command_pattern(str(pattern))
+                    except ValueError as exc:
+                        add("error", f"command_rules.{kind}[{index}]", str(exc))
+
+    profiles = cfg.get("profiles")
+    if not isinstance(profiles, dict):
+        add("error", "profiles", "'profiles' must be an object.")
+    else:
+        for name, values in profiles.items():
+            try:
+                _normalize_profile(name, values, cfg)
+            except (ValueError, KeyError, TypeError) as exc:
+                add("error", f"profiles.{name}", str(exc))
+
+    servers = cfg.get("mcp_servers")
+    if not isinstance(servers, dict):
+        add("error", "mcp_servers", "'mcp_servers' must be an object.")
+    else:
+        for name, spec in servers.items():
+            try:
+                _normalize_mcp_spec(name, spec)
+            except ValueError as exc:
+                add("error", f"mcp_servers.{name}", str(exc))
+
+    plugins = cfg.get("plugins")
+    if not isinstance(plugins, dict):
+        add("error", "plugins", "'plugins' must be an object.")
+    else:
+        if not isinstance(plugins.get("allow_project", False), bool):
+            add("error", "plugins.allow_project", "'allow_project' must be a boolean.")
+        disabled = plugins.get("disabled")
+        if disabled is not None:
+            if not isinstance(disabled, list):
+                add("error", "plugins.disabled", "'disabled' must be a list.")
+            else:
+                for index, name in enumerate(disabled):
+                    if not str(name).strip():
+                        add(
+                            "error",
+                            f"plugins.disabled[{index}]",
+                            "Plugin name must be non-empty.",
+                        )
+
+    default_mode = cfg.get("default_mode")
+    if default_mode is not None:
+        try:
+            PermissionMode.from_str(str(default_mode))
+        except ValueError:
+            add("error", "default_mode", f"Unknown permission mode '{default_mode}'.")
+
+    if not isinstance(cfg.get("trusted_workspace", False), bool):
+        add("error", "trusted_workspace", "'trusted_workspace' must be true or false.")
+
+    style = cfg.get("output_style")
+    if style is not None and str(style).strip().lower() not in OUTPUT_STYLES:
+        add("error", "output_style", f"Unknown output style '{style}'.")
+
+    prompt = cfg.get("system_prompt")
+    if prompt is not None and not isinstance(prompt, str):
+        add("warning", "system_prompt", "'system_prompt' should be a string or null.")
+
+    verify = cfg.get("verify_command")
+    if verify is not None and not isinstance(verify, str):
+        add("warning", "verify_command", "'verify_command' should be a string.")
+
+    active = cfg.get("active_providers")
+    if active is not None:
+        if not isinstance(active, list):
+            add("error", "active_providers", "'active_providers' must be a list.")
+        else:
+            for index, provider_id in enumerate(active):
+                try:
+                    get_provider_config(str(provider_id), cfg)
+                except KeyError:
+                    add(
+                        "error",
+                        f"active_providers[{index}]",
+                        f"Unknown provider '{provider_id}'.",
+                    )
+
+    selected = cfg.get("selected_provider")
+    if selected is not None:
+        try:
+            get_provider_config(str(selected), cfg)
+        except KeyError:
+            add("warning", "selected_provider", f"Unknown provider '{selected}'.")
+
+    return issues
 
 
 # ---------------------------------------------------------------------------

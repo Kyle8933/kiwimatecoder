@@ -552,6 +552,37 @@ Prompt history lives in `~/.kiwimatecoder/history` and session autosaves in
 Run `kiwimatecoder doctor` (or `/doctor`) to check config paths, key status,
 provider reachability, the model catalog, and the workspace.
 
+## Profiles
+
+Profiles are named presets of global settings: provider, model, mode, sampling,
+output style, custom system prompt, verify command, budget, trusted workspace,
+command rules, and persisted `always` approvals. Capture the current effective
+settings, then re-apply them anywhere:
+
+```bash
+kiwimatecoder config profile save work
+kiwimatecoder config profile list
+kiwimatecoder config profile show work
+kiwimatecoder config profile use work      # writes the preset into config
+kiwimatecoder config profile remove work
+```
+
+Launch once with a profile without persisting it with `kiwimatecoder --profile
+work`. On a fresh session the provider, model, mode, and other session-level
+settings come from the profile; with `--resume`/`--continue` only the mode and
+model are overlaid so the restored conversation keeps its provider. Sampling
+and budget are global settings, so use `config profile use` to apply those.
+The REPL equivalent is `/config profile list|show|save|use|remove`.
+
+## Config validation
+
+`kiwimatecoder config validate` checks the stored config and prints a table of
+issues, exiting non-zero when any error-level problem is found. It surfaces
+exactly what the tolerant getters would silently drop: unknown top-level keys
+(warning), malformed provider/model-filter/sampling/budget/hook/command-rule/
+profile/MCP/plugin entries, invalid regexes, unknown hook events, and bad
+default mode, output style, or workspace-flag values.
+
 ## Development
 
 ```bash

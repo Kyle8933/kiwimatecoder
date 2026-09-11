@@ -974,6 +974,49 @@ def test_config_budget_set_show_clear(session):
     assert config.get_budget() == {}
 
 
+def test_config_profile_save_list_show_use_remove(session):
+    console = _console()
+    config.set_selected_model("captured-model")
+    session.model = "captured-model"
+
+    dispatch("/config profile save work", session, console)
+    assert config.get_profile("work")["model"] == "captured-model"
+
+    list_console = _console()
+    dispatch("/config profile list", session, list_console)
+    assert "work" in _output(list_console)
+
+    show_console = _console()
+    dispatch("/config profile show work", session, show_console)
+    assert "captured-model" in _output(show_console)
+
+    config.set_selected_model("other")
+    session.model = "other"
+    use_console = _console()
+    dispatch("/config profile use work", session, use_console)
+
+    assert session.model == "captured-model"
+    assert config.load_config()["selected_model"] == "captured-model"
+    assert "work" in _output(use_console)
+
+    dispatch("/config profile remove work", session, console)
+    assert config.get_profile("work") is None
+
+
+def test_config_profile_unknown_is_reported(session):
+    console = _console()
+
+    dispatch("/config profile use nope", session, console)
+
+    assert "Unknown profile" in _output(console)
+
+
+def test_config_action_descriptions_include_profile():
+    from kiwimatecoder.commands import _CONFIG_ACTION_DESCRIPTIONS
+
+    assert "profile" in _CONFIG_ACTION_DESCRIPTIONS
+
+
 # ---------------------------------------------------------------------------
 # Custom prompt templates
 # ---------------------------------------------------------------------------
