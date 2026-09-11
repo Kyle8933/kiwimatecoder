@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from glob import has_magic
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.markup import escape
@@ -28,6 +29,7 @@ from kiwimatecoder.config import (
     get_budget,
     get_command_rules,
     get_default_mode,
+    get_mcp_servers,
     get_model_catalog,
     get_model_filter,
     get_provider_config,
@@ -68,6 +70,9 @@ from kiwimatecoder.session import (
 )
 from kiwimatecoder.templates import discover_templates
 from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_workspace
+
+if TYPE_CHECKING:
+    from kiwimatecoder.mcp import McpManager
 
 
 class CommandResult:
@@ -754,6 +759,91 @@ def _context(arg: str, session: Session, console: Console) -> str:
     else:
         _add_context(parts, session, console)
     return CommandResult.CONTINUE
+
+
+def _mcp(arg: str, session: Session, console: Console) -> str:
+    from kiwimatecoder import mcp
+
+    parts = arg.strip().split(maxsplit=1)
+    action = parts[0].lower() if parts and parts[0] else "list"
+    manager = mcp.get_manager()
+    if action in {"list", "ls", "status", "show"}:
+        _mcp_show(manager, console)
+        return CommandResult.CONTINUE
+    if action in {"reload", "refresh"}:
+        if manager is None:
+            manager = mcp.McpManager(console=console)
+            mcp.set_manager(manager)
+        result = manager.reload()
+        console.print(
+            f"[green]MCP reloaded:[/green] {len(result.servers)} server(s) "
+            f"connected, {len(result.tools)} tool(s) registered."
+        )
+        _mcp_show(manager, console)
+        return CommandResult.CONTINUE
+    console.print("[yellow]Usage: /mcp [list|reload][/yellow]")
+    return CommandResult.CONTINUE
+
+
+def _mcp_show(manager: "McpManager | None", console: Console) -> None:
+    servers = get_mcp_servers()
+    if not servers:
+        console.print(
+            "[dim]No MCP servers configured. Add one with "
+            "`kiwimatecoder config mcp add <name> --command ...` or the "
+            "mcp_servers config key.[/dim]"
+        )
+        return
+    table = Table(title="MCP servers", show_header=True)
+    table.add_column("server", style="cyan")
+    table.add_column("transport")
+    table.add_column("status")
+    table.add_column("tools", justify="right")
+    table.add_column("resources", justify="right")
+    for name, spec in servers.items():
+        transport = "stdio" if spec.get("command") else "http"
+        failure = manager.failure_for(name) if manager is not None else None
+        if spec.get("disabled"):
+            status = "[dim]disabled[/dim]"
+        elif manager is not None and manager.is_connected(name):
+            status = "[green]connected[/green]"
+        elif failure:
+            status = f"[red]failed[/red] [dim]{escape(failure)}[/dim]"
+        else:
+            status = "[yellow]not connected[/yellow]"
+        registered = manager.tools_for(name) if manager is not None else []
+        resources = manager.resource_count(name) if manager is not None else None
+        table.add_row(
+            name,
+            transport,
+            status,
+            str(len(registered)) if manager is not None else "-",
+            "-" if resources is None else str(resources),
+        )
+    console.print(table)
+
+    tool_rows: list[tuple[str, str, str]] = []
+    for server in servers:
+        names = manager.tools_for(server) if manager is not None else []
+        for tool_name in names:
+            tool = tools.get_tool(tool_name)
+            if tool is None:
+                continue
+            permission = (
+                "[yellow]needs approval[/yellow]"
+                if tool.needs_approval
+                else "[dim green]read-only[/dim green]"
+            )
+            summary = tool.description.split(". ")[0] + "."
+            tool_rows.append((tool_name, permission, escape(summary)))
+    if tool_rows:
+        tool_table = Table(title="MCP tools", show_header=True)
+        tool_table.add_column("tool", style="cyan")
+        tool_table.add_column("permission")
+        tool_table.add_column("description")
+        for row in tool_rows:
+            tool_table.add_row(*row)
+        console.print(tool_table)
 
 
 def _config_help(console: Console) -> None:
@@ -2007,6 +2097,7 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "todos": _todos,
     "compact": _compact,
     "templates": _templates,
+    "mcp": _mcp,
 }
 
 
@@ -2112,6 +2203,11 @@ _HELP_GROUPS = [
                 "model filters.",
             ),
             ("/config help", "List every /config command."),
+            (
+                "/mcp [list|reload]",
+                "List configured MCP servers and their tools, or reconnect "
+                "every server and re-register its tools.",
+            ),
         ],
     ),
 ]
@@ -2146,6 +2242,7 @@ _COMMAND_DESCRIPTIONS = {
     "todos": "Show the agent's task list.",
     "compact": "Trim older history to fit a token budget.",
     "templates": "List custom prompt templates.",
+    "mcp": "List MCP servers and tools, or reconnect and re-register them.",
 }
 
 _CONTEXT_ACTION_DESCRIPTIONS = {
@@ -2186,6 +2283,11 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "sampling": "Show, set, or reset sampling parameters.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",
+}
+
+_MCP_ACTION_DESCRIPTIONS = {
+    "list": "Show configured servers, status, and registered tools.",
+    "reload": "Reconnect every server and re-register its tools.",
 }
 
 
@@ -2281,6 +2383,8 @@ def slash_argument_completions(
         choices = {p.id: p.name for p in list_provider_configs()}
     elif command == "config":
         choices = _CONFIG_ACTION_DESCRIPTIONS
+    elif command == "mcp":
+        choices = _MCP_ACTION_DESCRIPTIONS
     elif command == "load":
         choices = {
             s["name"]: f"{s['provider']}:{s['model']} ({s['messages']} msgs)"

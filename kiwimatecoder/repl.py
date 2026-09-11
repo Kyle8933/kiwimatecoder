@@ -54,7 +54,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from kiwimatecoder import __version__, events, hooks, plugins
+from kiwimatecoder import __version__, events, hooks, mcp, plugins
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
@@ -744,12 +744,21 @@ def _load_session_plugins(
     return result
 
 
+def _load_session_mcp(bus: events.EventBus) -> mcp.McpManager:
+    """Connect configured MCP servers; failures are dim warnings, never fatal."""
+    manager = mcp.McpManager(console=console, bus=bus)
+    mcp.set_manager(manager)
+    manager.load()
+    return manager
+
+
 async def _run_interactive(
     session: Session, bus: events.EventBus | None = None
 ) -> None:
     """Run the async interactive loop until the user exits."""
     bus = bus if bus is not None else events.BUS
     _load_session_plugins(session, bus)
+    _load_session_mcp(bus)
     console.print(_banner(session))
     _run_lifecycle_hooks(bus, events.SESSION_START, session)
     confirm = _make_confirm(session)
@@ -833,6 +842,10 @@ async def _run_interactive(
                 break
     finally:
         _run_lifecycle_hooks(bus, events.SESSION_END, session)
+        current_mcp = mcp.get_manager()
+        if current_mcp is not None:
+            current_mcp.shutdown()
+        mcp.set_manager(None)
         _autosave(session)
 
 

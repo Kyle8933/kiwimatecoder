@@ -329,3 +329,72 @@ def test_plugins_config_validation_and_corruption():
     config.save_config(cfg)
 
     assert config.get_plugins_config() == {"allow_project": False, "disabled": []}
+
+
+def test_mcp_servers_crud_and_normalization():
+    assert config.load_config()["mcp_servers"] == {}
+    assert config.get_mcp_servers() == {}
+
+    servers = config.set_mcp_server(
+        "files", {"command": "npx", "args": ["-y", "srv"], "env": {"TOKEN": "x"}}
+    )
+    assert servers["files"] == {
+        "command": "npx",
+        "args": ["-y", "srv"],
+        "env": {"TOKEN": "x"},
+        "disabled": False,
+    }
+
+    config.set_mcp_server(
+        "remote", {"url": "https://host/mcp", "headers": {"Authorization": "Bearer t"}}
+    )
+    assert config.get_mcp_servers()["remote"] == {
+        "url": "https://host/mcp",
+        "headers": {"Authorization": "Bearer t"},
+        "disabled": False,
+    }
+
+    fresh = config.load_config()
+    assert set(config.get_mcp_servers(fresh)) == {"files", "remote"}
+
+    config.set_mcp_server("off", {"command": "srv", "disabled": True})
+    assert config.get_mcp_servers()["off"]["disabled"] is True
+    assert config.remove_mcp_server("off") is True
+    assert config.remove_mcp_server("off") is False
+
+    replaced = config.set_mcp_servers({"only": {"command": "srv"}})
+    assert replaced == {
+        "only": {"command": "srv", "args": [], "env": {}, "disabled": False}
+    }
+    assert config.get_mcp_servers() == replaced
+
+
+def test_mcp_servers_validation_rejects_bad_names_and_specs():
+    with pytest.raises(ValueError):
+        config.set_mcp_server("Bad Name", {"command": "x"})
+    with pytest.raises(ValueError):
+        config.set_mcp_server("UPPER", {"command": "x"})
+    with pytest.raises(ValueError):
+        config.set_mcp_server("-leading", {"command": "x"})
+    with pytest.raises(ValueError):
+        config.set_mcp_server("both", {"command": "x", "url": "https://y"})
+    with pytest.raises(ValueError):
+        config.set_mcp_server("neither", {})
+    with pytest.raises(ValueError):
+        config.set_mcp_server("badargs", {"command": "x", "args": "nope"})
+    with pytest.raises(ValueError):
+        config.set_mcp_server("badenv", {"command": "x", "env": ["nope"]})
+    with pytest.raises(ValueError):
+        config.set_mcp_server("badurl", {"url": "ftp://host/mcp"})
+    with pytest.raises(ValueError):
+        config.set_mcp_servers("nope")  # type: ignore[arg-type]
+
+    assert config.get_mcp_servers() == {}
+
+
+def test_mcp_servers_tolerate_corrupt_section():
+    cfg = config.load_config()
+    cfg["mcp_servers"] = "garbage"
+    config.save_config(cfg)
+
+    assert config.get_mcp_servers() == {}

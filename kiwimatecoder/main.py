@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -30,6 +31,7 @@ from kiwimatecoder.config import (
     get_context_window,
     get_default_mode,
     get_key,
+    get_mcp_servers,
     get_model_catalog,
     get_model_filter,
     get_output_style,
@@ -45,6 +47,7 @@ from kiwimatecoder.config import (
     remove_always_allowed_tool,
     remove_command_rule,
     remove_key,
+    remove_mcp_server,
     remove_provider,
     reset_default_mode,
     reset_sampling,
@@ -52,6 +55,7 @@ from kiwimatecoder.config import (
     set_budget,
     set_default_mode,
     set_key,
+    set_mcp_server,
     set_model_filter,
     set_output_style,
     set_sampling,
@@ -492,6 +496,103 @@ def commands_clear() -> None:
     """Remove every command rule."""
     clear_command_rules()
     console.print("[green]✓ Cleared all command rules.[/green]")
+
+
+# --- canonical `config mcp ...` ---------------------------------------------
+
+mcp_app = typer.Typer(help="Manage MCP (Model Context Protocol) servers.")
+config_app.add_typer(mcp_app, name="mcp")
+
+
+@mcp_app.command("list")
+def mcp_list() -> None:
+    """List configured MCP servers."""
+    servers = get_mcp_servers()
+    if not servers:
+        console.print("[dim]No MCP servers configured.[/dim]")
+        return
+    table = Table(title="MCP servers", show_header=True)
+    table.add_column("server", style="cyan")
+    table.add_column("transport")
+    table.add_column("target")
+    table.add_column("status")
+    for name, spec in servers.items():
+        if spec.get("command"):
+            transport = "stdio"
+            target = " ".join(
+                [str(spec["command"]), *[str(arg) for arg in spec.get("args") or []]]
+            )
+        else:
+            transport = "http"
+            target = str(spec.get("url") or "")
+        status = "disabled" if spec.get("disabled") else "enabled"
+        table.add_row(name, transport, target, status)
+    console.print(table)
+
+
+def _parse_header(raw: str) -> tuple[str, str]:
+    name, _, value = raw.partition(":")
+    name = name.strip()
+    value = value.strip()
+    if not name or not value:
+        raise ValueError(f"Invalid header '{raw}': expected 'Name: value'.")
+    return name, value
+
+
+@mcp_app.command("add")
+def mcp_add(
+    name: Annotated[str, typer.Argument(help="Server name ([a-z0-9][a-z0-9_-]*)")],
+    command: Annotated[
+        str | None, typer.Option("--command", help="stdio command to run")
+    ] = None,
+    args: Annotated[
+        str | None,
+        typer.Option("--args", help="stdio arguments (quote the whole value)"),
+    ] = None,
+    url: Annotated[
+        str | None, typer.Option("--url", help="HTTP MCP endpoint")
+    ] = None,
+    header: Annotated[
+        list[str] | None,
+        typer.Option("--header", "-H", help="HTTP header 'Name: value' (repeatable)"),
+    ] = None,
+) -> None:
+    """Add or replace an MCP server (set exactly one of --command or --url)."""
+    spec: dict[str, Any] = {}
+    if command:
+        spec["command"] = command
+    if args:
+        spec["args"] = shlex.split(args)
+    if url:
+        spec["url"] = url
+    if header:
+        headers: dict[str, str] = {}
+        try:
+            for raw in header:
+                key, value = _parse_header(raw)
+                headers[key] = value
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+        spec["headers"] = headers
+    try:
+        servers = set_mcp_server(name, spec)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]✓ MCP server [cyan]{name}[/cyan] saved "
+        f"({len(servers)} total).[/green]"
+    )
+
+
+@mcp_app.command("remove")
+def mcp_remove(name: Annotated[str, typer.Argument(help="Server name")]) -> None:
+    """Remove an MCP server."""
+    if remove_mcp_server(name):
+        console.print(f"[green]✓ Removed MCP server {name}.[/green]")
+    else:
+        console.print(f"[dim]No MCP server named {name}.[/dim]")
 
 
 @config_app.command("trusted-workspace")

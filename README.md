@@ -134,6 +134,7 @@ paths outside the workspace root; writes stay sandboxed.
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
 | `/config` | Show or change providers, keys, models, filters, permissions, command rules, sampling, styles, verify, and budgets. |
+| `/mcp [list\|reload]` | List configured MCP servers, their status, and registered tools; `reload` reconnects every server. |
 | `/cost` | Show token usage, context gauge, and estimated USD cost for this session (per-model pricing). |
 | `/doctor` | Run environment, config, provider, and workspace diagnostics. |
 
@@ -407,6 +408,56 @@ skip individual plugins with `"plugins": {"disabled": ["name"]}`. A plugin that
 fails to import or register is reported as a dim warning and skipped; it never
 prevents startup.
 
+## MCP servers
+
+MCP (Model Context Protocol) servers extend the agent with tools it discovers
+at session start. Configure them under `mcp_servers` in
+`~/.kiwimatecoder/config.json` — each entry is either a stdio subprocess or an
+HTTP endpoint:
+
+```json
+{
+  "mcp_servers": {
+    "files": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {"SOME_TOKEN": "..."},
+      "disabled": false
+    },
+    "remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {"Authorization": "Bearer sk-..."},
+      "disabled": false
+    }
+  }
+}
+```
+
+From the shell, `kiwimatecoder config mcp add <name>` writes the same entries
+(set exactly one of `--command` or `--url`):
+
+```bash
+kiwimatecoder config mcp add files --command npx --args "-y @modelcontextprotocol/server-filesystem /tmp"
+kiwimatecoder config mcp add remote --url https://mcp.example.com/mcp -H "Authorization: Bearer sk-..."
+kiwimatecoder config mcp list
+kiwimatecoder config mcp remove remote
+```
+
+In the REPL, `/mcp list` shows every configured server, its status (connected,
+disabled, or the failure reason), its resources count, and the registered tools.
+`/mcp reload` reconnects each enabled server and re-registers its tools without
+restarting the session.
+
+Each server tool is registered as `mcp__<server>__<tool>` (both parts sanitized
+to `[A-Za-z0-9_]`), with the server's JSON Schema used for arguments. Tools that
+declare `annotations.readOnlyHint` run without approval; every other MCP tool
+prompts for approval in `ask` mode, exactly like `write_file` or `run_bash`.
+A server that fails to start or initialize is reported as a dim warning and
+skipped — it never blocks startup. Connections close when the session exits.
+
+Authentication is whatever headers (HTTP) or environment variables (stdio) you
+configure. Interactive OAuth is not implemented yet; see ROADMAP.md.
+
 ## Sampling and output styles
 
 Sampling parameters apply to every provider and are sent when set:
@@ -517,5 +568,5 @@ implemented (checkpoints/undo, command rules, dry-run, redacted audit log,
 hunk-level approvals, todos, ask-user, parallel reads, compaction, auto-verify,
 budgets, trusted workspace, and message steering with interrupt recovery), and
 P2 has begun (event bus + hooks, the extensible tool registry, custom commands
-and prompt templates, on-demand Agent Skills, and a plugin system). P2 continues
-with MCP.
+and prompt templates, on-demand Agent Skills, a plugin system, and the MCP
+client). P2 continues with config profiles and schema validation.

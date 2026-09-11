@@ -52,11 +52,16 @@ Goal: the community can add capabilities without touching core.
 - [x] 2.3 Plugin system + script-defined custom tools (L; depends 2.1, 2.2)
 - [x] 2.4 Custom slash commands + prompt templates (M; depends 0.5)
 - [x] 2.5 Agent Skills (markdown instruction bundles) (M; depends 0.9)
-- [ ] 2.6 MCP client (stdio + HTTP, tools/resources/prompts, OAuth) (XL; depends 2.2)
+- [x] 2.6 MCP client (stdio + HTTP, tools/resources; bearer/header auth; interactive OAuth deferred) (XL; depends 2.2)
 - [ ] 2.7 Profiles/presets + config schema validation (M; depends 0.5)
 - [ ] 2.8 Themes, output modes, `NO_COLOR`, accessibility basics (M)
 - [ ] 2.9 Model routing per task type (M; depends 0.5)
 - [ ] 2.10 Prompt caching headers where supported (M; depends 0.4)
+
+**2.6 follow-up:** interactive OAuth is deferred. HTTP MCP servers authenticate
+with configured headers (e.g. `Authorization: Bearer ...`) and env vars only.
+Resources are exposed through the client API (`list_resources`/`read_resource`)
+and a count in `/mcp list`; `prompts/*` is not surfaced as a user command yet.
 
 ## P3 — Reach and intelligence (8–12 weeks)
 

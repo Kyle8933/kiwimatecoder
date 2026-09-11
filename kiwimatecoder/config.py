@@ -10,7 +10,11 @@ Configuration lives in ``~/.kiwimatecoder/config.json`` with this shape::
         "active_providers": ["openrouter", "openai"],
         "selected_model": null,
         "default_mode": "ask",
-        "hooks": {"post_tool": ["echo ran $KIWI_TOOL_NAME"]}
+        "hooks": {"post_tool": ["echo ran $KIWI_TOOL_NAME"]},
+        "mcp_servers": {
+            "files": {"command": "npx", "args": ["-y", "server-filesystem"]},
+            "remote": {"url": "https://host/mcp", "headers": {"Authorization": "Bearer ..."}}
+        }
     }
 
 Live model catalogs are cached separately in
@@ -31,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -91,6 +96,7 @@ def _empty_config() -> dict[str, Any]:
         "budget": {},
         "hooks": {},
         "plugins": {},
+        "mcp_servers": {},
         "compact_at_tokens": 64000,
         "context_window": 128000,
     }
@@ -206,6 +212,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("budget", {})
     cfg.setdefault("hooks", {})
     cfg.setdefault("plugins", {})
+    cfg.setdefault("mcp_servers", {})
     cfg.setdefault("compact_at_tokens", 64000)
     cfg.setdefault("context_window", 128000)
     # Active-provider roster. Configs written before this feature lack the key;
@@ -1020,6 +1027,135 @@ def set_plugins_config(
     cfg["plugins"] = current
     save_config(cfg)
     return current
+
+
+# ---------------------------------------------------------------------------
+# MCP servers
+# ---------------------------------------------------------------------------
+
+MCP_NAME_RE = r"[a-z0-9][a-z0-9_-]*"
+_MCP_NAME_PATTERN = re.compile(rf"^{MCP_NAME_RE}$")
+
+
+def _validate_mcp_name(name: object) -> str:
+    cleaned = str(name).strip()
+    if not _MCP_NAME_PATTERN.match(cleaned):
+        raise ValueError(
+            f"Invalid MCP server name '{name}': use lowercase letters, digits, "
+            "'-', or '_', starting with a letter or digit."
+        )
+    return cleaned
+
+
+def _string_map(value: object, field: str, server: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"MCP server '{server}': '{field}' must be a mapping of strings."
+        )
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        text_key = str(key).strip()
+        if not text_key:
+            raise ValueError(
+                f"MCP server '{server}': '{field}' keys must be non-empty."
+            )
+        result[text_key] = str(item)
+    return result
+
+
+def _normalize_mcp_spec(name: object, spec: object) -> dict[str, Any]:
+    """Validate and normalize one MCP server spec, raising ``ValueError``."""
+    server = _validate_mcp_name(name)
+    if not isinstance(spec, dict):
+        raise ValueError(f"MCP server '{server}': spec must be an object.")
+    command = spec.get("command")
+    url = spec.get("url")
+    if bool(command) == bool(url):
+        raise ValueError(
+            f"MCP server '{server}': set exactly one of 'command' (stdio) "
+            "or 'url' (HTTP)."
+        )
+    normalized: dict[str, Any] = {}
+    if command is not None:
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError(
+                f"MCP server '{server}': 'command' must be a non-empty string."
+            )
+        raw_args = spec.get("args") or []
+        if not isinstance(raw_args, list):
+            raise ValueError(
+                f"MCP server '{server}': 'args' must be a list of strings."
+            )
+        normalized["command"] = command.strip()
+        normalized["args"] = [str(arg) for arg in raw_args]
+        normalized["env"] = _string_map(spec.get("env"), "env", server)
+    else:
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError(
+                f"MCP server '{server}': 'url' must be a non-empty string."
+            )
+        cleaned_url = url.strip()
+        if not cleaned_url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"MCP server '{server}': 'url' must start with http:// or https://."
+            )
+        normalized["url"] = cleaned_url
+        normalized["headers"] = _string_map(spec.get("headers"), "headers", server)
+    normalized["disabled"] = bool(spec.get("disabled", False))
+    return normalized
+
+
+def get_mcp_servers(cfg: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    """Return validated MCP server specs, dropping malformed entries."""
+    cfg = cfg or load_config()
+    stored = cfg.get("mcp_servers") or {}
+    if not isinstance(stored, dict):
+        return {}
+    servers: dict[str, dict[str, Any]] = {}
+    for name, spec in stored.items():
+        try:
+            servers[_validate_mcp_name(name)] = _normalize_mcp_spec(name, spec)
+        except ValueError:
+            continue
+    return servers
+
+
+def set_mcp_server(name: str, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Add or replace one MCP server spec, persist it, and return the section."""
+    cfg = load_config()
+    servers = get_mcp_servers(cfg)
+    servers[_validate_mcp_name(name)] = _normalize_mcp_spec(name, spec)
+    cfg["mcp_servers"] = servers
+    save_config(cfg)
+    return servers
+
+
+def remove_mcp_server(name: str) -> bool:
+    """Remove one MCP server spec. Returns whether it existed."""
+    server = str(name).strip()
+    cfg = load_config()
+    servers = get_mcp_servers(cfg)
+    if server not in servers:
+        return False
+    del servers[server]
+    cfg["mcp_servers"] = servers
+    save_config(cfg)
+    return True
+
+
+def set_mcp_servers(servers: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Replace the whole MCP server section with validated, normalized specs."""
+    if not isinstance(servers, dict):
+        raise ValueError("MCP servers must be a mapping of name -> spec.")
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, spec in servers.items():
+        normalized[_validate_mcp_name(name)] = _normalize_mcp_spec(name, spec)
+    cfg = load_config()
+    cfg["mcp_servers"] = normalized
+    save_config(cfg)
+    return normalized
 
 
 def get_trusted_workspace(cfg: dict[str, Any] | None = None) -> bool:
