@@ -386,6 +386,34 @@ Every tool decision (allowed, denied, dry-run, auto-verify) is appended to
 `~/.kiwimatecoder/audit.log` as one JSON line per action. Secrets are redacted
 before writing; the file is owner-only and safe to delete.
 
+A `pre_tool` hook that exits non-zero blocks the action and is recorded with
+the `hook_blocked` decision.
+
+## Lifecycle hooks
+
+Run your own shell commands when the agent reaches a lifecycle event. Hooks
+live under the `hooks` key in `~/.kiwimatecoder/config.json` (a project
+`.kiwimatecoder.json` may add them too). Each event maps to a list of commands
+run with the session workspace as their working directory:
+
+```json
+{
+  "hooks": {
+    "session_start": ["echo session started in $KIWI_WORKSPACE"],
+    "session_end": ["echo session ended"],
+    "pre_tool": ["test \"$KIWI_TOOL_NAME\" != \"run_bash\" || ./scripts/safety-check.sh"],
+    "post_tool": ["echo \"$KIWI_TOOL_NAME\" exited ok=$KIWI_TOOL_OK\" >> .kiwi-hooks.log"]
+  }
+}
+```
+
+Events are `session_start`, `session_end`, `pre_tool`, and `post_tool`. Hooks
+receive `KIWI_EVENT` and `KIWI_WORKSPACE`, plus `KIWI_TOOL_NAME`,
+`KIWI_TOOL_OK` (`true`/`false`), `KIWI_TOOL_ARGS` (JSON; secrets redacted), and
+`KIWI_TOOL_DURATION_MS` for tool events. A non-zero exit from a `pre_tool` hook
+blocks the tool call; every hook times out after 60 seconds and never crashes
+the agent. `/config` does not manage hooks yet — edit the JSON directly.
+
 ## Configuration
 
 Global settings live in `~/.kiwimatecoder/config.json` (provider keys, default
@@ -422,5 +450,6 @@ mypy kiwimatecoder
 The full prioritized plan lives in [ROADMAP.md](ROADMAP.md). P0 and P1 are
 implemented (checkpoints/undo, command rules, dry-run, redacted audit log,
 hunk-level approvals, todos, ask-user, parallel reads, compaction, auto-verify,
-budgets, trusted workspace, and message steering with interrupt recovery). P2
-continues with hooks, plugins, and MCP.
+budgets, trusted workspace, and message steering with interrupt recovery), and
+P2 has begun (event bus + hooks and the extensible tool registry). P2 continues
+with plugins, custom slash commands, and MCP.

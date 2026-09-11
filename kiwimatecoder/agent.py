@@ -9,7 +9,7 @@ from typing import Any
 
 from rich.console import Console
 
-from kiwimatecoder import audit, tools
+from kiwimatecoder import audit, events, hooks, tools
 from kiwimatecoder.client import (
     AssembledToolCall,
     Done,
@@ -22,6 +22,7 @@ from kiwimatecoder.client import (
 )
 from kiwimatecoder.permissions import ConfirmFn, PermissionMode, gate
 from kiwimatecoder.prompts import build_system_prompt
+from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import ToolResult
 
@@ -33,10 +34,17 @@ class Agent:
     console: Console
     confirm: ConfirmFn
 
-    def __init__(self, session: Session, console: Console, confirm: ConfirmFn) -> None:
+    def __init__(
+        self,
+        session: Session,
+        console: Console,
+        confirm: ConfirmFn,
+        bus: events.EventBus | None = None,
+    ) -> None:
         self.session = session
         self.console = console
         self.confirm = confirm
+        self.bus = bus if bus is not None else events.BUS
         self._budget_warned = False
 
     def _client(self, provider_id: str | None = None) -> UnifiedClient:
@@ -464,6 +472,19 @@ class Agent:
             args = selected_args
             partial_hunks = decision.selected_hunks
 
+        pre_results = self._run_pre_tool_hooks(call.name, args)
+        blocked = next((item for item in pre_results if item.blocked), None)
+        if blocked is not None:
+            reason = self._hook_block_reason(blocked)
+            audit.record_tool_event(
+                tool=call.name,
+                args=original_args,
+                decision="hook_blocked",
+                reason=reason,
+            )
+            self.console.print(f"[red]⊘ {summary}: {reason}[/red]")
+            return self._tool_message(call.id, self._hook_block_message(blocked)), False
+
         if call.name in ("write_file", "edit_file"):
             path = str(args.get("path") or "").strip()
             if path:
@@ -476,13 +497,19 @@ class Agent:
         except Exception as exc:
             result = ToolResult.error(f"Tool crashed: {exc!r}")
         duration_ms = int((time.perf_counter() - t0) * 1000)
+        decision_value = (
+            "allowed_partial" if partial_hunks is not None else "allowed"
+        )
         audit.record_tool_event(
             tool=call.name,
             args=original_args,
-            decision="allowed_partial" if partial_hunks is not None else "allowed",
+            decision=decision_value,
             duration_ms=duration_ms,
             ok=result.ok,
             hunks=partial_hunks,
+        )
+        self._run_post_tool_hooks(
+            call.name, original_args, result.ok, duration_ms, decision_value
         )
 
         if result.ok:
@@ -494,3 +521,59 @@ class Agent:
         if result.ok and partial_hunks is not None:
             content += f" (applied hunks: {', '.join(str(h) for h in partial_hunks)})"
         return self._tool_message(call.id, content), edited
+
+    def _run_pre_tool_hooks(
+        self, name: str, args: dict[str, Any]
+    ) -> list[hooks.HookResult]:
+        """Emit PRE_TOOL and run configured pre-tool shell hooks."""
+        self.bus.emit(events.PRE_TOOL, tool=name, args=args)
+        return hooks.run_hooks(
+            events.PRE_TOOL,
+            session=self.session,
+            console=self.console,
+            tool_name=name,
+            tool_args=args,
+        )
+
+    def _run_post_tool_hooks(
+        self,
+        name: str,
+        args: dict[str, Any],
+        ok: bool,
+        duration_ms: int,
+        decision: str,
+    ) -> None:
+        """Emit POST_TOOL and run configured post-tool shell hooks."""
+        self.bus.emit(
+            events.POST_TOOL,
+            tool=name,
+            args=args,
+            ok=ok,
+            duration_ms=duration_ms,
+            decision=decision,
+        )
+        hooks.run_hooks(
+            events.POST_TOOL,
+            session=self.session,
+            console=self.console,
+            tool_name=name,
+            tool_args=args,
+            ok=ok,
+            duration_ms=duration_ms,
+        )
+
+    def _hook_block_reason(self, result: hooks.HookResult) -> str:
+        detail = "timed out" if result.timed_out else f"exit code {result.exit_code}"
+        return f"blocked by pre_tool hook ({detail}): {redact(result.command)}"
+
+    def _hook_block_message(self, result: hooks.HookResult) -> str:
+        message = (
+            f"Error: {self._hook_block_reason(result)}. The action was not "
+            "executed. Fix the problem the hook reported, then try again."
+        )
+        output = redact(result.output.strip())
+        if output:
+            if len(output) > 2000:
+                output = output[:2000] + "\n... [truncated]"
+            message += f"\n{output}"
+        return message

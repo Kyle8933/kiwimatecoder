@@ -237,3 +237,62 @@ def test_compact_and_context_settings():
     assert config.set_context_window(200000) == 200000
     with pytest.raises(ValueError):
         config.set_context_window(10)
+
+
+def test_hooks_roundtrip_and_validation():
+    assert config.get_hooks() == {event: [] for event in config.HOOK_EVENTS}
+
+    hooks = config.add_hook("pre_tool", "echo first")
+    assert hooks["pre_tool"] == ["echo first"]
+    config.add_hook("pre_tool", "echo second")
+    config.add_hook("pre_tool", "echo first")  # duplicate is ignored
+    config.add_hook("post_tool", "echo done")
+
+    assert config.get_hooks()["pre_tool"] == ["echo first", "echo second"]
+    assert config.get_hooks()["post_tool"] == ["echo done"]
+    assert config.get_hooks()["session_start"] == []
+
+    with pytest.raises(ValueError):
+        config.add_hook("nope", "echo x")
+    with pytest.raises(ValueError):
+        config.add_hook("pre_tool", "   ")
+    with pytest.raises(ValueError):
+        config.remove_hook("nope", 0)
+
+    assert config.remove_hook("pre_tool", 0) is True
+    assert config.remove_hook("pre_tool", 5) is False
+    assert config.remove_hook("pre_tool", -1) is False
+    assert config.get_hooks()["pre_tool"] == ["echo second"]
+
+    config.clear_hooks()
+    assert config.get_hooks() == {event: [] for event in config.HOOK_EVENTS}
+    assert config.load_config()["hooks"] == {}
+
+
+def test_hooks_persist_across_reload():
+    config.add_hook("session_start", "echo hi")
+
+    fresh = config.load_config()
+
+    assert config.get_hooks(fresh)["session_start"] == ["echo hi"]
+    assert fresh["hooks"]["session_start"] == ["echo hi"]
+
+
+def test_hooks_tolerate_corrupt_section():
+    cfg = config.load_config()
+    cfg["hooks"] = "not a dict"
+    config.save_config(cfg)
+
+    assert config.get_hooks() == {event: [] for event in config.HOOK_EVENTS}
+
+
+def test_project_config_can_add_hooks(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / config.PROJECT_CONFIG_NAME).write_text(
+        json.dumps({"hooks": {"session_end": ["echo bye"]}})
+    )
+
+    cfg = config.load_config(project_root=project)
+
+    assert config.get_hooks(cfg)["session_end"] == ["echo bye"]

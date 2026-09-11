@@ -9,7 +9,8 @@ Configuration lives in ``~/.kiwimatecoder/config.json`` with this shape::
         "selected_provider": "openrouter",
         "active_providers": ["openrouter", "openai"],
         "selected_model": null,
-        "default_mode": "ask"
+        "default_mode": "ask",
+        "hooks": {"post_tool": ["echo ran $KIWI_TOOL_NAME"]}
     }
 
 Live model catalogs are cached separately in
@@ -37,6 +38,7 @@ from typing import Any
 
 from kiwimatecoder import catalog
 from kiwimatecoder.catalog import CatalogFetchError, ModelCatalog
+from kiwimatecoder.events import POST_TOOL, PRE_TOOL, SESSION_END, SESSION_START
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import (
     DEFAULT_PROVIDER_ID,
@@ -87,6 +89,7 @@ def _empty_config() -> dict[str, Any]:
         "trusted_workspace": False,
         "verify_command": "",
         "budget": {},
+        "hooks": {},
         "compact_at_tokens": 64000,
         "context_window": 128000,
     }
@@ -200,6 +203,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("trusted_workspace", False)
     cfg.setdefault("verify_command", "")
     cfg.setdefault("budget", {})
+    cfg.setdefault("hooks", {})
     cfg.setdefault("compact_at_tokens", 64000)
     cfg.setdefault("context_window", 128000)
     # Active-provider roster. Configs written before this feature lack the key;
@@ -878,6 +882,82 @@ def clear_command_rules() -> dict[str, list[str]]:
     cfg["command_rules"] = {"allow": [], "deny": []}
     save_config(cfg)
     return {"allow": [], "deny": []}
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle hook commands
+# ---------------------------------------------------------------------------
+
+HOOK_EVENTS = (SESSION_START, SESSION_END, PRE_TOOL, POST_TOOL)
+
+
+def _normalized_hooks(stored: Any) -> dict[str, list[str]]:
+    """Return per-event hook command lists, dropping junk and duplicates."""
+    hooks: dict[str, list[str]] = {event: [] for event in HOOK_EVENTS}
+    if not isinstance(stored, dict):
+        return hooks
+    for event in HOOK_EVENTS:
+        raw = stored.get(event)
+        if not isinstance(raw, list):
+            continue
+        hooks[event] = list(
+            dict.fromkeys(str(command) for command in raw if str(command).strip())
+        )
+    return hooks
+
+
+def _validate_hook_event(event: str) -> str:
+    cleaned = str(event).strip().lower()
+    if cleaned not in HOOK_EVENTS:
+        raise ValueError(
+            f"Unknown hook event '{event}'. Choose: {', '.join(HOOK_EVENTS)}."
+        )
+    return cleaned
+
+
+def get_hooks(cfg: dict[str, Any] | None = None) -> dict[str, list[str]]:
+    """Return configured hook commands for every lifecycle event.
+
+    The result always contains all four event keys (empty lists when unset).
+    """
+    cfg = cfg or load_config()
+    return _normalized_hooks(cfg.get("hooks"))
+
+
+def add_hook(
+    event: str, command: str, cfg: dict[str, Any] | None = None
+) -> dict[str, list[str]]:
+    """Append a shell command to one lifecycle event and persist it."""
+    event = _validate_hook_event(event)
+    cleaned = str(command).strip()
+    if not cleaned:
+        raise ValueError("Hook command is required.")
+    cfg = cfg or load_config()
+    hooks = _normalized_hooks(cfg.get("hooks"))
+    hooks[event] = list(dict.fromkeys([*hooks[event], cleaned]))
+    cfg["hooks"] = hooks
+    save_config(cfg)
+    return hooks
+
+
+def remove_hook(event: str, index: int, cfg: dict[str, Any] | None = None) -> bool:
+    """Remove one hook command by its position; returns whether it existed."""
+    event = _validate_hook_event(event)
+    cfg = cfg or load_config()
+    hooks = _normalized_hooks(cfg.get("hooks"))
+    if not isinstance(index, int) or index < 0 or index >= len(hooks[event]):
+        return False
+    hooks[event].pop(index)
+    cfg["hooks"] = hooks
+    save_config(cfg)
+    return True
+
+
+def clear_hooks() -> None:
+    """Remove every configured hook command."""
+    cfg = load_config()
+    cfg["hooks"] = {}
+    save_config(cfg)
 
 
 def get_trusted_workspace(cfg: dict[str, Any] | None = None) -> bool:

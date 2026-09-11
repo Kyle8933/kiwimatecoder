@@ -19,7 +19,11 @@ from tests.conftest import track_console
 def isolate_config_home(tmp_path, monkeypatch):
     from kiwimatecoder import config
 
-    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "config-home")
+    home = tmp_path / "config-home"
+    monkeypatch.setattr(config, "CONFIG_DIR", home)
+    monkeypatch.setattr(config, "CONFIG_FILE", home / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", home / "config")
+    monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
 
 
 @pytest.fixture
@@ -778,8 +782,11 @@ async def test_agent_warns_when_near_budget(agent_session):
         yield Done(finish_reason="stop")
 
     agent = Agent(agent_session, console, MagicMock(return_value=True))
-    with patch(
-        "kiwimatecoder.client.UnifiedClient.stream_chat", side_effect=mock_stream
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat", side_effect=mock_stream
+        ),
     ):
         await agent.run_turn("hello")
 

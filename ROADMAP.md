@@ -47,8 +47,8 @@ reviewable, and bounded.
 
 Goal: the community can add capabilities without touching core.
 
-- [ ] 2.1 Event bus + hooks (session/tool/approval lifecycle) (L)
-- [ ] 2.2 Tool registry v2: dynamic registration, tool sources (M)
+- [x] 2.1 Event bus + hooks (session/tool/approval lifecycle) (L)
+- [x] 2.2 Tool registry v2: dynamic registration, tool sources (M)
 - [ ] 2.3 Plugin system + script-defined custom tools (L; depends 2.1, 2.2)
 - [ ] 2.4 Custom slash commands + prompt templates (M; depends 0.5)
 - [ ] 2.5 Agent Skills (markdown instruction bundles) (M; depends 0.9)

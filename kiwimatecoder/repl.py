@@ -54,7 +54,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from kiwimatecoder import __version__
+from kiwimatecoder import __version__, events, hooks
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
@@ -66,6 +66,7 @@ from kiwimatecoder.commands import (
 )
 from kiwimatecoder.hunks import Hunk, parse_hunk_selection, split_hunks
 from kiwimatecoder.permissions import ApprovalResult, ConfirmFn
+from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
 
 console = Console()
@@ -687,12 +688,35 @@ async def _run_turn_with_steering(
     return exit_requested
 
 
-async def _run_interactive(session: Session) -> None:
+def _run_lifecycle_hooks(
+    bus: events.EventBus, event: str, session: Session
+) -> None:
+    """Emit a session lifecycle event and run its hooks; never raises."""
+    try:
+        bus.emit(event, workspace=str(session.workspace_root))
+        results = hooks.run_hooks(event, session=session, console=console)
+    except Exception as exc:  # hooks must never prevent startup or shutdown
+        console.print(f"[dim]Hook error during {event}: {exc}[/dim]")
+        return
+    for result in results:
+        if not result.ok:
+            status = "timed out" if result.timed_out else f"exit {result.exit_code}"
+            console.print(
+                f"[dim]Hook {event} failed ({status}): "
+                f"{redact(result.command)}[/dim]"
+            )
+
+
+async def _run_interactive(
+    session: Session, bus: events.EventBus | None = None
+) -> None:
     """Run the async interactive loop until the user exits."""
+    bus = bus if bus is not None else events.BUS
     console.print(_banner(session))
+    _run_lifecycle_hooks(bus, events.SESSION_START, session)
     confirm = _make_confirm(session)
     session.ask_user = _make_ask_user(console)
-    agent = Agent(session, console, confirm)
+    agent = Agent(session, console, confirm, bus=bus)
 
     kb = KeyBindings()
 
@@ -762,9 +786,10 @@ async def _run_interactive(session: Session) -> None:
             if await _run_turn_with_steering(agent, pt_session, session, line):
                 break
     finally:
+        _run_lifecycle_hooks(bus, events.SESSION_END, session)
         _autosave(session)
 
 
-def run(session: Session) -> None:
+def run(session: Session, bus: events.EventBus | None = None) -> None:
     """Run the interactive loop until the user exits."""
-    asyncio.run(_run_interactive(session))
+    asyncio.run(_run_interactive(session, bus=bus))
