@@ -496,6 +496,16 @@ slash command, or exclude keyword (whole-word, case-insensitive). The override
 applies to the primary provider only — fallback providers keep their own
 models — and the session's model is never changed.
 
+## Prompt caching
+
+Native Anthropic providers support prompt caching. Enable it with
+`kiwimatecoder config cache on` (or `/config cache on`): requests then send the
+system prompt as a cacheable content block and mark the last tool definition as
+an ephemeral cache breakpoint, cutting latency and input cost when the same
+system prompt and tools repeat across turns. The toggle only changes native
+Anthropic payloads — OpenAI-compatible providers cache automatically, so their
+requests are byte-for-byte identical either way.
+
 ## Auto-verify
 
 Point the agent at your test/lint command and it runs automatically after any
@@ -622,5 +632,6 @@ implemented (checkpoints/undo, command rules, dry-run, redacted audit log,
 hunk-level approvals, todos, ask-user, parallel reads, compaction, auto-verify,
 budgets, trusted workspace, and message steering with interrupt recovery), and
 P2 has begun (event bus + hooks, the extensible tool registry, custom commands
-and prompt templates, on-demand Agent Skills, a plugin system, and the MCP
-client). P2 continues with config profiles and schema validation.
+and prompt templates, on-demand Agent Skills, a plugin system, the MCP client,
+config profiles with schema validation, per-turn model routing, and Anthropic
+prompt caching). P2 continues with themes and output modes.

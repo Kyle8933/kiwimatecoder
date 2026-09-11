@@ -48,7 +48,12 @@ class Agent:
         self._budget_warned = False
 
     def _client(self, provider_id: str | None = None) -> UnifiedClient:
-        from kiwimatecoder.config import get_key, get_provider_config, get_sampling
+        from kiwimatecoder.config import (
+            get_key,
+            get_prompt_cache,
+            get_provider_config,
+            get_sampling,
+        )
 
         provider = get_provider_config(provider_id) if provider_id else self.session.provider
         key = get_key(provider.id)
@@ -58,7 +63,12 @@ class Agent:
                 + f"`config set-key --provider {provider.id} <KEY>` or the "
                 + f"{provider.key_env} environment variable."
             )
-        return UnifiedClient(provider, key or "", sampling=get_sampling())
+        return UnifiedClient(
+            provider,
+            key or "",
+            sampling=get_sampling(),
+            prompt_cache=get_prompt_cache(),
+        )
 
     def _request_messages(self) -> list[dict[str, Any]]:
         self.session.trim_history(max_tokens=self.session.compact_at_tokens)

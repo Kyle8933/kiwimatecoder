@@ -271,6 +271,20 @@ def test_agent_client_requires_key_for_key_requiring_local(agent_session):
         agent._client()
 
 
+def test_agent_client_passes_prompt_cache_setting(agent_session):
+    from kiwimatecoder import config
+
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+
+    with patch("kiwimatecoder.config.get_key", return_value="dummy_key"):
+        assert agent._client().prompt_cache is False
+
+        config.set_prompt_cache(True)
+        client = agent._client()
+
+    assert client.prompt_cache is True
+
+
 # ---------------------------------------------------------------------------
 # Active-provider failover
 # ---------------------------------------------------------------------------

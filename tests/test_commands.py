@@ -1017,6 +1017,19 @@ def test_config_action_descriptions_include_profile():
     assert "profile" in _CONFIG_ACTION_DESCRIPTIONS
 
 
+def test_config_cache_toggles(session):
+    console = _console()
+
+    dispatch("/config cache on", session, console)
+    assert config.get_prompt_cache() is True
+
+    dispatch("/config cache", session, console)
+    assert "on" in _output(console)
+
+    dispatch("/config cache off", session, console)
+    assert config.get_prompt_cache() is False
+
+
 # ---------------------------------------------------------------------------
 # Custom prompt templates
 # ---------------------------------------------------------------------------

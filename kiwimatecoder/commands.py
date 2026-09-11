@@ -35,6 +35,7 @@ from kiwimatecoder.config import (
     get_model_filter,
     get_profile,
     get_profiles,
+    get_prompt_cache,
     get_provider_config,
     get_sampling,
     list_provider_configs,
@@ -55,6 +56,7 @@ from kiwimatecoder.config import (
     set_key,
     set_model_filter,
     set_output_style,
+    set_prompt_cache,
     set_sampling,
     set_selected_model,
     set_selected_provider,
@@ -926,6 +928,10 @@ def _config_help(console: Console) -> None:
             "/config profile [list|show <name>|save <name>|use <name>|remove <name>]",
             "Save or apply named configuration presets.",
         ),
+        (
+            "/config cache [on|off]",
+            "Cache the system prompt and tools on native Anthropic providers.",
+        ),
         ("/doctor", "Run environment, config, and provider diagnostics."),
     ]
     for command, description in rows:
@@ -1697,6 +1703,34 @@ def _config_prompt(action_parts: list[str], session: Session, console: Console) 
         console.print("[dim]No custom system prompt set.[/dim]")
 
 
+def _config_cache(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+
+    if action in {"on", "true", "enable", "enabled"}:
+        set_prompt_cache(True)
+        console.print(
+            "[green]Prompt caching on:[/green] native Anthropic requests will "
+            "mark the system prompt and tool definitions as cache breakpoints."
+        )
+        return
+
+    if action in {"off", "false", "disable", "disabled"}:
+        set_prompt_cache(False)
+        console.print("[green]Prompt caching off.[/green]")
+        return
+
+    if action in {"show", "status", "list"}:
+        state = "on" if get_prompt_cache() else "off"
+        console.print(f"Prompt caching: [cyan]{state}[/cyan]")
+        console.print(
+            "[dim]Applies to native Anthropic providers; OpenAI-compatible "
+            "providers cache automatically.[/dim]"
+        )
+        return
+
+    console.print("[yellow]Usage: /config cache [on|off][/yellow]")
+
+
 def _config_profile(
     action_parts: list[str], session: Session, console: Console
 ) -> None:
@@ -1843,6 +1877,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_prompt(rest, session, console)
     elif section in {"profile", "profiles"}:
         _config_profile(rest, session, console)
+    elif section in {"cache", "prompt-cache"}:
+        _config_cache(rest, console)
     else:
         console.print("[yellow]Unknown config command. Try /config help.[/yellow]")
     return CommandResult.CONTINUE
@@ -1887,6 +1923,7 @@ def _config_interact(
             CommandOption("style", "Show or set the output style"),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
             CommandOption("profile", "Save or apply configuration profiles"),
+            CommandOption("cache", "Toggle Anthropic prompt caching"),
             CommandOption("help", "Show all /config commands"),
         ),
     )
@@ -1925,6 +1962,7 @@ def _config_interact(
         "style",
         "prompt",
         "profile",
+        "cache",
         "commands",
         "trust",
     }:
@@ -2393,6 +2431,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",
     "profiles": "Save, apply, or remove named configuration presets.",
+    "cache": "Toggle prompt caching for native Anthropic providers.",
 }
 
 _MCP_ACTION_DESCRIPTIONS = {

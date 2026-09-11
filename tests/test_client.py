@@ -137,3 +137,91 @@ def test_payload_anthropic_uses_sampling_and_max_tokens_default():
     assert payload["max_tokens"] == 2048
     assert payload["temperature"] == 0.1
     assert payload["top_p"] == 0.8
+
+
+# ---------------------------------------------------------------------------
+# Anthropic prompt caching
+# ---------------------------------------------------------------------------
+
+
+def _anthropic_tools() -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+
+
+def test_anthropic_prompt_cache_disabled_keeps_plain_system_and_tools():
+    client = UnifiedClient(REGISTRY["anthropic"], "sk-test", prompt_cache=False)
+
+    payload = client._payload(
+        [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+        ],
+        _anthropic_tools(),
+        "claude-sonnet-5",
+    )
+
+    assert payload["system"] == "You are helpful."
+    assert "cache_control" not in payload["tools"][-1]
+
+
+def test_anthropic_prompt_cache_enabled_marks_system_and_last_tool():
+    client = UnifiedClient(REGISTRY["anthropic"], "sk-test", prompt_cache=True)
+
+    payload = client._payload(
+        [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+        ],
+        _anthropic_tools(),
+        "claude-sonnet-5",
+    )
+
+    assert payload["system"] == [
+        {
+            "type": "text",
+            "text": "You are helpful.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    assert "cache_control" not in payload["tools"][0]
+    assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_prompt_cache_without_system_omits_system_key():
+    client = UnifiedClient(REGISTRY["anthropic"], "sk-test", prompt_cache=True)
+
+    payload = client._payload(
+        [{"role": "user", "content": "hi"}], None, "claude-sonnet-5"
+    )
+
+    assert "system" not in payload
+
+
+def test_openai_payload_identical_with_prompt_cache():
+    tools = [{"type": "function", "function": {"name": "read_file"}}]
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "hi"},
+    ]
+
+    disabled = UnifiedClient(REGISTRY["openai"], "sk-test")
+    enabled = UnifiedClient(REGISTRY["openai"], "sk-test", prompt_cache=True)
+
+    assert disabled._payload(messages, tools, "gpt-5.6-sol") == enabled._payload(
+        messages, tools, "gpt-5.6-sol"
+    )

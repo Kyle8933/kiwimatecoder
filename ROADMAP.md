@@ -56,7 +56,7 @@ Goal: the community can add capabilities without touching core.
 - [x] 2.7 Profiles/presets + config schema validation (M; depends 0.5)
 - [ ] 2.8 Themes, output modes, `NO_COLOR`, accessibility basics (M)
 - [x] 2.9 Model routing per task type (M; depends 0.5)
-- [ ] 2.10 Prompt caching headers where supported (M; depends 0.4)
+- [x] 2.10 Prompt caching headers where supported (M; depends 0.4)
 
 **2.6 follow-up:** interactive OAuth is deferred. HTTP MCP servers authenticate
 with configured headers (e.g. `Authorization: Bearer ...`) and env vars only.

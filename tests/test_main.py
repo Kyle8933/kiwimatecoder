@@ -497,6 +497,28 @@ def test_config_verify_and_budget_roundtrip():
 # ---------------------------------------------------------------------------
 
 
+def test_config_cache_roundtrip():
+    runner = CliRunner()
+
+    result = runner.invoke(main.app, ["config", "cache"])
+    assert result.exit_code == 0
+    assert "off" in result.output
+
+    result = runner.invoke(main.app, ["config", "cache", "on"])
+    assert result.exit_code == 0
+    assert config.get_prompt_cache() is True
+
+    result = runner.invoke(main.app, ["config", "cache"])
+    assert "on" in result.output
+
+    result = runner.invoke(main.app, ["config", "cache", "off"])
+    assert result.exit_code == 0
+    assert config.get_prompt_cache() is False
+
+    result = runner.invoke(main.app, ["config", "cache", "maybe"])
+    assert result.exit_code == 1
+
+
 def test_config_profile_save_list_show_use_remove_roundtrip():
     runner = CliRunner()
     config.set_selected_provider("openai")

@@ -161,3 +161,35 @@ async def test_stream_response_stops_thinking_before_error():
     assert stop_idx is not None, f"expected Thinking status to stop, got {log}"
     assert error_idx is not None, f"expected error line, got {log}"
     assert stop_idx < error_idx
+
+
+@pytest.mark.anyio
+async def test_stream_response_passes_prompt_cache(tmp_path, monkeypatch):
+    from kiwimatecoder import config
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
+    config.set_prompt_cache(True)
+
+    captured: dict = {}
+
+    class FakeClient:
+        def __init__(self, provider, api_key, **kwargs):
+            captured.update(kwargs)
+
+        async def stream_chat(self, messages, tools, model):
+            yield Done()
+
+    provider = ProviderConfig(
+        id="test",
+        name="Test",
+        base_url="https://api.test.com/v1",
+        default_model="m1",
+        key_env="TEST_KEY",
+    )
+
+    with patch("kiwimatecoder.ai.UnifiedClient", FakeClient):
+        await stream_response("Prompt", "key123", "m1", provider)
+
+    assert captured["prompt_cache"] is True

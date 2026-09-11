@@ -342,11 +342,13 @@ class UnifiedClient:
         api_key: str,
         timeout: float = 120.0,
         sampling: dict[str, Any] | None = None,
+        prompt_cache: bool = False,
     ):
         self.provider = provider
         self.api_key = api_key
         self.timeout = timeout
         self.sampling = sampling or {}
+        self.prompt_cache = bool(prompt_cache)
 
     @property
     def is_anthropic(self) -> bool:
@@ -389,10 +391,26 @@ class UnifiedClient:
             if self.sampling.get("top_p") is not None:
                 payload["top_p"] = self.sampling["top_p"]
             if system_prompt:
-                payload["system"] = system_prompt
+                if self.prompt_cache:
+                    # Anthropic prompt caching: mark the stable system prompt
+                    # and the end of the tool definitions as cache breakpoints.
+                    payload["system"] = [
+                        {
+                            "type": "text",
+                            "text": system_prompt,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
+                else:
+                    payload["system"] = system_prompt
             if anthropic_tools:
+                if self.prompt_cache:
+                    anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
                 payload["tools"] = anthropic_tools
             return payload
+
+        # OpenAI-compatible providers cache automatically; no payload change. The
+        # ``prompt_cache`` toggle only affects native Anthropic requests.
 
         openai_payload: dict[str, Any] = {
             "model": model,

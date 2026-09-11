@@ -398,3 +398,30 @@ def test_mcp_servers_tolerate_corrupt_section():
     config.save_config(cfg)
 
     assert config.get_mcp_servers() == {}
+
+
+def test_prompt_cache_defaults_and_toggle_roundtrip():
+    cfg = config.load_config()
+
+    assert cfg["prompt_cache"] is False
+    assert config.get_prompt_cache() is False
+
+    assert config.set_prompt_cache(True) is True
+    assert config.get_prompt_cache() is True
+    assert config.load_config()["prompt_cache"] is True
+
+    assert config.set_prompt_cache(False) is False
+    assert config.get_prompt_cache() is False
+
+
+def test_validate_flags_non_bool_prompt_cache():
+    cfg = config.load_config()
+    cfg["prompt_cache"] = "yes"
+
+    issues = config.validate_config(cfg)
+
+    assert any(
+        issue["level"] == "error" and issue["key"] == "prompt_cache"
+        for issue in issues
+    )
+    assert config.validate_config() == []

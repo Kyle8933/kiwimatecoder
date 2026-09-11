@@ -99,6 +99,7 @@ def _empty_config() -> dict[str, Any]:
         "mcp_servers": {},
         "profiles": {},
         "model_routing": {},
+        "prompt_cache": False,
         "compact_at_tokens": 64000,
         "context_window": 128000,
     }
@@ -222,6 +223,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("mcp_servers", {})
     cfg.setdefault("profiles", {})
     cfg.setdefault("model_routing", {})
+    cfg.setdefault("prompt_cache", False)
     cfg.setdefault("compact_at_tokens", 64000)
     cfg.setdefault("context_window", 128000)
     # Active-provider roster. Configs written before this feature lack the key;
@@ -1512,6 +1514,25 @@ def set_model_routing(
 
 
 # ---------------------------------------------------------------------------
+# Prompt caching
+# ---------------------------------------------------------------------------
+
+
+def get_prompt_cache(cfg: dict[str, Any] | None = None) -> bool:
+    """Whether native Anthropic requests should carry prompt-cache hints."""
+    cfg = cfg or load_config()
+    return bool(cfg.get("prompt_cache", False))
+
+
+def set_prompt_cache(enabled: bool) -> bool:
+    """Enable/disable Anthropic prompt caching and return the effective value."""
+    cfg = load_config()
+    cfg["prompt_cache"] = bool(enabled)
+    save_config(cfg)
+    return bool(enabled)
+
+
+# ---------------------------------------------------------------------------
 # Profiles (named presets)
 # ---------------------------------------------------------------------------
 
@@ -2003,6 +2024,9 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                                 f"model_routing.exclude_keywords[{index}]",
                                 "Keyword must be non-empty.",
                             )
+
+    if "prompt_cache" in cfg and not isinstance(cfg["prompt_cache"], bool):
+        add("error", "prompt_cache", "'prompt_cache' must be true or false.")
 
     profiles = cfg.get("profiles")
     if not isinstance(profiles, dict):

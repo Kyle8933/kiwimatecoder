@@ -38,6 +38,7 @@ from kiwimatecoder.config import (
     get_output_style,
     get_profile,
     get_profiles,
+    get_prompt_cache,
     get_provider_config,
     get_sampling,
     get_selected_provider_id,
@@ -64,6 +65,7 @@ from kiwimatecoder.config import (
     set_mcp_server,
     set_model_filter,
     set_output_style,
+    set_prompt_cache,
     set_sampling,
     set_selected_model,
     set_selected_provider,
@@ -707,6 +709,33 @@ def budget_cmd(
     raise typer.Exit(1)
 
 
+@config_app.command("cache")
+def cache_cmd(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Toggle prompt caching for native Anthropic providers."""
+    if state is None:
+        current = "on" if get_prompt_cache() else "off"
+        console.print(f"Prompt caching: [cyan]{current}[/cyan]")
+        return
+    token = state.strip().lower()
+    if token in {"on", "true", "enable", "enabled"}:
+        set_prompt_cache(True)
+        console.print(
+            "[green]✓ Prompt caching on:[/green] native Anthropic requests mark "
+            "the system prompt and tool definitions as cache breakpoints."
+        )
+    elif token in {"off", "false", "disable", "disabled"}:
+        set_prompt_cache(False)
+        console.print("[green]✓ Prompt caching off.[/green]")
+    else:
+        console.print("[red]Expected 'on' or 'off'.[/red]")
+        raise typer.Exit(1)
+
+
 # --- canonical `config sampling ...` ----------------------------------------
 
 sampling_app = typer.Typer(help="Get or set sampling parameters.")
@@ -984,6 +1013,8 @@ def config_show() -> None:
             if get_budget(cfg)
             else "[cyan]none[/cyan]"
         )
+        + "\nPrompt caching: "
+        + f"[cyan]{'on' if get_prompt_cache(cfg) else 'off'}[/cyan]"
     )
     project_path = project_config_path()
     if project_path is not None:
