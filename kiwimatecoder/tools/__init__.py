@@ -21,6 +21,14 @@ from kiwimatecoder.tools.forge import forge_tool, forge_write_tool
 from kiwimatecoder.tools.forge import preview as _forge_write_preview
 from kiwimatecoder.tools.git import git_tool, git_write_tool
 from kiwimatecoder.tools.git import preview as _git_write_preview
+from kiwimatecoder.tools.io import (
+    http_get_tool,
+    http_request_tool,
+    read_clipboard_tool,
+    write_clipboard_tool,
+)
+from kiwimatecoder.tools.io import http_request_preview as _http_request_preview
+from kiwimatecoder.tools.io import write_clipboard_preview as _clipboard_write_preview
 from kiwimatecoder.tools.list_dir import list_dir_tool
 from kiwimatecoder.tools.memory import preview as _remember_preview
 from kiwimatecoder.tools.memory import recall_tool, remember_tool
@@ -61,6 +69,10 @@ _ALL_TOOLS: list[FunctionTool] = [
     forge_write_tool,
     remember_tool,
     recall_tool,
+    read_clipboard_tool,
+    write_clipboard_tool,
+    http_get_tool,
+    http_request_tool,
 ]
 
 TOOLS = ToolRegistry()
@@ -75,6 +87,8 @@ _PREVIEWS: dict[str, Callable[[dict[str, Any], Any], str]] = {
     "git_write": _git_write_preview,
     "forge_write": _forge_write_preview,
     "remember": _remember_preview,
+    "write_clipboard": _clipboard_write_preview,
+    "http_request": _http_request_preview,
 }
 
 

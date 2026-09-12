@@ -26,6 +26,10 @@ BUILTIN_NAMES = [
     "forge_write",
     "remember",
     "recall",
+    "read_clipboard",
+    "write_clipboard",
+    "http_get",
+    "http_request",
 ]
 
 

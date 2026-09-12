@@ -426,6 +426,18 @@ class Agent:
             query = str(args.get("query", "") or "")
             short = query if len(query) <= 40 else f"{query[:37]}..."
             return f"memory [dim]recall {short}[/dim]" if short else "memory [dim]recall[/dim]"
+        if name == "read_clipboard":
+            return "clipboard [dim]read[/dim]"
+        if name == "write_clipboard":
+            text = str(args.get("text", "") or "")
+            short = text if len(text) <= 40 else f"{text[:37]}..."
+            return f"clipboard [dim]write {short}[/dim]"
+        if name in ("http_get", "http_request"):
+            url = str(args.get("url", "") or "")
+            short = url if len(url) <= 60 else f"{url[:57]}..."
+            method = str(args.get("method", "") or "GET").upper()
+            label = "GET" if name == "http_get" else method
+            return f"http [dim]{label} {short}[/dim]"
         return name
 
     # Only purely read-only tools are safe to run concurrently: they do not

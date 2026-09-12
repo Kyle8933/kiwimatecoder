@@ -204,6 +204,10 @@ The assistant has these capabilities, all scoped to the workspace:
   create a branch (see below).
 - `forge`, `forge_write` — list/view or create pull requests/merge requests
   and issues through the `gh`/`glab` CLI (see below).
+- `read_clipboard`, `write_clipboard` — read the system clipboard or copy text
+  to it (see below).
+- `http_get`, `http_request` — exercise an HTTP API and inspect the response
+  (see below).
 
 ## Web access
 
@@ -248,6 +252,38 @@ GitLab, pull requests are handled as merge requests (`glab mr ...`).
 Intentionally out of scope: `push`, `reset`, `clean`, and any forge
 merge/close/delete command. Those stay manual, or go through `run_bash` where
 the command rules and approval prompt apply.
+
+## Clipboard and HTTP tools
+
+Clipboard access uses the platform's standard tool, discovered on `PATH` and
+run without a shell: `pbpaste`/`pbcopy` on macOS, `wl-paste`/`wl-copy`
+(preferred) or `xclip` on Linux, and PowerShell's `Get-Clipboard`/
+`Set-Clipboard` on Windows. If none is installed the tool returns a clear
+install hint instead of failing.
+
+- `read_clipboard` is read-only, so it runs without approval.
+- `write_clipboard` is approval-gated and the preview shows the redacted text
+  (clipped to ~200 characters).
+
+`http_get` and `http_request` exercise HTTP APIs and print the status line,
+selected response headers, and the body (JSON is pretty-printed, bodies are
+truncated with a note). 4xx/5xx responses are returned for inspection rather
+than raised, and ``httpx`` errors are converted to friendly messages.
+
+- `http_get(url, headers?)` is read-only.
+- `http_request(method, url, headers?, body?, json?, timeout?)` is
+  approval-gated because it can change remote state. Methods are GET, POST,
+  PUT, PATCH, and DELETE; `body` (raw text) and `json` are mutually exclusive.
+- Both reuse the `web` settings: response size and timeout come from
+  `/config web max-chars` / `/config web timeout`, and local/private addresses
+  stay blocked unless `/config web allow-local on`.
+
+```text
+Read what's on my clipboard and save it to notes.txt.
+Copy the test command to my clipboard.
+GET https://api.github.com/repos/psf/requests and summarize the JSON.
+POST https://httpbin.org/post with json {"hello": "world"}.
+```
 
 ## Providers
 
