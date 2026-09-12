@@ -5,6 +5,7 @@ from kiwimatecoder.client import (
     ToolCallDelta,
     UnifiedClient,
     Usage,
+    format_anthropic_messages,
     parse_sse_chunk,
 )
 from kiwimatecoder.providers import REGISTRY
@@ -225,3 +226,138 @@ def test_openai_payload_identical_with_prompt_cache():
     assert disabled._payload(messages, tools, "gpt-5.6-sol") == enabled._payload(
         messages, tools, "gpt-5.6-sol"
     )
+
+
+# ---------------------------------------------------------------------------
+# Vision content parts
+# ---------------------------------------------------------------------------
+
+
+def test_anthropic_converts_user_content_parts_with_data_url_image():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is this?"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJD"},
+                },
+            ],
+        }
+    ]
+
+    system_prompt, converted = format_anthropic_messages(messages)
+
+    assert system_prompt == ""
+    assert converted == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is this?"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "QUJD",
+                    },
+                },
+            ],
+        }
+    ]
+
+
+def test_anthropic_converts_http_image_url_to_url_source():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/shot.png"},
+                }
+            ],
+        }
+    ]
+
+    _system, converted = format_anthropic_messages(messages)
+
+    assert converted[0]["content"] == [
+        {
+            "type": "image",
+            "source": {"type": "url", "url": "https://example.com/shot.png"},
+        }
+    ]
+
+
+def test_anthropic_content_parts_skip_unknown_parts():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "keep"},
+                {"type": "input_audio", "data": "..."},
+                "not-a-part",
+            ],
+        }
+    ]
+
+    _system, converted = format_anthropic_messages(messages)
+
+    assert converted[0]["content"] == [{"type": "text", "text": "keep"}]
+
+
+def test_anthropic_assistant_content_parts_keep_tool_use_order():
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "working"}],
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'},
+                }
+            ],
+        }
+    ]
+
+    _system, converted = format_anthropic_messages(messages)
+
+    assert converted[0]["content"] == [
+        {"type": "text", "text": "working"},
+        {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "read_file",
+            "input": {"path": "a.txt"},
+        },
+    ]
+
+
+def test_anthropic_leaves_string_user_content_unchanged():
+    _system, converted = format_anthropic_messages(
+        [{"role": "user", "content": "plain text"}]
+    )
+
+    assert converted == [{"role": "user", "content": "plain text"}]
+
+
+def test_openai_payload_passes_image_content_through_untouched():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJD"},
+                },
+            ],
+        }
+    ]
+    client = UnifiedClient(REGISTRY["openai"], "sk-test")
+
+    payload = client._payload(messages, None, "gpt-5.6-sol")
+
+    assert payload["messages"] == messages

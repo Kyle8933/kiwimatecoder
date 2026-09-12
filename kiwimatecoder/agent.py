@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
-from kiwimatecoder import audit, events, hooks, tools, ui
+from kiwimatecoder import audit, events, hooks, images, tools, ui
 from kiwimatecoder.client import (
     AssembledToolCall,
     Done,
@@ -100,6 +100,21 @@ class Agent:
             appended = True
         return appended
 
+    def _flush_pending_images(self) -> None:
+        """Attach queued images as one user message and clear the queue.
+
+        Called after the user message (for ``@path`` attachments) and after a
+        tool batch that attached images, so the message always follows the
+        content it belongs to and tool results keep their ordering.
+        """
+        if not self.session.pending_images:
+            return
+        pending = list(self.session.pending_images)
+        self.session.pending_images = []
+        self.session.messages.append(
+            images.image_message(pending, note="Images attached for analysis:")
+        )
+
     async def run_turn(self, user_input: str) -> None:
         """Process one user message, looping over tool calls until the model stops."""
         blocked, reason = self._budget_exceeded()
@@ -116,6 +131,7 @@ class Agent:
 
         self._budget_warned = False
         self.session.messages.append({"role": "user", "content": user_input})
+        self._flush_pending_images()
 
         edited = False
         verified = False
@@ -390,6 +406,9 @@ class Agent:
         if name in ("read_file", "write_file", "edit_file", "list_dir"):
             target = args.get("path", ".")
             return f"{name} [dim]{target}[/dim]"
+        if name == "view_image":
+            target = args.get("path", ".")
+            return f"image [dim]{target}[/dim]"
         if name == "search":
             pat = args.get("pattern", "")
             mode = args.get("mode", "grep")
@@ -462,6 +481,9 @@ class Agent:
         else:
             results = [self._run_tool_call(call) for call in calls]
         self.session.messages.extend(message for message, _edited in results)
+        # Images attached by this batch go after its tool results (and only
+        # once, even when several calls attached one).
+        self._flush_pending_images()
         return any(edited for _message, edited in results)
 
     def _tool_message(self, tool_call_id: str, content: str) -> dict[str, Any]:

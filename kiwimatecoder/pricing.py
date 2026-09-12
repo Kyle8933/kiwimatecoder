@@ -124,6 +124,11 @@ def estimate_cost(
 
 _WHITESPACE_RE = re.compile(r"\S+")
 
+# Flat per-image estimate: base64 payloads would otherwise dominate (and
+# wildly overestimate) the context gauge. Vision models bill images roughly
+# like a fixed-size tile, not by their encoded length.
+_IMAGE_TOKEN_ESTIMATE = 1600
+
 
 def estimate_text_tokens(text: str) -> int:
     """Heuristically estimate token count for a piece of text.
@@ -139,16 +144,24 @@ def estimate_text_tokens(text: str) -> int:
     return max(chars_estimate, word_estimate, 1)
 
 
+def _content_token_estimate(content: Any) -> int:
+    """Estimate one message's content, charging a flat rate per image part."""
+    if isinstance(content, list):
+        total = 0
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "image_url":
+                total += _IMAGE_TOKEN_ESTIMATE
+            else:
+                total += estimate_text_tokens(json.dumps(block, default=str))
+        return total
+    return estimate_text_tokens(str(content or ""))
+
+
 def estimate_messages_tokens(messages: Iterable[dict[str, Any]]) -> int:
     """Estimate tokens for a chat transcript, including per-message overhead."""
     total = 0
     for message in messages:
-        content = message.get("content")
-        if isinstance(content, list):
-            text = " ".join(json.dumps(block, default=str) for block in content)
-        else:
-            text = str(content or "")
-        total += estimate_text_tokens(text) + 4
+        total += _content_token_estimate(message.get("content")) + 4
         if message.get("tool_calls"):
             total += estimate_text_tokens(json.dumps(message["tool_calls"], default=str))
     return total

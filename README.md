@@ -190,6 +190,8 @@ The assistant has these capabilities, all scoped to the workspace:
 
 - `read_file`, `list_dir`, `search` (grep + glob) — read-only, always allowed;
   batches of read-only calls run in parallel.
+- `view_image` — attach a workspace image (`.png`, `.jpg`, `.jpeg`, `.gif`,
+  `.webp`) so a vision-capable model can see it (see below).
 - `write_file`, `edit_file` — create/modify files (approval-gated; each is
   checkpointed first so `/undo` can restore it).
 - `run_bash` — run shell commands (approval-gated, subject to command rules).
@@ -284,6 +286,26 @@ Copy the test command to my clipboard.
 GET https://api.github.com/repos/psf/requests and summarize the JSON.
 POST https://httpbin.org/post with json {"hello": "world"}.
 ```
+
+## Images
+
+Attach images to a message three ways, all sharing the same size and count
+limits:
+
+- Type `@path/to/image.png` in a prompt. Existing image files under the
+  workspace are attached and removed from the text (a lone `@image.png` sends
+  "Please analyze the attached image(s)."). Paths that are missing, outside the
+  workspace, or not images are left in the text untouched.
+- Paste or drag an image into the terminal. Most terminals insert the file path
+  at the cursor; `@`-mention extraction then attaches it on send.
+- Let the model call the `view_image` tool when it needs to look at a file.
+
+Each image is validated (extension and magic bytes), base64-encoded, and sent
+to the model as an image part on the next request. Both OpenAI-compatible and
+native Anthropic providers are supported. Limits live under
+`/config vision [show|max-bytes <n>|max-images <n>]` (defaults: 5 MB per image,
+4 images per turn); oversized or invalid images produce a clear message instead
+of a failed request.
 
 ## Providers
 

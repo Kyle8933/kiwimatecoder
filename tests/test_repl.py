@@ -1,3 +1,4 @@
+import base64
 import difflib
 from pathlib import Path
 
@@ -18,8 +19,10 @@ from kiwimatecoder.hunks import parse_hunk_selection
 from kiwimatecoder.permissions import ApprovalResult
 from kiwimatecoder.repl import (
     SlashCommandCompleter,
+    _attach_images,
     _banner,
     _build_history,
+    _extract_image_mentions,
     _make_confirm,
     _process_deferred_commands,
     _prompt_text,
@@ -429,3 +432,113 @@ def test_run_rebuilds_console_for_color_config(session, monkeypatch):
         repl.console = original
 
     assert captured["console"].no_color is True  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# @path image mentions
+# ---------------------------------------------------------------------------
+
+PNG_1PX = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def test_extract_image_mentions_removes_workspace_image(session):
+    image_path = session.workspace_root / "shot.png"
+    image_path.write_bytes(PNG_1PX)
+
+    cleaned, found = _extract_image_mentions(
+        "look at @shot.png please", session.workspace_root
+    )
+
+    assert cleaned == "look at please"
+    assert found == [str(image_path.resolve())]
+
+
+def test_extract_image_mentions_keeps_missing_file(session):
+    cleaned, found = _extract_image_mentions(
+        "@ghost.png hello", session.workspace_root
+    )
+
+    assert cleaned == "@ghost.png hello"
+    assert found == []
+
+
+def test_extract_image_mentions_keeps_outside_workspace(session, tmp_path):
+    outside = tmp_path.parent / "outside-shot.png"
+    outside.write_bytes(PNG_1PX)
+
+    cleaned, found = _extract_image_mentions(
+        f"@{outside} ok", session.workspace_root
+    )
+
+    assert cleaned == f"@{outside} ok"
+    assert found == []
+
+
+def test_extract_image_mentions_multiple_images(session):
+    (session.workspace_root / "a.png").write_bytes(PNG_1PX)
+    (session.workspace_root / "b.gif").write_bytes(
+        base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+    )
+
+    cleaned, found = _extract_image_mentions(
+        "@a.png and @b.gif", session.workspace_root
+    )
+
+    assert cleaned == "and"
+    assert len(found) == 2
+
+
+def test_extract_image_mentions_ignores_non_images(session):
+    (session.workspace_root / "notes.txt").write_text("hi")
+
+    cleaned, found = _extract_image_mentions(
+        "@notes.txt hello", session.workspace_root
+    )
+
+    assert cleaned == "@notes.txt hello"
+    assert found == []
+
+
+def test_attach_images_stashes_and_cleans_line(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", session.workspace_root / "cfg.json")
+    monkeypatch.setattr(
+        config, "LEGACY_CONFIG_FILE", session.workspace_root / "legacy-config"
+    )
+    (session.workspace_root / "shot.png").write_bytes(PNG_1PX)
+
+    line = _attach_images("describe @shot.png", session)
+
+    assert line == "describe"
+    assert [entry["name"] for entry in session.pending_images] == ["shot.png"]
+
+
+def test_attach_images_uses_default_prompt_when_only_image(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", session.workspace_root / "cfg.json")
+    monkeypatch.setattr(
+        config, "LEGACY_CONFIG_FILE", session.workspace_root / "legacy-config"
+    )
+    (session.workspace_root / "shot.png").write_bytes(PNG_1PX)
+
+    line = _attach_images("@shot.png", session)
+
+    assert line == "Please analyze the attached image(s)."
+    assert len(session.pending_images) == 1
+
+
+def test_attach_images_respects_per_turn_limit(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", session.workspace_root / "cfg.json")
+    monkeypatch.setattr(
+        config, "LEGACY_CONFIG_FILE", session.workspace_root / "legacy-config"
+    )
+    config.set_vision(max_images_per_turn=1)
+    (session.workspace_root / "a.png").write_bytes(PNG_1PX)
+    (session.workspace_root / "b.png").write_bytes(PNG_1PX)
+
+    _attach_images("@a.png @b.png", session)
+
+    assert len(session.pending_images) == 1

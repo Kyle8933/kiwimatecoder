@@ -10,6 +10,7 @@ from kiwimatecoder.tools.base import FunctionTool, ToolResult
 
 BUILTIN_NAMES = [
     "read_file",
+    "view_image",
     "list_dir",
     "search",
     "load_skill",

@@ -66,6 +66,9 @@ class Session:
     # Runtime-only queues: lines typed while a turn is streaming (never saved).
     steering: deque[str] = field(default_factory=deque, repr=False)
     deferred_commands: deque[str] = field(default_factory=deque, repr=False)
+    # Images attached via @path or the view_image tool, awaiting the next
+    # request. Ephemeral: cleared after being attached to the conversation.
+    pending_images: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
     @property
     def format_version(self) -> int:

@@ -163,6 +163,50 @@ def parse_sse_chunk(data: str) -> list[StreamEvent]:
     return events
 
 
+def _anthropic_image_block(url: str) -> dict[str, Any] | None:
+    """Convert one OpenAI image URL into an Anthropic image block, or None."""
+    if url.startswith("data:"):
+        header, separator, payload = url[5:].partition(";base64,")
+        if not separator or not payload:
+            return None
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": header or "image/png",
+                "data": payload,
+            },
+        }
+    if url.startswith(("http://", "https://")):
+        return {"type": "image", "source": {"type": "url", "url": url}}
+    return None
+
+
+def _anthropic_content_blocks(content: list[Any]) -> list[dict[str, Any]]:
+    """Convert OpenAI content parts (text/image_url) into Anthropic blocks.
+
+    Unrecognized parts are skipped so an unexpected part cannot break a whole
+    request.
+    """
+    blocks: list[dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        part_type = part.get("type")
+        if part_type == "text":
+            text = part.get("text")
+            if text:
+                blocks.append({"type": "text", "text": str(text)})
+        elif part_type == "image_url":
+            image_url = part.get("image_url")
+            if isinstance(image_url, dict):
+                image_url = image_url.get("url")
+            block = _anthropic_image_block(str(image_url or ""))
+            if block is not None:
+                blocks.append(block)
+    return blocks
+
+
 def format_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """Convert OpenAI-format message list to Anthropic (system_prompt, messages)."""
     system_parts: list[str] = []
@@ -178,14 +222,24 @@ def format_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list
             continue
 
         if role == "user":
-            converted.append(
-                {"role": "user", "content": str(content) if content else ""}
-            )
+            if isinstance(content, list):
+                converted.append(
+                    {
+                        "role": "user",
+                        "content": _anthropic_content_blocks(content) or "",
+                    }
+                )
+            else:
+                converted.append(
+                    {"role": "user", "content": str(content) if content else ""}
+                )
         elif role == "assistant":
             tool_calls = msg.get("tool_calls")
             if tool_calls:
                 blocks: list[dict[str, Any]] = []
-                if content:
+                if isinstance(content, list):
+                    blocks.extend(_anthropic_content_blocks(content))
+                elif content:
                     blocks.append({"type": "text", "text": str(content)})
                 for idx, tc in enumerate(tool_calls):
                     fn = tc.get("function", {})
@@ -203,6 +257,13 @@ def format_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list
                         }
                     )
                 converted.append({"role": "assistant", "content": blocks})
+            elif isinstance(content, list):
+                converted.append(
+                    {
+                        "role": "assistant",
+                        "content": _anthropic_content_blocks(content) or "",
+                    }
+                )
             else:
                 converted.append(
                     {

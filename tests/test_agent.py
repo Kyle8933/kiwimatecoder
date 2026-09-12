@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 from unittest.mock import MagicMock, patch
@@ -1328,3 +1329,129 @@ def test_agent_call_summaries_for_web_and_forge_tools(agent_session):
     assert fetch == "web_fetch [dim]https://example.com[/dim]"
     search = agent._format_call_summary("web_search", {"query": "kiwi docs"})
     assert search == "web_search [dim]kiwi docs[/dim]"
+
+
+# ---------------------------------------------------------------------------
+# Vision
+# ---------------------------------------------------------------------------
+
+PNG_1PX = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def test_agent_summary_for_view_image(agent_session):
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+
+    assert (
+        agent._format_call_summary("view_image", {"path": "shot.png"})
+        == "image [dim]shot.png[/dim]"
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_emits_one_image_message_after_view_image(agent_session):
+    (agent_session.workspace_root / "pixel.png").write_bytes(PNG_1PX)
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+
+    round_1 = [
+        ToolCallDelta(
+            index=0,
+            id="call_img",
+            name="view_image",
+            args_fragment='{"path": "pixel.png"}',
+        ),
+        Done(finish_reason="tool_calls"),
+    ]
+    round_2 = [TextDelta(text="I see a pixel."), Done(finish_reason="stop")]
+    calls = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        calls["n"] += 1
+        for event in (round_1 if calls["n"] == 1 else round_2):
+            yield event
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("What is in pixel.png?")
+
+    roles = [message["role"] for message in agent_session.messages]
+    assert roles == ["user", "assistant", "tool", "user", "assistant"]
+    image_message = agent_session.messages[3]
+    assert isinstance(image_message["content"], list)
+    assert image_message["content"][0] == {
+        "type": "text",
+        "text": "Images attached for analysis:",
+    }
+    assert image_message["content"][-1]["type"] == "image_url"
+    assert image_message["content"][-1]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+    assert agent_session.pending_images == []
+
+
+@pytest.mark.anyio
+async def test_agent_flushes_images_stashed_before_turn(agent_session):
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    agent_session.pending_images.append(
+        {"media_type": "image/png", "data": "QUJD", "name": "pasted.png"}
+    )
+
+    async def mock_stream(*args, **kwargs):
+        yield TextDelta(text="Got it.")
+        yield Done(finish_reason="stop")
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("Describe this")
+
+    assert [message["role"] for message in agent_session.messages] == [
+        "user",
+        "user",
+        "assistant",
+    ]
+    assert agent_session.messages[1]["content"][-1]["image_url"]["url"] == (
+        "data:image/png;base64,QUJD"
+    )
+    assert agent_session.pending_images == []
+
+
+@pytest.mark.anyio
+async def test_agent_flushes_pending_images_once_per_batch(agent_session):
+    (agent_session.workspace_root / "a.png").write_bytes(PNG_1PX)
+    (agent_session.workspace_root / "b.png").write_bytes(PNG_1PX)
+    console = Console(quiet=True)
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    calls = [
+        AssembledToolCall(
+            id="call_a", name="view_image", arguments='{"path": "a.png"}'
+        ),
+        AssembledToolCall(
+            id="call_b", name="view_image", arguments='{"path": "b.png"}'
+        ),
+    ]
+
+    await agent._handle_tool_calls(calls)
+
+    roles = [message["role"] for message in agent_session.messages]
+    assert roles == ["tool", "tool", "user"]
+    assert [part["type"] for part in agent_session.messages[2]["content"]] == [
+        "text",
+        "text",
+        "text",
+        "image_url",
+        "image_url",
+    ]
+    assert agent_session.pending_images == []

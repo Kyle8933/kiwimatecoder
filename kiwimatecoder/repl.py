@@ -54,7 +54,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from kiwimatecoder import __version__, events, hooks, mcp, plugins, ui
+from kiwimatecoder import __version__, events, hooks, images, mcp, plugins, ui
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
@@ -65,12 +65,13 @@ from kiwimatecoder.commands import (
     slash_argument_completions,
     slash_command_completions,
 )
-from kiwimatecoder.config import get_ui
+from kiwimatecoder.config import get_ui, get_vision
 from kiwimatecoder.hunks import Hunk, parse_hunk_selection, split_hunks
 from kiwimatecoder.permissions import ApprovalResult, ConfirmFn
 from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
 from kiwimatecoder.templates import find_template, render_template
+from kiwimatecoder.tools.paths import PathError, resolve_in_workspace
 
 console = Console()
 
@@ -577,6 +578,70 @@ def _resolve_slash_line(line: str, session: Session) -> tuple[str, str] | None:
     return ("template", render_template(template.body, arguments))
 
 
+def _extract_image_mentions(text: str, workspace_root: Path) -> tuple[str, list[str]]:
+    """Pull ``@path`` image mentions out of a line of user input.
+
+    A token is an image mention when it starts with ``@``, resolves to an
+    existing file inside the workspace, and has a supported image suffix.
+    Mentions are removed from the returned text; everything else, including
+    paths that are missing or outside the workspace, is left untouched.
+    """
+    kept: list[str] = []
+    found: list[str] = []
+    for token in text.split():
+        if not token.startswith("@") or len(token) < 2:
+            kept.append(token)
+            continue
+        try:
+            resolved = resolve_in_workspace(token[1:], workspace_root)
+        except PathError:
+            kept.append(token)
+            continue
+        if resolved.is_file() and images.detect_media_type(resolved):
+            found.append(str(resolved))
+        else:
+            kept.append(token)
+    return " ".join(kept), found
+
+
+def _attach_images(line: str, session: Session) -> str:
+    """Stash ``@path`` images from ``line`` for the next turn.
+
+    Respects the configured per-turn image limit and byte cap, printing a dim
+    note for each batch. Returns the line with image mentions removed, or a
+    default prompt when the line was only image mentions.
+    """
+    cleaned, paths = _extract_image_mentions(line, session.workspace_root)
+    if not paths:
+        return line
+
+    vision = get_vision()
+    max_images = int(vision["max_images_per_turn"])
+    max_bytes = int(vision["max_image_bytes"])
+    attached: list[str] = []
+    for path in paths:
+        if len(session.pending_images) >= max_images:
+            console.print(
+                f"[yellow]Image limit ({max_images} per turn) reached; "
+                f"{Path(path).name} was not attached.[/yellow]"
+            )
+            break
+        try:
+            entry = images.encode_image(path, max_bytes)
+        except ValueError as exc:
+            console.print(f"[yellow]{exc}[/yellow]")
+            continue
+        session.pending_images.append(entry)
+        attached.append(entry["name"])
+
+    if attached:
+        label = "image" if len(attached) == 1 else "images"
+        console.print(f"[dim]Attached {label}: {', '.join(attached)}[/dim]")
+    if not cleaned.strip() and attached:
+        return "Please analyze the attached image(s)."
+    return cleaned
+
+
 def _route_steering_line(session: Session, line: str) -> str:
     """Route a line typed while a turn is running.
 
@@ -842,8 +907,9 @@ async def _run_interactive(
                 resolved = _resolve_slash_line(line, session)
                 if resolved is not None:
                     # A custom template runs as a normal agent turn.
+                    turn_line = _attach_images(resolved[1], session)
                     if await _run_turn_with_steering(
-                        agent, pt_session, session, resolved[1]
+                        agent, pt_session, session, turn_line
                     ):
                         break
                     continue
@@ -851,6 +917,9 @@ async def _run_interactive(
                     break
                 continue
 
+            line = _attach_images(line, session)
+            if not line.strip():
+                continue
             if await _run_turn_with_steering(agent, pt_session, session, line):
                 break
     finally:

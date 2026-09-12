@@ -41,6 +41,7 @@ from kiwimatecoder.config import (
     get_provider_config,
     get_sampling,
     get_ui,
+    get_vision,
     get_web,
     list_provider_configs,
     list_visible_models,
@@ -68,6 +69,7 @@ from kiwimatecoder.config import (
     set_trusted_workspace,
     set_ui,
     set_verify_command,
+    set_vision,
     set_web,
     update_provider,
 )
@@ -927,6 +929,10 @@ def _config_help(console: Console) -> None:
             "Set web fetch/search limits and local-address access.",
         ),
         (
+            "/config vision [show|max-bytes <n>|max-images <n>]",
+            "Set image attachment size and per-turn count limits.",
+        ),
+        (
             "/config style [set <default|concise|explanatory|code>]",
             "Show or set the output style.",
         ),
@@ -1732,6 +1738,54 @@ def _config_web(action_parts: list[str], console: Console) -> None:
     )
 
 
+def _config_vision(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "ls", "status"}:
+        settings = get_vision()
+        console.print(
+            f"Vision max image bytes: [cyan]{settings['max_image_bytes']:,}[/cyan]\n"
+            f"Vision max images per turn: "
+            f"[cyan]{settings['max_images_per_turn']}[/cyan]"
+        )
+        return
+
+    if action in {"max-bytes", "max_bytes", "bytes"}:
+        if not rest:
+            console.print("[yellow]Usage: /config vision max-bytes <n>[/yellow]")
+            return
+        try:
+            settings = set_vision(max_image_bytes=rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Vision max image bytes:[/green] "
+            f"{settings['max_image_bytes']:,}"
+        )
+        return
+
+    if action in {"max-images", "max_images", "images"}:
+        if not rest:
+            console.print("[yellow]Usage: /config vision max-images <n>[/yellow]")
+            return
+        try:
+            settings = set_vision(max_images_per_turn=rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Vision max images per turn:[/green] "
+            f"{settings['max_images_per_turn']}"
+        )
+        return
+
+    console.print(
+        "[yellow]Usage: /config vision [show|max-bytes <n>|max-images <n>][/yellow]"
+    )
+
+
 _UI_USAGE = (
     "/config ui [show|color <auto|always|never>|"
     "output <normal|compact|verbose>|ascii <on|off>|"
@@ -2022,6 +2076,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_sampling(rest, console)
     elif section == "web":
         _config_web(rest, console)
+    elif section == "vision":
+        _config_vision(rest, console)
     elif section == "ui":
         _config_ui(rest, console)
     elif section == "style":
@@ -2074,6 +2130,7 @@ def _config_interact(
             CommandOption("trust", "Allow reads outside the workspace root"),
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
             CommandOption("web", "Web fetch/search limits and local access"),
+            CommandOption("vision", "Image attachment size and count limits"),
             CommandOption("style", "Show or set the output style"),
             CommandOption("ui", "Theme, color, output mode, and ASCII mode"),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
@@ -2115,6 +2172,7 @@ def _config_interact(
         "permissions",
         "sampling",
         "web",
+        "vision",
         "style",
         "ui",
         "prompt",
@@ -2666,6 +2724,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "budget": "Set or clear token/cost budget limits.",
     "sampling": "Show, set, or reset sampling parameters.",
     "web": "Set web fetch/search limits and local-address access.",
+    "vision": "Set image attachment size and count limits.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",

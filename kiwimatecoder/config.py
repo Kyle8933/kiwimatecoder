@@ -114,6 +114,10 @@ def _empty_config() -> dict[str, Any]:
             "enabled": True,
             "max_bytes": 16384,
         },
+        "vision": {
+            "max_image_bytes": 5000000,
+            "max_images_per_turn": 4,
+        },
     }
 
 
@@ -241,6 +245,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("ui", {})
     cfg.setdefault("web", {})
     cfg.setdefault("memory", {})
+    cfg.setdefault("vision", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
     # stored empty list, a non-list, or a list of junk is seeded the same way.
@@ -1602,6 +1607,87 @@ def set_memory(
 
 
 # ---------------------------------------------------------------------------
+# Vision (image attachments)
+# ---------------------------------------------------------------------------
+
+VISION_DEFAULTS: dict[str, Any] = {
+    "max_image_bytes": 5_000_000,
+    "max_images_per_turn": 4,
+}
+VISION_MAX_IMAGE_BYTES_MIN = 1_024
+VISION_MAX_IMAGE_BYTES_MAX = 50_000_000
+VISION_MAX_IMAGES_MIN = 1
+VISION_MAX_IMAGES_MAX = 100
+
+
+def get_vision(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized vision settings, always fully populated."""
+    cfg = cfg or load_config()
+    stored = cfg.get("vision") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(VISION_DEFAULTS)
+    try:
+        max_bytes = int(
+            stored.get("max_image_bytes", VISION_DEFAULTS["max_image_bytes"])
+        )
+    except (TypeError, ValueError):
+        max_bytes = int(VISION_DEFAULTS["max_image_bytes"])
+    if VISION_MAX_IMAGE_BYTES_MIN <= max_bytes <= VISION_MAX_IMAGE_BYTES_MAX:
+        effective["max_image_bytes"] = max_bytes
+    try:
+        max_images = int(
+            stored.get("max_images_per_turn", VISION_DEFAULTS["max_images_per_turn"])
+        )
+    except (TypeError, ValueError):
+        max_images = int(VISION_DEFAULTS["max_images_per_turn"])
+    if VISION_MAX_IMAGES_MIN <= max_images <= VISION_MAX_IMAGES_MAX:
+        effective["max_images_per_turn"] = max_images
+    return effective
+
+
+def set_vision(
+    max_image_bytes: int | str | None = None,
+    max_images_per_turn: int | str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update vision limits; omitted arguments keep their current value.
+
+    Raises ``ValueError`` for a non-integer value or one outside the supported
+    range, so callers can validate eagerly.
+    """
+    cfg = cfg or load_config()
+    current = get_vision(cfg)
+    if max_image_bytes is not None:
+        try:
+            value = int(max_image_bytes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("vision max_image_bytes must be an integer.") from exc
+        if not VISION_MAX_IMAGE_BYTES_MIN <= value <= VISION_MAX_IMAGE_BYTES_MAX:
+            raise ValueError(
+                "vision max_image_bytes must be between "
+                f"{VISION_MAX_IMAGE_BYTES_MIN} and {VISION_MAX_IMAGE_BYTES_MAX}."
+            )
+        current["max_image_bytes"] = value
+    if max_images_per_turn is not None:
+        try:
+            count = int(max_images_per_turn)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "vision max_images_per_turn must be an integer."
+            ) from exc
+        if not VISION_MAX_IMAGES_MIN <= count <= VISION_MAX_IMAGES_MAX:
+            raise ValueError(
+                "vision max_images_per_turn must be between "
+                f"{VISION_MAX_IMAGES_MIN} and {VISION_MAX_IMAGES_MAX}."
+            )
+        current["max_images_per_turn"] = count
+    cfg["vision"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
 # UI preferences (color, theme, output mode, ASCII)
 # ---------------------------------------------------------------------------
 
@@ -2409,6 +2495,41 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                         "memory.max_bytes",
                         "Must be between "
                         f"{MEMORY_MAX_BYTES_MIN} and {MEMORY_MAX_BYTES_MAX}.",
+                    )
+
+    vision = cfg.get("vision")
+    if vision is not None:
+        if not isinstance(vision, dict):
+            add("error", "vision", "'vision' must be an object.")
+        else:
+            if "max_image_bytes" in vision:
+                try:
+                    image_bytes = int(vision["max_image_bytes"])
+                except (TypeError, ValueError):
+                    image_bytes = -1
+                if not (
+                    VISION_MAX_IMAGE_BYTES_MIN
+                    <= image_bytes
+                    <= VISION_MAX_IMAGE_BYTES_MAX
+                ):
+                    add(
+                        "error",
+                        "vision.max_image_bytes",
+                        "Must be between "
+                        f"{VISION_MAX_IMAGE_BYTES_MIN} and "
+                        f"{VISION_MAX_IMAGE_BYTES_MAX}.",
+                    )
+            if "max_images_per_turn" in vision:
+                try:
+                    image_count = int(vision["max_images_per_turn"])
+                except (TypeError, ValueError):
+                    image_count = -1
+                if not VISION_MAX_IMAGES_MIN <= image_count <= VISION_MAX_IMAGES_MAX:
+                    add(
+                        "error",
+                        "vision.max_images_per_turn",
+                        "Must be between "
+                        f"{VISION_MAX_IMAGES_MIN} and {VISION_MAX_IMAGES_MAX}.",
                     )
 
     prompt = cfg.get("system_prompt")
