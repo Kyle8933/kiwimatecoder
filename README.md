@@ -490,6 +490,72 @@ kiwimatecoder ask "how do I reverse a list in python?"
 kiwimatecoder ask "review this file" --file app.py --provider openai
 ```
 
+## Headless mode
+
+Run one agentic turn without entering the REPL — useful for scripts and CI:
+
+```bash
+kiwimatecoder -p "Summarize the changes in the working tree."
+echo "Explain src/app.py" | kiwimatecoder -p -
+```
+
+The prompt is the value of `-p/--print`; `-p -` reads it from stdin. Flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--output-format text\|json\|stream-json` | `text` streams assistant text to stdout (default); `json` prints one JSON object at the end; `stream-json` prints one compact JSON object per event, ending with a `result` line. |
+| `--mode ask\|auto-accept\|plan` | Permission mode for this run (default: the configured mode). |
+| `--yes` | Treat approvals as granted (auto-accept) — never prompts. |
+| `--max-turns N` | Hard cap on tool-loop iterations (default 30). |
+| `--provider`, `--model` | Provider/model overrides for this run. |
+| `--workspace PATH` | Workspace root (default: current directory). |
+| `--quiet` | Suppress tool/progress lines on stderr in text mode. |
+
+Tool and progress lines go to **stderr**; only assistant text (text mode) or
+JSON (json/stream-json modes) goes to **stdout**. Headless runs never prompt:
+actions that would need approval are denied with a note on stderr unless
+`--yes` or `--mode auto-accept` is used.
+
+Exit codes: `0` success, `1` runtime failure (missing key, provider error,
+turn cap without a final answer), `2` invalid usage (bad format, mode, or
+workspace).
+
+CI example:
+
+```yaml
+- name: Review the diff
+  run: |
+    kiwimatecoder -p "Review the staged diff and list risks." \
+      --output-format json --max-turns 10 > review.json
+    cat review.json
+```
+
+## Python SDK
+
+Embed the agent in a Python program with `kiwimatecoder.sdk`:
+
+```python
+from kiwimatecoder.sdk import run_agent_sync
+
+result = run_agent_sync(
+    "Summarize README.md in three bullets.",
+    workspace=".",
+    mode="plan",
+)
+
+if result.success:
+    print(result.text)
+print(result.usage, result.cost_usd)  # tokens and estimated USD (or None)
+```
+
+`RunResult` carries `text`, `usage` (`prompt_tokens`/`completion_tokens`),
+`cost_usd`, `provider`, `model`, `mode`, `tools_used`, `messages`, `success`,
+and `error`. Pass `on_event` to observe the same events as stream-JSON
+(`text_delta`, `tool_start`, `tool_end`, `usage`, `done`), `confirm` to
+approve actions, and `console` to receive the agent's tool/progress output.
+Approvals are denied by default. From async code use `await run_agent(...)`;
+`run_agent_sync` raises a clear error if called inside a running loop.
+
 ## Update
 
 Update the CLI from the same Python environment:

@@ -82,7 +82,7 @@ Goal: the agent can see the whole project and the outside world.
 
 Goal: usable in CI, IDEs, and remote environments.
 
-- [ ] 4.1 Headless mode: `-p/--print`, JSON/stream-JSON, exit codes, render abstraction (L)
+- [x] 4.1 Headless mode: `-p/--print`, JSON/stream-JSON, exit codes, render abstraction (L)
 - [ ] 4.2 GitHub Action / CI recipes + pre-commit (M; depends 4.1)
 - [ ] 4.3 IDE integration via ACP/LSP server (XL; depends 4.1)
 - [ ] 4.4 Remote/SSH workspaces + devcontainers (XL; depends 4.5)
@@ -93,7 +93,7 @@ Goal: usable in CI, IDEs, and remote environments.
 - [ ] 4.9 Cross-machine session sync (opt-in) (XL; depends 1.1)
 - [ ] 4.10 Non-TTY fallback, shell completions (bash/zsh/fish), man page (M)
 - [ ] 4.11 OS-level sandbox (seatbelt/landlock) + network policy (L; depends 1.3)
-- [ ] 4.12 Embedded SDK / headless library API (M; depends 4.1)
+- [x] 4.12 Embedded SDK / headless library API (M; depends 4.1)
 
 ## P5 — Ecosystem and polish (ongoing)
 
