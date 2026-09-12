@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.markup import escape
+from rich.panel import Panel
 from rich.table import Table
 
 from kiwimatecoder import tools
@@ -2861,6 +2862,128 @@ def _compact(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
+def _jobs(arg: str, session: Session, console: Console) -> str:
+    """List, inspect, cancel, tick, or start detached agent jobs."""
+    from kiwimatecoder import jobs as jobs_module
+
+    try:
+        parts = shlex.split(arg)
+    except ValueError as exc:
+        console.print(f"[red]Could not parse command: {exc}[/red]")
+        return CommandResult.CONTINUE
+
+    action = parts[0].lower() if parts else "list"
+    rest = parts[1:]
+
+    if action in {"list", "ls"}:
+        records = jobs_module.list_jobs(refresh=True)
+        if not records:
+            console.print("[dim]No background jobs.[/dim]")
+            return CommandResult.CONTINUE
+        table = Table(title="Background jobs", show_header=True)
+        table.add_column("id", style="cyan", no_wrap=True)
+        table.add_column("status")
+        table.add_column("created", no_wrap=True)
+        table.add_column("prompt", overflow="fold")
+        for job in records:
+            style = {
+                "running": "yellow",
+                "succeeded": "green",
+                "failed": "red",
+                "cancelled": "dim",
+            }.get(job.status, "white")
+            table.add_row(
+                job.id,
+                f"[{style}]{job.status}[/{style}]",
+                job.created_at,
+                escape(_shorten(job.prompt, 60)),
+            )
+        console.print(table)
+        return CommandResult.CONTINUE
+
+    if action == "show":
+        if not rest:
+            console.print("[yellow]Usage: /jobs show <id>[/yellow]")
+            return CommandResult.CONTINUE
+        record = jobs_module.refresh_job(rest[0]) or jobs_module.get_job(rest[0])
+        if record is None:
+            console.print(f"[red]Unknown job '{rest[0]}'.[/red]")
+            return CommandResult.CONTINUE
+        console.print(f"ID: [cyan]{record.id}[/cyan]")
+        console.print(f"Status: [bold]{record.status}[/bold]")
+        console.print(f"Prompt: {escape(record.prompt)}")
+        console.print(f"Workspace: {escape(record.workspace)}")
+        console.print(f"Mode: {record.mode}")
+        if record.finished_at:
+            console.print(f"Finished: {record.finished_at}")
+        if record.exit_code is not None:
+            console.print(f"Exit code: {record.exit_code}")
+        if record.error:
+            console.print(f"[red]Error: {escape(record.error)}[/red]")
+        if record.result:
+            console.print(Panel(escape(record.result), title="Result"))
+        console.print(f"[dim]Output: {record.output_path}[/dim]")
+        return CommandResult.CONTINUE
+
+    if action == "cancel":
+        if not rest:
+            console.print("[yellow]Usage: /jobs cancel <id>[/yellow]")
+            return CommandResult.CONTINUE
+        record = jobs_module.cancel_job(rest[0])
+        if record is None:
+            console.print(f"[red]Unknown job '{rest[0]}'.[/red]")
+            return CommandResult.CONTINUE
+        console.print(
+            f"[green]Job[/green] [cyan]{record.id}[/cyan] is now "
+            f"[bold]{record.status}[/bold]."
+        )
+        return CommandResult.CONTINUE
+
+    if action == "tick":
+        started = jobs_module.run_due_jobs()
+        if not started:
+            console.print("[dim]No jobs are due.[/dim]")
+            return CommandResult.CONTINUE
+        for job in started:
+            console.print(
+                f"[green]Started[/green] [cyan]{job.id}[/cyan] "
+                f"([dim]{escape(_shorten(job.prompt, 60))}[/dim])"
+            )
+        return CommandResult.CONTINUE
+
+    if action == "run":
+        prompt = " ".join(rest).strip()
+        if not prompt:
+            console.print("[yellow]Usage: /jobs run <prompt>[/yellow]")
+            return CommandResult.CONTINUE
+        try:
+            record = jobs_module.start_job(
+                prompt,
+                workspace=session.workspace_root,
+                provider=session.provider_id,
+                model=session.model,
+            )
+        except (ValueError, KeyError, jobs_module.JobError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            return CommandResult.CONTINUE
+        console.print(
+            f"[green]Started job[/green] [cyan]{record.id}[/cyan] "
+            f"([dim]{escape(_shorten(record.prompt, 60))}[/dim]). "
+            f"Use /jobs show {record.id} to track it."
+        )
+        return CommandResult.CONTINUE
+
+    console.print(
+        "[yellow]Usage: /jobs [list|show <id>|cancel <id>|tick|run <prompt>][/yellow]"
+    )
+    return CommandResult.CONTINUE
+
+
+def _shorten(text: str, limit: int) -> str:
+    cleaned = " ".join(str(text).split())
+    return cleaned if len(cleaned) <= limit else f"{cleaned[: limit - 3]}..."
+
+
 _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "help": _help,
     "exit": _exit,
@@ -2893,6 +3016,7 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "templates": _templates,
     "mcp": _mcp,
     "lsp": _lsp,
+    "jobs": _jobs,
 }
 
 
@@ -2964,6 +3088,11 @@ _HELP_GROUPS = [
             ),
             ("/compact [budget]", "Trim older history to fit a token budget."),
             ("/templates", "List custom prompt templates."),
+            (
+                "/jobs [list|show <id>|cancel <id>|tick|run <prompt>]",
+                "List or manage detached background agent jobs (tick starts "
+                "scheduled runs).",
+            ),
         ],
     ),
     (
@@ -3055,6 +3184,7 @@ _COMMAND_DESCRIPTIONS = {
     "templates": "List custom prompt templates.",
     "mcp": "List MCP servers and tools, or reconnect and re-register them.",
     "lsp": "Show or toggle language-server diagnostics and navigation.",
+    "jobs": "List or manage background and scheduled agent jobs.",
 }
 
 _CONTEXT_ACTION_DESCRIPTIONS = {
@@ -3129,6 +3259,14 @@ _LSP_ACTION_DESCRIPTIONS = {
     "on": "Enable language-server diagnostics.",
     "off": "Disable LSP and stop running servers.",
     "restart": "Stop running servers and clear failures.",
+}
+
+_JOBS_ACTION_DESCRIPTIONS = {
+    "list": "Show tracked background jobs.",
+    "show": "Show one job's record and result.",
+    "cancel": "Terminate a running job.",
+    "tick": "Start scheduled jobs whose interval has elapsed.",
+    "run": "Start a detached job in this workspace.",
 }
 
 
@@ -3232,6 +3370,8 @@ def slash_argument_completions(
         choices = _MCP_ACTION_DESCRIPTIONS
     elif command == "lsp":
         choices = _LSP_ACTION_DESCRIPTIONS
+    elif command == "jobs":
+        choices = _JOBS_ACTION_DESCRIPTIONS
     elif command == "load":
         choices = {
             s["name"]: f"{s['provider']}:{s['model']} ({s['messages']} msgs)"

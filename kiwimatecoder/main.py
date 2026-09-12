@@ -10,6 +10,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -169,6 +170,9 @@ config_app.add_typer(mode_app, name="mode")
 
 models_app = typer.Typer(help="Manage model visibility and the model catalog.")
 config_app.add_typer(models_app, name="models")
+
+jobs_app = typer.Typer(help="Manage background and scheduled agent jobs.")
+app.add_typer(jobs_app, name="jobs")
 
 
 # --- canonical `config key ...` ---------------------------------------------
@@ -2374,6 +2378,240 @@ def ask(
         )
     )
     console.print()
+
+
+# --- background / scheduled agent jobs --------------------------------------
+
+
+def _short_prompt(prompt: str, limit: int = 60) -> str:
+    text = prompt.replace("\n", " ").strip()
+    return text if len(text) <= limit else f"{text[: limit - 3]}..."
+
+
+def _print_jobs(records: Sequence[Any]) -> None:
+    table = Table(title="Background jobs", show_header=True)
+    table.add_column("id", style="cyan", no_wrap=True)
+    table.add_column("status")
+    table.add_column("created", no_wrap=True)
+    table.add_column("pid", no_wrap=True)
+    table.add_column("prompt", overflow="fold")
+    for record in records:
+        style = {
+            "running": "yellow",
+            "succeeded": "green",
+            "failed": "red",
+            "cancelled": "dim",
+        }.get(record.status, "white")
+        table.add_row(
+            record.id,
+            f"[{style}]{record.status}[/{style}]",
+            record.created_at,
+            str(record.pid or ""),
+            escape(_short_prompt(record.prompt)),
+        )
+    console.print(table)
+
+
+def _print_job(record: Any) -> None:
+    console.print(f"ID: [cyan]{record.id}[/cyan]")
+    console.print(f"Status: [bold]{record.status}[/bold]")
+    console.print(f"Prompt: {escape(record.prompt)}")
+    console.print(f"Workspace: {escape(record.workspace)}")
+    if record.provider:
+        console.print(f"Provider: {record.provider}")
+    if record.model:
+        console.print(f"Model: {record.model}")
+    console.print(f"Mode: {record.mode}")
+    console.print(f"PID: {record.pid or '-'}")
+    console.print(f"Created: {record.created_at}")
+    if record.finished_at:
+        console.print(f"Finished: {record.finished_at}")
+    if record.exit_code is not None:
+        console.print(f"Exit code: {record.exit_code}")
+    if record.interval is not None:
+        console.print(f"Every: {record.interval:g}s (next: {record.next_run_at})")
+    if record.error:
+        console.print(f"[red]Error: {escape(record.error)}[/red]")
+    if record.result is not None:
+        console.print(Panel(escape(record.result or "(empty result)"), title="Result"))
+    if record.output_path:
+        console.print(f"[dim]Output: {record.output_path}[/dim]")
+
+
+def _job_start_error(exc: Exception) -> None:
+    console.print(f"[red]{exc}[/red]")
+    raise typer.Exit(1)
+
+
+@jobs_app.command("run")
+def jobs_run(
+    prompt: Annotated[str, typer.Argument(help="Prompt for the detached agent run")],
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Workspace root (default: current directory)"),
+    ] = None,
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Provider id override")
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Model id override")
+    ] = None,
+    mode: Annotated[
+        str,
+        typer.Option(
+            "--mode",
+            help="Permission mode (default: auto-accept, i.e. unattended).",
+        ),
+    ] = "auto-accept",
+) -> None:
+    """Start a detached agent job and return immediately."""
+    from kiwimatecoder import jobs as jobs_module
+
+    try:
+        record = jobs_module.start_job(
+            prompt,
+            workspace=workspace or Path.cwd(),
+            provider=provider,
+            model=model,
+            mode=mode,
+        )
+    except (ValueError, KeyError, jobs_module.JobError) as exc:
+        _job_start_error(exc)
+        return
+    console.print(
+        f"[green]{_check()} Started job[/green] [cyan]{record.id}[/cyan] "
+        f"([dim]{_short_prompt(record.prompt)}[/dim])"
+    )
+    console.print(
+        f"[dim]Watch with `kiwimatecoder jobs show {record.id}` or "
+        f"`kiwimatecoder jobs output {record.id}`.[/dim]"
+    )
+
+
+@jobs_app.command("schedule")
+def jobs_schedule(
+    prompt: Annotated[str, typer.Argument(help="Prompt for the scheduled run")],
+    every: Annotated[
+        float, typer.Option("--every", help="Seconds between runs")
+    ],
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Workspace root (default: current directory)"),
+    ] = None,
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Provider id override")
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Model id override")
+    ] = None,
+    mode: Annotated[
+        str,
+        typer.Option("--mode", help="Permission mode (default: auto-accept)."),
+    ] = "auto-accept",
+) -> None:
+    """Start a job now and re-run it whenever `jobs tick` finds it due."""
+    from kiwimatecoder import jobs as jobs_module
+
+    try:
+        record = jobs_module.schedule_job(
+            prompt,
+            every,
+            workspace=workspace or Path.cwd(),
+            provider=provider,
+            model=model,
+            mode=mode,
+        )
+    except (ValueError, KeyError, jobs_module.JobError) as exc:
+        _job_start_error(exc)
+        return
+    console.print(
+        f"[green]{_check()} Scheduled job[/green] [cyan]{record.id}[/cyan] "
+        f"every {record.interval:g}s (next: {record.next_run_at})."
+    )
+    console.print(
+        "[dim]Run `kiwimatecoder jobs tick` (e.g. from cron) to start due runs.[/dim]"
+    )
+
+
+@jobs_app.command("list")
+def jobs_list() -> None:
+    """List tracked jobs, refreshing running ones first."""
+    from kiwimatecoder import jobs as jobs_module
+
+    records = jobs_module.list_jobs(refresh=True)
+    if not records:
+        console.print("[dim]No background jobs.[/dim]")
+        return
+    _print_jobs(records)
+
+
+@jobs_app.command("show")
+def jobs_show(job_id: Annotated[str, typer.Argument(help="Job id")]) -> None:
+    """Show one job's record and result."""
+    from kiwimatecoder import jobs as jobs_module
+
+    record = jobs_module.refresh_job(job_id) or jobs_module.get_job(job_id)
+    if record is None:
+        console.print(f"[red]Unknown job '{job_id}'.[/red]")
+        raise typer.Exit(1)
+    _print_job(record)
+
+
+@jobs_app.command("output")
+def jobs_output(job_id: Annotated[str, typer.Argument(help="Job id")]) -> None:
+    """Print a job's combined output (bounded)."""
+    from kiwimatecoder import jobs as jobs_module
+
+    text = jobs_module.read_job_output(job_id)
+    if text is None:
+        console.print(f"[red]Unknown job '{job_id}'.[/red]")
+        raise typer.Exit(1)
+    console.print(text or "(no output yet)", markup=False, highlight=False)
+
+
+@jobs_app.command("cancel")
+def jobs_cancel(job_id: Annotated[str, typer.Argument(help="Job id")]) -> None:
+    """Terminate a running job (SIGTERM, then SIGKILL after a grace period)."""
+    from kiwimatecoder import jobs as jobs_module
+
+    record = jobs_module.cancel_job(job_id)
+    if record is None:
+        console.print(f"[red]Unknown job '{job_id}'.[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Job[/green] [cyan]{record.id}[/cyan] is now "
+        f"[bold]{record.status}[/bold]."
+    )
+
+
+@jobs_app.command("clear")
+def jobs_clear(
+    all_: Annotated[
+        bool,
+        typer.Option("--all", help="Also clear running jobs (terminating them)."),
+    ] = False,
+) -> None:
+    """Delete finished job records and their output logs."""
+    from kiwimatecoder import jobs as jobs_module
+
+    removed = jobs_module.clear_jobs(finished_only=not all_)
+    console.print(f"[green]{_check()} Cleared {removed} job(s).[/green]")
+
+
+@jobs_app.command("tick")
+def jobs_tick() -> None:
+    """Start every scheduled job whose interval has elapsed."""
+    from kiwimatecoder import jobs as jobs_module
+
+    started = jobs_module.run_due_jobs()
+    if not started:
+        console.print("[dim]No jobs are due.[/dim]")
+        return
+    for record in started:
+        console.print(
+            f"[green]{_check()} Started[/green] [cyan]{record.id}[/cyan] "
+            f"([dim]{_short_prompt(record.prompt)}[/dim])"
+        )
 
 
 @app.command("doctor")

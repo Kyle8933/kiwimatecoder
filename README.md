@@ -135,6 +135,7 @@ paths outside the workspace root; writes stay sandboxed.
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
 | `/memory [list\|add\|add-user\|clear]` | Show or edit persistent project and user memory. |
 | `/index [status\|build\|clear]` | Show, refresh, or delete the local codebase index used by semantic search. |
+| `/jobs [list\|show <id>\|cancel <id>\|tick\|run <prompt>]` | List or manage detached background agent jobs; `tick` starts due scheduled runs. |
 | `/config` | Show or change providers, keys, models, filters, permissions, command rules, sampling, styles, themes, output modes, accessibility, verify, and budgets. |
 | `/mcp [list\|reload]` | List configured MCP servers, their status, and registered tools; `reload` reconnects every server. |
 | `/cost` | Show token usage, context gauge, and estimated USD cost for this session (per-model pricing). |
@@ -587,6 +588,48 @@ and `error`. Pass `on_event` to observe the same events as stream-JSON
 approve actions, and `console` to receive the agent's tool/progress output.
 Approvals are denied by default. From async code use `await run_agent(...)`;
 `run_agent_sync` raises a clear error if called inside a running loop.
+
+## Background jobs
+
+Run an agent task detached from your terminal, then check on it later:
+
+```bash
+kiwimatecoder jobs run "Add type hints to kiwimatecoder/jobs.py and run mypy."
+kiwimatecoder jobs list
+kiwimatecoder jobs show <id>
+kiwimatecoder jobs output <id>
+kiwimatecoder jobs cancel <id>
+kiwimatecoder jobs clear          # finished jobs only; --all includes running
+```
+
+Each job is one headless run (`python -m kiwimatecoder -p ... --output-format
+json`) recorded as JSON under `~/.kiwimatecoder/jobs/<id>.json` with its combined
+output at `~/.kiwimatecoder/jobs/<id>.log`. Records survive restarts; `jobs list`
+refreshes running jobs from their process and parsed result, and corruption in
+one record never hides the others.
+
+> **Warning:** `jobs run` defaults to `--mode auto-accept`, so an unattended job
+> can edit files and run commands without asking. Pass `--mode ask` (approvals
+> are then denied, since nothing can prompt) or `--mode plan` (read-only) to
+> constrain a job, and only point jobs at workspaces you trust.
+
+Inside a session, `/jobs [list|show <id>|cancel <id>|tick]` does the same, and
+`/jobs run <prompt>` starts a job in the session's workspace (still
+`auto-accept`). Jobs are marked `running`, `succeeded`, `failed`, or
+`cancelled`; `cancelled` covers an explicit `jobs cancel`.
+
+### Scheduling
+
+Scheduling is pull-based — there is no daemon and no platform cron integration.
+`jobs schedule "<prompt>" --every <seconds>` starts a run immediately and stores
+the interval plus a `next_run_at` timestamp; every later invocation of
+`kiwimatecoder jobs tick` (or `/jobs tick`) starts any run that is due. A job
+that is still running is skipped, so runs never overlap. Wire `jobs tick` to
+your own scheduler, for example:
+
+```cron
+*/5 * * * * kiwimatecoder jobs tick
+```
 
 ## Update
 
