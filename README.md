@@ -725,6 +725,51 @@ approve actions, and `console` to receive the agent's tool/progress output.
 Approvals are denied by default. From async code use `await run_agent(...)`;
 `run_agent_sync` raises a clear error if called inside a running loop.
 
+## Editor integration (ACP)
+
+KiwiMateCoder can run as an [Agent Client Protocol](https://agentclientprotocol.com)
+(ACP) agent over stdio, so an ACP-capable editor can drive it:
+
+```bash
+kiwimatecoder acp [--workspace PATH]
+```
+
+A Zed-style agent configuration (`settings.json`) looks like:
+
+```json
+{
+  "agent": {
+    "command": "kiwimatecoder",
+    "args": ["acp"]
+  }
+}
+```
+
+The server speaks JSON-RPC 2.0 over newline-delimited JSON on stdin/stdout;
+the only thing ever written to stdout is protocol traffic. Implemented subset:
+
+- `initialize` handshake with agent capabilities and version info.
+- `session/new` creates one conversation rooted at the client's `cwd`,
+  using the **configured** permission mode (never an assumed auto-accept).
+- `session/prompt` runs one agent turn, streaming assistant text chunks and
+  tool-call progress as `session/update` notifications; the response carries
+  `end_turn`, `cancelled`, `refusal`, or `max_tokens`.
+- `session/cancel` cancels the running turn; partial assistant text is kept.
+- `session/request_permission` bridges every write/command approval to the
+  editor when the session runs in `ask` mode. Approving with "always"
+  persists the tool allowlist; a cancelled or unanswered request (default
+  timeout 300s, `config acp timeout <s>`) is denied exactly like a normal
+  denial.
+
+This is a focused subset: terminal and MCP client capabilities advertised by
+the editor are not wired through (MCP servers still come from KiwiMateCoder
+config), `loadSession` is not supported, image prompt parts are ignored with a
+note to the model, and the file tools operate on the local filesystem. When
+the client advertises `fs.readTextFile`/`fs.writeTextFile`, the server exposes
+`read_text_file`/`write_text_file` helpers that delegate to
+`fs/read_text_file`/`fs/write_text_file`; otherwise those helpers use the
+local filesystem.
+
 ## Background jobs
 
 Run an agent task detached from your terminal, then check on it later:
@@ -1300,8 +1345,8 @@ issues, exiting non-zero when any error-level problem is found. It surfaces
 exactly what the tolerant getters would silently drop: unknown top-level keys
 (warning), malformed provider/model-filter/sampling/budget/hook/command-rule/
 profile/MCP/plugin entries, invalid regexes, unknown hook events, bad network
-(proxy/CA/offline) values, and bad default mode, output style, UI
-(theme/color/ASCII/output mode), or workspace-flag values.
+(proxy/CA/offline) values, bad ACP permission timeouts, and bad default mode,
+output style, UI (theme/color/ASCII/output mode), or workspace-flag values.
 
 ## Development
 

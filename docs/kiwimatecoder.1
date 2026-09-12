@@ -105,6 +105,18 @@ Provider id (default: configured provider)
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.
+.SS \fBacp\fP
+Run the Agent Client Protocol server over...
+.PP
+.nf
+kiwimatecoder acp [OPTIONS]
+.fi
+.TP
+\fB\-\-workspace\fP \fIPATH\fP
+Default workspace root for new sessions (default: cwd).
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
 .SS \fBdoctor\fP
 Run environment, config, provider, and...
 .PP
@@ -939,6 +951,36 @@ Remove every extra writable path.
 .nf
 kiwimatecoder config sandbox clear-paths [OPTIONS]
 .fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig acp\fP
+Agent Client Protocol (editor integration)...
+.PP
+.nf
+kiwimatecoder config acp [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig acp show\fP
+Show ACP server settings.
+.PP
+.nf
+kiwimatecoder config acp show [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig acp timeout\fP
+Set how long the editor has to answer a...
+.PP
+.nf
+kiwimatecoder config acp timeout [OPTIONS] [SECONDS]
+.fi
+.TP
+\fB[SECONDS]\fP
+Positional argument.
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.

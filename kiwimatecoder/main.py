@@ -27,6 +27,7 @@ from kiwimatecoder.config import (
     clear_command_rules,
     describe_key,
     get_active_provider_ids,
+    get_acp,
     get_always_allowed_tools,
     get_browser,
     get_budget,
@@ -71,6 +72,7 @@ from kiwimatecoder.config import (
     reset_sampling,
     resolve_default_model,
     save_profile,
+    set_acp,
     set_budget,
     set_browser,
     set_default_mode,
@@ -131,6 +133,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config network show[/cyan]        Proxy, CA bundle, offline mode")
     console.print("  [cyan]config index show[/cyan]          Codebase index status")
     console.print("  [cyan]config sandbox show[/cyan]        OS-level command sandbox")
+    console.print("  [cyan]config acp show[/cyan]            ACP editor-integration timeout")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
 
@@ -1160,6 +1163,46 @@ def sandbox_clear_paths() -> None:
     """Remove every extra writable path."""
     set_sandbox(extra_writable=[])
     console.print(f"[green]{_check()} Sandbox extra writable paths cleared.[/green]")
+
+
+# --- canonical `config acp ...` ---------------------------------------------
+
+
+acp_config_app = typer.Typer(help="Agent Client Protocol (editor integration) settings.")
+config_app.add_typer(acp_config_app, name="acp")
+
+
+@acp_config_app.command("show")
+def acp_config_show() -> None:
+    """Show ACP server settings."""
+    settings = get_acp()
+    console.print(
+        f"ACP permission timeout: [cyan]{settings['permission_timeout']}s[/cyan]"
+    )
+
+
+@acp_config_app.command("timeout")
+def acp_config_timeout(
+    seconds: Annotated[
+        int | None,
+        typer.Argument(help="Seconds to wait for the editor's approval (omit to show)"),
+    ] = None,
+) -> None:
+    """Set how long the editor has to answer a permission request."""
+    if seconds is None:
+        console.print(
+            f"ACP permission timeout: [cyan]{get_acp()['permission_timeout']}s[/cyan]"
+        )
+        return
+    try:
+        settings = set_acp(permission_timeout=seconds)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} ACP permission timeout:[/green] "
+        f"{settings['permission_timeout']}s"
+    )
 
 
 @config_app.command("trusted-workspace")
@@ -2899,6 +2942,22 @@ def jobs_tick() -> None:
             f"[green]{_check()} Started[/green] [cyan]{record.id}[/cyan] "
             f"([dim]{_short_prompt(record.prompt)}[/dim])"
         )
+
+
+@app.command("acp")
+def acp_serve(
+    workspace: Annotated[
+        Path | None,
+        typer.Option(
+            "--workspace",
+            help="Default workspace root for new sessions (default: cwd).",
+        ),
+    ] = None,
+) -> None:
+    """Run the Agent Client Protocol server over stdio for editor integration."""
+    from kiwimatecoder.acp.stdio import serve_stdio
+
+    raise typer.Exit(serve_stdio(workspace=workspace))
 
 
 @app.command("doctor")

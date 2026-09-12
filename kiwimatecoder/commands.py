@@ -28,6 +28,7 @@ from kiwimatecoder.config import (
     clear_budget,
     clear_command_rules,
     describe_key,
+    get_acp,
     get_always_allowed_tools,
     get_budget,
     get_browser,
@@ -63,6 +64,7 @@ from kiwimatecoder.config import (
     save_profile,
     search_model_catalog,
     set_active_providers,
+    set_acp,
     set_budget,
     set_browser,
     set_default_mode,
@@ -1035,6 +1037,10 @@ def _config_help(console: Console) -> None:
             "Sandbox shell commands with seatbelt (macOS) or bubblewrap (Linux).",
         ),
         (
+            "/config acp [show|timeout <s>]",
+            "Permission timeout for the ACP server used by editors.",
+        ),
+        (
             "/config sampling [show|set key=value ...|reset]",
             "Get or set temperature, top_p, max_tokens, reasoning_effort.",
         ),
@@ -1994,6 +2000,32 @@ def _config_sandbox(action_parts: list[str], console: Console) -> None:
     )
 
 
+def _config_acp(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+    if action in {"show", "status"}:
+        settings = get_acp()
+        console.print(
+            f"ACP permission timeout: [cyan]{settings['permission_timeout']}s[/cyan]"
+        )
+        return
+    if action in {"timeout", "permission-timeout"}:
+        if not rest:
+            console.print("[yellow]Usage: /config acp timeout <seconds>[/yellow]")
+            return
+        try:
+            settings = set_acp(permission_timeout=rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]ACP permission timeout: "
+            f"{settings['permission_timeout']}s[/green]"
+        )
+        return
+    console.print("[yellow]Usage: /config acp [show|timeout <s>][/yellow]")
+
+
 def _config_commands(  # noqa: C901 - small parser, mirrors the other config sections
     action_parts: list[str], session: Session, console: Console
 ) -> None:
@@ -2588,6 +2620,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_shell(rest, console)
     elif section == "sandbox":
         _config_sandbox(rest, console)
+    elif section == "acp":
+        _config_acp(rest, console)
     elif section == "sampling":
         _config_sampling(rest, console)
     elif section == "web":
@@ -2649,6 +2683,7 @@ def _config_interact(
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
             CommandOption("browser", "Optional Playwright browser automation"),
             CommandOption("shell", "Persistent shell and background job settings"),
+            CommandOption("acp", "ACP editor-integration permission timeout"),
             CommandOption("web", "Web fetch/search limits and local access"),
             CommandOption("network", "Proxy, custom CA bundle, and offline mode"),
             CommandOption("vision", "Image attachment size and count limits"),
@@ -2694,6 +2729,7 @@ def _config_interact(
         "sampling",
         "browser",
         "shell",
+        "acp",
         "web",
         "network",
         "vision",

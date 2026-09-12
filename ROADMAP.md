@@ -84,7 +84,7 @@ Goal: usable in CI, IDEs, and remote environments.
 
 - [x] 4.1 Headless mode: `-p/--print`, JSON/stream-JSON, exit codes, render abstraction (L)
 - [x] 4.2 GitHub Action / CI recipes + pre-commit (M; depends 4.1)
-- [ ] 4.3 IDE integration via ACP/LSP server (XL; depends 4.1)
+- [x] 4.3 IDE integration via ACP/LSP server (XL; depends 4.1)
 - [ ] 4.4 Remote/SSH workspaces + devcontainers (XL; depends 4.5)
 - [x] 4.5 Persistent shell sessions + background process management (M)
 - [x] 4.6 Scheduled/background agent tasks (L; depends 4.1, 2.1)
@@ -108,6 +108,18 @@ auth), and AWS SigV4/IAM request signing.
 falls back to unsandboxed execution with a warning. The sandbox is off by
 default and is a damage-limiter rather than a security boundary: reads stay
 broad, and an unavailable backend degrades to a plain shell with a warning.
+
+**4.3 follow-up:** `kiwimatecoder acp` runs an Agent Client Protocol agent
+over stdio (newline-delimited JSON-RPC 2.0). Implemented subset: `initialize`
+capabilities handshake, `session/new`, `session/prompt`, `session/cancel`,
+`session/update` notifications for assistant text and tool-call progress, the
+`session/request_permission` bridge to the editor's approval UI (with an
+`acp.permission_timeout`, default 300s, denying unanswered requests), and
+optional `fs/read_text_file`/`fs/write_text_file` delegation when the client
+advertises file capabilities. Not yet wired: terminal and MCP client
+capabilities, `loadSession`, and image prompt parts (ignored with a note).
+LSP-based editor features continue to ship through the existing diagnostics
+tools (3.4).
 
 ## P5 — Ecosystem and polish (ongoing)
 

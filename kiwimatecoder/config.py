@@ -156,6 +156,9 @@ def _empty_config() -> dict[str, Any]:
             "network": True,
             "extra_writable": [],
         },
+        "acp": {
+            "permission_timeout": 300,
+        },
     }
 
 
@@ -288,6 +291,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("lsp", {})
     cfg.setdefault("index", {})
     cfg.setdefault("shell", {})
+    cfg.setdefault("acp", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
     # stored empty list, a non-list, or a list of junk is seeded the same way.
@@ -1668,6 +1672,64 @@ def set_sandbox(
     cfg["sandbox"] = current
     save_config(cfg)
     return current
+
+
+# ---------------------------------------------------------------------------
+# Agent Client Protocol (editor integration)
+# ---------------------------------------------------------------------------
+
+ACP_DEFAULTS: dict[str, Any] = {"permission_timeout": 300}
+ACP_TIMEOUT_MIN = 1
+ACP_TIMEOUT_MAX = 3600
+
+
+def get_acp(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized ACP server settings, always fully populated.
+
+    ``permission_timeout`` is how long a ``session/request_permission`` request
+    may wait before the action is denied (seconds). Malformed stored values
+    fall back to :data:`ACP_DEFAULTS` so a hand-edited config can never wedge
+    the editor; ``validate_config`` reports exactly what would be ignored.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("acp") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    return {
+        "permission_timeout": _bounded_int(
+            stored.get("permission_timeout"),
+            int(ACP_DEFAULTS["permission_timeout"]),
+            ACP_TIMEOUT_MIN,
+            ACP_TIMEOUT_MAX,
+        )
+    }
+
+
+def set_acp(
+    permission_timeout: int | str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update ACP server settings; omitted arguments keep their current value.
+
+    Raises ``ValueError`` for a non-integer or out-of-range timeout so callers
+    can validate eagerly.
+    """
+    cfg = cfg or load_config()
+    current = get_acp(cfg)
+    if permission_timeout is not None:
+        try:
+            value = int(permission_timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("acp permission_timeout must be an integer.") from exc
+        if not ACP_TIMEOUT_MIN <= value <= ACP_TIMEOUT_MAX:
+            raise ValueError(
+                "acp permission_timeout must be between "
+                f"{ACP_TIMEOUT_MIN} and {ACP_TIMEOUT_MAX} seconds."
+            )
+        current["permission_timeout"] = value
+    cfg["acp"] = current
+    save_config(cfg)
+    return get_acp(cfg)
 
 
 def get_compact_at_tokens(cfg: dict[str, Any] | None = None) -> int:
@@ -3211,6 +3273,24 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                                 f"sandbox.extra_writable[{index}]",
                                 "Path must be a non-empty string.",
                             )
+
+    acp_section = cfg.get("acp")
+    if acp_section is not None:
+        if not isinstance(acp_section, dict):
+            add("error", "acp", "'acp' must be an object.")
+        else:
+            if "permission_timeout" in acp_section:
+                try:
+                    acp_timeout = int(acp_section["permission_timeout"])
+                except (TypeError, ValueError):
+                    acp_timeout = -1
+                if not ACP_TIMEOUT_MIN <= acp_timeout <= ACP_TIMEOUT_MAX:
+                    add(
+                        "error",
+                        "acp.permission_timeout",
+                        "Must be between "
+                        f"{ACP_TIMEOUT_MIN} and {ACP_TIMEOUT_MAX} seconds.",
+                    )
 
     profiles = cfg.get("profiles")
     if not isinstance(profiles, dict):
