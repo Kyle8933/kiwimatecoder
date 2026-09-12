@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiwimatecoder.config import ensure_config_dir, get_shell_config
+from kiwimatecoder.sandbox import wrap_command
 
 if TYPE_CHECKING:
     from kiwimatecoder.session import Session
@@ -183,8 +184,14 @@ class PersistentShell:
             self._pending_id = None
             self._exit_code = None
         try:
+            argv = _shell_argv()
+            if os.name != "nt":
+                # Keep the long-lived shell inside the OS sandbox when enabled.
+                argv, _warning = wrap_command(
+                    "exec /bin/sh", workspace=self.workspace
+                )
             proc = subprocess.Popen(
-                _shell_argv(),
+                argv,
                 cwd=str(self.workspace),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -425,9 +432,10 @@ class ShellManager:
             except OSError as exc:
                 raise ShellError(f"Failed to create the job output file: {exc}") from exc
             try:
+                argv, _warning = wrap_command(command, workspace=workdir)
                 proc = subprocess.Popen(
-                    command,
-                    shell=True,
+                    command if os.name == "nt" else argv,
+                    shell=os.name == "nt",
                     cwd=str(workdir),
                     stdin=subprocess.DEVNULL,
                     stdout=output_file,

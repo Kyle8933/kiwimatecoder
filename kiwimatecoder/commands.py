@@ -44,6 +44,7 @@ from kiwimatecoder.config import (
     get_prompt_cache,
     get_provider_config,
     get_sampling,
+    get_sandbox,
     get_shell_config,
     get_subagents,
     get_ui,
@@ -72,6 +73,7 @@ from kiwimatecoder.config import (
     set_output_style,
     set_prompt_cache,
     set_sampling,
+    set_sandbox,
     set_selected_model,
     set_selected_provider,
     set_shell_config,
@@ -1028,6 +1030,11 @@ def _config_help(console: Console) -> None:
             "Configure the persistent shell and background job cap.",
         ),
         (
+            "/config sandbox [show|enable on|off|network on|off|"
+            "add-path <path>|remove-path <path>|clear-paths]",
+            "Sandbox shell commands with seatbelt (macOS) or bubblewrap (Linux).",
+        ),
+        (
             "/config sampling [show|set key=value ...|reset]",
             "Get or set temperature, top_p, max_tokens, reasoning_effort.",
         ),
@@ -1910,6 +1917,83 @@ def _config_shell(action_parts: list[str], console: Console) -> None:
     )
 
 
+def _config_sandbox(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "ls", "status"}:
+        settings = get_sandbox()
+        writable = ", ".join(settings["extra_writable"]) or "(none)"
+        console.print(
+            f"Sandbox: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
+            f"Network: [cyan]{'on' if settings['network'] else 'off'}[/cyan]\n"
+            f"Extra writable paths: [cyan]{escape(writable)}[/cyan]"
+        )
+        return
+
+    if action in {"enable", "enabled"}:
+        token = rest[0].lower() if rest else ""
+        if token not in {"on", "off"}:
+            console.print("[yellow]Usage: /config sandbox enable <on|off>[/yellow]")
+            return
+        settings = set_sandbox(enabled=token == "on")
+        console.print(
+            f"[green]Sandbox {'on' if settings['enabled'] else 'off'}.[/green]"
+        )
+        return
+
+    if action in {"network", "net"}:
+        token = rest[0].lower() if rest else ""
+        if token not in {"on", "off"}:
+            console.print("[yellow]Usage: /config sandbox network <on|off>[/yellow]")
+            return
+        settings = set_sandbox(network=token == "on")
+        console.print(
+            f"[green]Sandbox network "
+            f"{'on' if settings['network'] else 'off'}.[/green]"
+        )
+        return
+
+    if action in {"add-path", "add"}:
+        if not rest:
+            console.print("[yellow]Usage: /config sandbox add-path <path>[/yellow]")
+            return
+        paths = list(get_sandbox()["extra_writable"])
+        if rest[0] not in paths:
+            paths.append(rest[0])
+        try:
+            set_sandbox(extra_writable=paths)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(f"[green]Writable in sandbox:[/green] {rest[0]}")
+        return
+
+    if action in {"remove-path", "remove"}:
+        if not rest:
+            console.print("[yellow]Usage: /config sandbox remove-path <path>[/yellow]")
+            return
+        current = get_sandbox()["extra_writable"]
+        paths = [item for item in current if item != rest[0]]
+        if len(paths) == len(current):
+            console.print(f"[dim]No such writable path: {rest[0]}[/dim]")
+            return
+        set_sandbox(extra_writable=paths)
+        console.print(f"[green]Removed writable path:[/green] {rest[0]}")
+        return
+
+    if action in {"clear-paths", "clear"}:
+        set_sandbox(extra_writable=[])
+        console.print("[green]Sandbox extra writable paths cleared.[/green]")
+        return
+
+    console.print(
+        "[yellow]Usage: /config sandbox "
+        "[show|enable on|off|network on|off|add-path <path>|"
+        "remove-path <path>|clear-paths][/yellow]"
+    )
+
+
 def _config_commands(  # noqa: C901 - small parser, mirrors the other config sections
     action_parts: list[str], session: Session, console: Console
 ) -> None:
@@ -2502,6 +2586,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_browser(rest, console)
     elif section == "shell":
         _config_shell(rest, console)
+    elif section == "sandbox":
+        _config_sandbox(rest, console)
     elif section == "sampling":
         _config_sampling(rest, console)
     elif section == "web":

@@ -151,6 +151,11 @@ def _empty_config() -> dict[str, Any]:
             "timeout": 120,
             "max_jobs": 8,
         },
+        "sandbox": {
+            "enabled": False,
+            "network": True,
+            "extra_writable": [],
+        },
     }
 
 
@@ -1588,6 +1593,79 @@ def set_shell_config(
             )
         current["max_jobs"] = jobs
     cfg["shell"] = current
+    save_config(cfg)
+    return current
+
+
+SANDBOX_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "network": True,
+    "extra_writable": [],
+}
+
+
+def get_sandbox(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized OS-sandbox settings, always fully populated.
+
+    Malformed stored values fall back to :data:`SANDBOX_DEFAULTS` so a
+    hand-edited config can never crash run_bash; ``validate_config`` reports
+    exactly what would be ignored. The default is **off**, with network access
+    allowed when a sandbox is enabled.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("sandbox") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective: dict[str, Any] = {
+        "enabled": SANDBOX_DEFAULTS["enabled"],
+        "network": SANDBOX_DEFAULTS["network"],
+        "extra_writable": [],
+    }
+    enabled = stored.get("enabled")
+    if isinstance(enabled, bool):
+        effective["enabled"] = enabled
+    network = stored.get("network")
+    if isinstance(network, bool):
+        effective["network"] = network
+    writable = stored.get("extra_writable")
+    if isinstance(writable, list):
+        effective["extra_writable"] = [
+            str(item) for item in writable if str(item).strip()
+        ]
+    return effective
+
+
+def set_sandbox(
+    enabled: bool | None = None,
+    network: bool | None = None,
+    extra_writable: Sequence[str] | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update sandbox settings; omitted arguments keep their value.
+
+    ``extra_writable`` replaces the list. Raises ``ValueError`` for non-boolean
+    flags or an empty/non-string path, so callers validate eagerly.
+    """
+    cfg = cfg or load_config()
+    current = get_sandbox(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("sandbox enabled must be true or false.")
+        current["enabled"] = enabled
+    if network is not None:
+        if not isinstance(network, bool):
+            raise ValueError("sandbox network must be true or false.")
+        current["network"] = network
+    if extra_writable is not None:
+        paths: list[str] = []
+        for item in extra_writable:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    "sandbox extra_writable paths must be non-empty strings."
+                )
+            paths.append(item.strip())
+        current["extra_writable"] = paths
+    cfg["sandbox"] = current
     save_config(cfg)
     return current
 
@@ -3103,6 +3181,36 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                         "Must be between "
                         f"{SHELL_MAX_JOBS_MIN} and {SHELL_MAX_JOBS_MAX}.",
                     )
+
+    sandbox_section = cfg.get("sandbox")
+    if sandbox_section is not None:
+        if not isinstance(sandbox_section, dict):
+            add("error", "sandbox", "'sandbox' must be an object.")
+        else:
+            if "enabled" in sandbox_section and not isinstance(
+                sandbox_section["enabled"], bool
+            ):
+                add("error", "sandbox.enabled", "'enabled' must be true or false.")
+            if "network" in sandbox_section and not isinstance(
+                sandbox_section["network"], bool
+            ):
+                add("error", "sandbox.network", "'network' must be true or false.")
+            if "extra_writable" in sandbox_section:
+                writable = sandbox_section["extra_writable"]
+                if not isinstance(writable, list):
+                    add(
+                        "error",
+                        "sandbox.extra_writable",
+                        "'extra_writable' must be a list of paths.",
+                    )
+                else:
+                    for index, path in enumerate(writable):
+                        if not isinstance(path, str) or not path.strip():
+                            add(
+                                "error",
+                                f"sandbox.extra_writable[{index}]",
+                                "Path must be a non-empty string.",
+                            )
 
     profiles = cfg.get("profiles")
     if not isinstance(profiles, dict):

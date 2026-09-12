@@ -255,6 +255,43 @@ shell: pytest -q        # runs inside backend with the venv active
   background job. `run_bash` is unchanged and still the right tool for
   one-shot commands.
 
+## Command sandboxing
+
+On macOS and Linux you can execute `run_bash` (and the persistent shell and its
+background jobs) through an OS-level sandbox. It is **off by default**:
+
+```bash
+kiwimatecoder config sandbox show
+kiwimatecoder config sandbox enable on
+kiwimatecoder config sandbox network off          # block network access
+kiwimatecoder config sandbox add-path ~/shared    # extra writable directory
+```
+
+The REPL equivalent is `/config sandbox [show|enable on|off|network on|off|
+add-path <path>|remove-path <path>|clear-paths]`.
+
+- **macOS** uses seatbelt via `sandbox-exec`: `process*` is allowed, reads are
+  broadly allowed, and writes are limited to the workspace, `/tmp`, and
+  `extra_writable`.
+- **Linux** uses bubblewrap (`bwrap`): `/` is mounted read-only, the workspace
+  is read-write, `/tmp` is a private tmpfs, and `--unshare-net` is added when
+  the network toggle is off. Install the `bubblewrap` package to use it.
+- Windows has no supported backend; enabling it there falls back to running
+  unsandboxed with a warning in the tool output.
+- When the sandbox is enabled, the approval preview shows the wrapped command
+  and the network mode. If the backend is missing or fails to start, the tool
+  warns and runs the command unsandboxed rather than failing.
+- Config lives in the `sandbox` section:
+  `{"enabled": false, "network": true, "extra_writable": []}`.
+
+> **Limitations:** the sandbox is a damage-limiter for ordinary commands, not a
+> security boundary against a hostile model or malicious code. Reads stay
+> broad, the sandbox runs with your user's privileges (no user namespaces or
+> credential isolation on macOS), and an unavailable backend silently degrades
+> to an unsandboxed shell with only a warning. Read access to API keys stored
+> on disk is not blocked, so use `--mode plan` or command rules when that
+> matters.
+
 ## Web access
 
 `web_search` searches the web with the DuckDuckGo HTML endpoint (no API key)

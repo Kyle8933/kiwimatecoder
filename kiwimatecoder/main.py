@@ -48,6 +48,7 @@ from kiwimatecoder.config import (
     get_prompt_cache,
     get_provider_config,
     get_sampling,
+    get_sandbox,
     get_selected_provider_id,
     get_shell_config,
     get_subagents,
@@ -83,6 +84,7 @@ from kiwimatecoder.config import (
     set_output_style,
     set_prompt_cache,
     set_sampling,
+    set_sandbox,
     set_selected_model,
     set_selected_provider,
     set_shell_config,
@@ -128,6 +130,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config web show[/cyan]            Web fetch/search limits")
     console.print("  [cyan]config network show[/cyan]        Proxy, CA bundle, offline mode")
     console.print("  [cyan]config index show[/cyan]          Codebase index status")
+    console.print("  [cyan]config sandbox show[/cyan]        OS-level command sandbox")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
 
@@ -1050,6 +1053,113 @@ def shell_max_jobs(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Background job cap:[/green] {settings['max_jobs']}")
+
+
+# --- canonical `config sandbox ...` -----------------------------------------
+
+
+sandbox_app = typer.Typer(help="Optional OS-level command sandboxing.")
+config_app.add_typer(sandbox_app, name="sandbox")
+
+
+def _print_sandbox(settings: dict[str, Any]) -> None:
+    writable = ", ".join(settings["extra_writable"]) or "(none)"
+    console.print(
+        f"Sandbox: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
+        f"Network: [cyan]{'on' if settings['network'] else 'off'}[/cyan]\n"
+        f"Extra writable paths: [cyan]{escape(writable)}[/cyan]"
+    )
+
+
+@sandbox_app.command("show")
+def sandbox_show() -> None:
+    """Show sandbox settings and the detected backend."""
+    from kiwimatecoder import sandbox as sandbox_module
+
+    _print_sandbox(get_sandbox())
+    available = sandbox_module.sandbox_available()
+    if available is None:
+        console.print("[dim]No sandbox backend detected on this platform.[/dim]")
+    else:
+        backend, path = available
+        console.print(f"Backend: [cyan]{backend}[/cyan] ({path})")
+
+
+@sandbox_app.command("enable")
+def sandbox_enable(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Enable or disable OS-level sandboxing for shell commands."""
+    if state is None:
+        current = "on" if get_sandbox()["enabled"] else "off"
+        console.print(f"Sandbox: [cyan]{current}[/cyan]")
+        return
+    settings = set_sandbox(enabled=_parse_on_off(state))
+    console.print(
+        f"[green]{_check()} Sandbox:[/green] "
+        f"{'on' if settings['enabled'] else 'off'}"
+    )
+
+
+@sandbox_app.command("network")
+def sandbox_network(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Allow or block network access inside the sandbox."""
+    if state is None:
+        current = "on" if get_sandbox()["network"] else "off"
+        console.print(f"Sandbox network: [cyan]{current}[/cyan]")
+        return
+    settings = set_sandbox(network=_parse_on_off(state))
+    console.print(
+        f"[green]{_check()} Sandbox network:[/green] "
+        f"{'on' if settings['network'] else 'off'}"
+    )
+
+
+@sandbox_app.command("add-path")
+def sandbox_add_path(
+    path: Annotated[
+        str, typer.Argument(help="Path to make writable inside the sandbox")
+    ],
+) -> None:
+    """Add an extra writable path to the sandbox profile."""
+    paths = list(get_sandbox()["extra_writable"])
+    if path not in paths:
+        paths.append(path)
+    try:
+        set_sandbox(extra_writable=paths)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{_check()} Writable in sandbox:[/green] {path}")
+
+
+@sandbox_app.command("remove-path")
+def sandbox_remove_path(
+    path: Annotated[str, typer.Argument(help="Path to remove")],
+) -> None:
+    """Remove an extra writable path from the sandbox profile."""
+    current = get_sandbox()["extra_writable"]
+    paths = [item for item in current if item != path]
+    if len(paths) == len(current):
+        console.print(f"[dim]No such writable path: {path}[/dim]")
+        return
+    set_sandbox(extra_writable=paths)
+    console.print(f"[green]{_check()} Removed writable path:[/green] {path}")
+
+
+@sandbox_app.command("clear-paths")
+def sandbox_clear_paths() -> None:
+    """Remove every extra writable path."""
+    set_sandbox(extra_writable=[])
+    console.print(f"[green]{_check()} Sandbox extra writable paths cleared.[/green]")
 
 
 @config_app.command("trusted-workspace")

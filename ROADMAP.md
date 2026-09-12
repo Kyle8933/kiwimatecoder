@@ -92,7 +92,7 @@ Goal: usable in CI, IDEs, and remote environments.
 - [x] 4.8 Proxy/CA config + offline/air-gapped mode (M; depends 0.5)
 - [ ] 4.9 Cross-machine session sync (opt-in) (XL; depends 1.1)
 - [x] 4.10 Non-TTY fallback, shell completions (bash/zsh/fish), man page (M)
-- [ ] 4.11 OS-level sandbox (seatbelt/landlock) + network policy (L; depends 1.3)
+- [x] 4.11 OS-level sandbox (seatbelt/bwrap) + network policy (L; depends 1.3)
 - [x] 4.12 Embedded SDK / headless library API (M; depends 4.1)
 
 **4.7 follow-up:** gateway providers ship through the OpenAI-compatible path —
@@ -102,6 +102,12 @@ placeholder endpoints because the resource is account-specific; point a custom
 provider at the real URL. Deferred: interactive OAuth/device-code flows, Azure
 managed identity, Google Vertex AI (project-specific endpoint plus OAuth2-only
 auth), and AWS SigV4/IAM request signing.
+
+**4.11 follow-up:** macOS uses seatbelt (`sandbox-exec`); Linux uses bubblewrap
+(`bwrap`, install the distro `bubblewrap` package); Windows is unsupported and
+falls back to unsandboxed execution with a warning. The sandbox is off by
+default and is a damage-limiter rather than a security boundary: reads stay
+broad, and an unavailable backend degrades to a plain shell with a warning.
 
 ## P5 — Ecosystem and polish (ongoing)
 
