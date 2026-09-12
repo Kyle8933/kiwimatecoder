@@ -10,7 +10,14 @@ import pytest
 from rich.console import Console
 
 from kiwimatecoder.agent import Agent
-from kiwimatecoder.client import AssembledToolCall, Done, ProviderError, TextDelta, ToolCallDelta
+from kiwimatecoder.client import (
+    AssembledToolCall,
+    Done,
+    ProviderError,
+    TextDelta,
+    ToolCallDelta,
+    Usage,
+)
 from kiwimatecoder.permissions import ApprovalResult, PermissionMode
 from kiwimatecoder.session import Session
 from tests.conftest import track_console
@@ -68,6 +75,43 @@ async def test_agent_run_turn_pure_text(agent_session):
         "role": "assistant",
         "content": "Hello world!",
     }
+
+
+@pytest.mark.anyio
+async def test_agent_event_handler_emits_and_survives_exceptions(agent_session):
+    console = Console(quiet=True)
+    confirm = MagicMock(return_value=True)
+    seen: list[tuple[str, dict]] = []
+
+    def handler(name, payload):
+        seen.append((name, payload))
+        raise RuntimeError("bad subscriber")
+
+    agent = Agent(agent_session, console, confirm, event_handler=handler)
+    mock_events = [
+        TextDelta(text="Hi"),
+        Usage(prompt_tokens=4, completion_tokens=2),
+        Done(finish_reason="stop"),
+    ]
+
+    async def mock_stream(*args, **kwargs):
+        for event in mock_events:
+            yield event
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=mock_stream,
+        ),
+    ):
+        await agent.run_turn("Hi")
+
+    names = [name for name, _payload in seen]
+    assert "text_delta" in names
+    assert "usage" in names
+    assert names[-1] == "done"
+    assert seen[-1][1]["reason"] == "stop"
 
 
 @pytest.mark.anyio

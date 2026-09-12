@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from rich.console import Console
 from rich.markup import escape
@@ -33,6 +34,10 @@ from kiwimatecoder.tools.base import FunctionTool, ToolResult
 POST_EDIT_DIAGNOSTICS_TIMEOUT = 3.0
 MAX_EDIT_DIAGNOSTICS = 10
 TASK_RESULT_MAX_CHARS = 8000
+
+EventCallback = Callable[[str, dict[str, Any]], None]
+
+_log = logging.getLogger(__name__)
 
 
 class TaskConsole(Console):
@@ -89,6 +94,9 @@ class Agent:
         bus: events.EventBus | None = None,
         ascii_mode: bool = False,
         output_mode: str = "normal",
+        event_handler: EventCallback | None = None,
+        max_turns: int | None = None,
+        render_text: bool = True,
     ) -> None:
         self.session = session
         self.console = console
@@ -97,6 +105,29 @@ class Agent:
         self._budget_warned = False
         self.ascii_mode = bool(ascii_mode)
         self.output_mode = output_mode if output_mode in ui.OUTPUT_MODES else "normal"
+        self.event_handler = event_handler
+        self.max_turns = max_turns
+        self.render_text = render_text
+
+    def _emit(self, name: str, **payload: Any) -> None:
+        """Forward one render event, never letting a bad subscriber break a run."""
+        if self.event_handler is None:
+            return
+        try:
+            self.event_handler(name, payload)
+        except Exception:
+            _log.debug("event handler failed for %s", name, exc_info=True)
+
+    def _redacted_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Return a JSON-safe copy of tool arguments with secrets redacted."""
+        try:
+            rendered = redact(
+                json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+            )
+            parsed = json.loads(rendered)
+            return parsed if isinstance(parsed, dict) else {"value": parsed}
+        except (TypeError, ValueError):
+            return {"value": redact(str(args))}
 
     def _glyph(self, name: str) -> str:
         """Active glyph escaped for direct use inside Rich markup."""
@@ -165,6 +196,7 @@ class Agent:
         blocked, reason = self._budget_exceeded()
         if blocked:
             self.console.print(f"[red]{reason}[/red]")
+            self._emit("done", reason="budget", error=reason)
             return
 
         from kiwimatecoder.config import get_model_routing
@@ -181,6 +213,7 @@ class Agent:
         edited = False
         verified = False
         first_pass = True
+        tool_turns = 0
         while True:
             if first_pass:
                 first_pass = False
@@ -194,6 +227,8 @@ class Agent:
                 )
             except ProviderError as exc:
                 self.console.print(f"\n[red]{exc}[/red]")
+                self._emit("error", kind="provider", error=str(exc))
+                self._emit("done", reason="provider_error")
                 return
 
             self.session.messages.append(assistant_msg)
@@ -207,9 +242,14 @@ class Agent:
                     # The model must answer the steered message.
                     continue
                 self._warn_budget()
+                self._emit("done", reason="stop")
                 return
 
+            if self.max_turns is not None and tool_turns >= self.max_turns:
+                self._emit("done", reason="max_turns", limit=self.max_turns)
+                return
             edited = await self._handle_tool_calls(tool_calls) or edited
+            tool_turns += 1
             self._warn_budget()
 
     def _current_cost(self) -> float | None:
@@ -424,15 +464,22 @@ class Agent:
                     if thinking:
                         status.stop()
                         thinking = False
-                    self.console.print(
-                        event.text, end="", markup=False, highlight=False
-                    )
+                    if self.render_text:
+                        self.console.print(
+                            event.text, end="", markup=False, highlight=False
+                        )
+                        printed_any = True
+                    self._emit("text_delta", text=event.text)
                     text_parts.append(event.text)
-                    printed_any = True
                 elif isinstance(event, ToolCallDelta):
                     assembler.add(event)
                 elif isinstance(event, Usage):
                     self.session.add_usage(event.prompt_tokens, event.completion_tokens)
+                    self._emit(
+                        "usage",
+                        prompt_tokens=event.prompt_tokens,
+                        completion_tokens=event.completion_tokens,
+                    )
                 elif isinstance(event, Done):
                     pass
         except BaseException:
@@ -730,6 +777,11 @@ class Agent:
         if early is not None:
             return early
         assert prepared is not None
+        self._emit(
+            "tool_start",
+            tool=prepared.call.name,
+            args=self._redacted_args(prepared.args),
+        )
         if self.output_mode == "verbose":
             self.console.print(self._verbose_args(prepared.args))
 
@@ -749,6 +801,11 @@ class Agent:
         if early is not None:
             return early
         assert prepared is not None
+        self._emit(
+            "tool_start",
+            tool=prepared.call.name,
+            args=self._redacted_args(prepared.args),
+        )
         if self.output_mode == "verbose":
             self.console.print(self._verbose_args(prepared.args))
 
@@ -785,6 +842,12 @@ class Agent:
             result.ok,
             duration_ms,
             decision_value,
+        )
+        self._emit(
+            "tool_end",
+            tool=prepared.call.name,
+            ok=result.ok,
+            duration_ms=duration_ms,
         )
 
         if result.ok:

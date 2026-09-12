@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shlex
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -1717,6 +1718,147 @@ def list_cmd() -> None:
     provider_list()
 
 
+HEADLESS_OUTPUT_FORMATS = ("text", "json", "stream-json")
+
+
+def _headless_error(message: str) -> None:
+    sys.stderr.write(f"error: {message}\n")
+
+
+def _run_headless(
+    prompt: str,
+    *,
+    output_format: str,
+    mode: str | None,
+    yes: bool,
+    max_turns: int,
+    provider: str | None,
+    model: str | None,
+    workspace: Path | None,
+    quiet: bool,
+) -> int:
+    """Run one headless agent turn; returns the process exit code (0/1/2)."""
+    if output_format not in HEADLESS_OUTPUT_FORMATS:
+        _headless_error(
+            f"Invalid --output-format '{output_format}'. "
+            "Choose: text, json, stream-json."
+        )
+        return 2
+    if max_turns < 1:
+        _headless_error("--max-turns must be at least 1.")
+        return 2
+    if not prompt.strip():
+        _headless_error("Prompt is empty.")
+        return 2
+    try:
+        resolved_mode: PermissionMode | None = (
+            PermissionMode.from_str(mode) if mode is not None else None
+        )
+    except ValueError as exc:
+        _headless_error(str(exc))
+        return 2
+    if resolved_mode is None and yes:
+        # --yes is shorthand for auto-accept when --mode is not explicit.
+        resolved_mode = PermissionMode.AUTO
+
+    if provider is not None:
+        try:
+            get_provider_config(provider)
+        except KeyError:
+            _headless_error(f"Unknown provider '{provider}'.")
+            return 2
+
+    try:
+        workspace_root = (workspace or Path.cwd()).expanduser()
+    except (OSError, RuntimeError) as exc:
+        _headless_error(str(exc))
+        return 2
+    if not workspace_root.is_dir():
+        _headless_error(f"Workspace is not a directory: {workspace_root}")
+        return 2
+
+    from kiwimatecoder import headless
+
+    stderr_console = Console(file=sys.stderr, no_color=True, highlight=False)
+    on_event: Callable[[str, dict[str, Any]], None] | None = None
+    if output_format == "text":
+        console = stderr_console
+
+        def render_text(name: str, payload: dict[str, Any]) -> None:
+            if name == "text_delta":
+                sys.stdout.write(str(payload.get("text") or ""))
+                sys.stdout.flush()
+
+        on_event = render_text
+
+    elif output_format == "stream-json":
+        console = None
+
+        def render_stream_json(name: str, payload: dict[str, Any]) -> None:
+            record: dict[str, Any] = {"type": name}
+            record.update(payload)
+            sys.stdout.write(
+                json.dumps(record, separators=(",", ":"), default=str) + "\n"
+            )
+            sys.stdout.flush()
+
+        on_event = render_stream_json
+
+    else:
+        console = None
+
+    def deny(summary: str, preview: str | None) -> bool:
+        """Deny approvals that cannot be prompted for, with a visible note."""
+        sys.stderr.write(
+            f"denied (headless mode has no approval prompt; pass --yes to "
+            f"allow): {summary}\n"
+        )
+        return False
+
+    outcome = asyncio.run(
+        headless.run_agent_once(
+            prompt,
+            workspace=workspace_root,
+            provider=provider,
+            model=model,
+            mode=resolved_mode,
+            confirm=deny,
+            on_event=on_event,
+            max_turns=max_turns,
+            console=console,
+            render_text=False,
+            output_mode="compact" if quiet and output_format == "text" else None,
+        )
+    )
+
+    payload = {
+        "result": outcome.text,
+        "usage": outcome.usage,
+        "cost_usd": outcome.cost_usd,
+        "provider": outcome.provider,
+        "model": outcome.model,
+        "mode": outcome.mode,
+        "tools_used": outcome.tools_used,
+        "messages": outcome.messages,
+        "success": outcome.success,
+    }
+    if output_format == "json":
+        sys.stdout.write(
+            json.dumps(payload, separators=(",", ":"), default=str) + "\n"
+        )
+    elif output_format == "stream-json":
+        record: dict[str, Any] = {"type": "result"}
+        record.update(payload)
+        sys.stdout.write(
+            json.dumps(record, separators=(",", ":"), default=str) + "\n"
+        )
+    else:
+        sys.stdout.write("\n")
+    if outcome.error and output_format != "text":
+        sys.stderr.write(f"error: {outcome.error}\n")
+    return 0 if outcome.success else 1
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -1760,6 +1902,66 @@ def main(
             help="Apply a saved config profile for this session (not persisted).",
         ),
     ] = None,
+    print_prompt: Annotated[
+        str | None,
+        typer.Option(
+            "--print",
+            "-p",
+            help="Run one headless agent turn with this prompt ('-' reads stdin).",
+        ),
+    ] = None,
+    output_format: Annotated[
+        str,
+        typer.Option(
+            "--output-format",
+            help="Headless output: text, json, or stream-json.",
+        ),
+    ] = "text",
+    mode_override: Annotated[
+        str | None,
+        typer.Option(
+            "--mode",
+            help="Override the permission mode: ask, auto-accept, or plan.",
+        ),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Treat every approval as granted (auto-accept) without prompting.",
+        ),
+    ] = False,
+    max_turns: Annotated[
+        int,
+        typer.Option(
+            "--max-turns",
+            help="Maximum tool-loop iterations before stopping (default 30).",
+        ),
+    ] = 30,
+    provider_override: Annotated[
+        str | None,
+        typer.Option("--provider", help="Provider id override for this run."),
+    ] = None,
+    model_override: Annotated[
+        str | None,
+        typer.Option("--model", help="Model id override for this run."),
+    ] = None,
+    workspace: Annotated[
+        Path | None,
+        typer.Option(
+            "--workspace",
+            help="Workspace root for this run (default: current directory).",
+        ),
+    ] = None,
+    quiet: Annotated[
+        bool,
+        typer.Option(
+            "--quiet",
+            "-q",
+            help="Suppress tool/progress lines on stderr in headless text mode.",
+        ),
+    ] = False,
 ) -> None:
     """Launch the interactive session when run with no subcommand."""
     if version:
@@ -1771,6 +1973,24 @@ def main(
 
     if ctx.invoked_subcommand is not None:
         return
+
+    if print_prompt is not None:
+        prompt = print_prompt
+        if prompt == "-":
+            prompt = sys.stdin.read()
+        raise typer.Exit(
+            _run_headless(
+                prompt,
+                output_format=output_format,
+                mode=mode_override,
+                yes=yes,
+                max_turns=max_turns,
+                provider=provider_override,
+                model=model_override,
+                workspace=workspace,
+                quiet=quiet,
+            )
+        )
 
     from kiwimatecoder import repl
 
