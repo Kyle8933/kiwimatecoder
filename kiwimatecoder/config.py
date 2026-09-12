@@ -156,6 +156,15 @@ def _empty_config() -> dict[str, Any]:
             "network": True,
             "extra_writable": [],
         },
+        "remote": {
+            "enabled": False,
+            "host": "",
+            "user": "",
+            "port": 22,
+            "identity": "",
+            "workspace": "",
+            "devcontainer": "auto",
+        },
         "acp": {
             "permission_timeout": 300,
         },
@@ -291,6 +300,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("lsp", {})
     cfg.setdefault("index", {})
     cfg.setdefault("shell", {})
+    cfg.setdefault("remote", {})
     cfg.setdefault("acp", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
@@ -1670,6 +1680,125 @@ def set_sandbox(
             paths.append(item.strip())
         current["extra_writable"] = paths
     cfg["sandbox"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
+# Remote (SSH) and devcontainer execution
+# ---------------------------------------------------------------------------
+
+REMOTE_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "host": "",
+    "user": "",
+    "port": 22,
+    "identity": "",
+    "workspace": "",
+    "devcontainer": "auto",
+}
+REMOTE_SPECIAL_DEVCONTAINERS = ("auto", "off")
+REMOTE_PORT_MIN = 1
+REMOTE_PORT_MAX = 65535
+
+
+def get_remote(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized remote-execution settings, always fully populated.
+
+    Malformed stored values fall back to :data:`REMOTE_DEFAULTS` so a
+    hand-edited config can never crash a shell command; ``validate_config``
+    reports exactly what would be ignored. An ``identity`` path is kept as
+    stored (existence is validated on write and reported by ``validate_config``)
+    and any non-empty ``devcontainer`` string other than ``"auto"``/``"off"``
+    is treated as a container name.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("remote") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(REMOTE_DEFAULTS)
+    enabled = stored.get("enabled")
+    if isinstance(enabled, bool):
+        effective["enabled"] = enabled
+    for key in ("host", "user", "identity", "workspace"):
+        value = stored.get(key)
+        if isinstance(value, str):
+            effective[key] = value.strip()
+    effective["port"] = _bounded_int(
+        stored.get("port"),
+        int(REMOTE_DEFAULTS["port"]),
+        REMOTE_PORT_MIN,
+        REMOTE_PORT_MAX,
+    )
+    devcontainer = stored.get("devcontainer")
+    if isinstance(devcontainer, str) and devcontainer.strip():
+        effective["devcontainer"] = devcontainer.strip()
+    return effective
+
+
+def set_remote(
+    enabled: bool | None = None,
+    host: str | None = None,
+    user: str | None = None,
+    port: int | str | None = None,
+    identity: str | None = None,
+    workspace: str | None = None,
+    devcontainer: str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update remote-execution settings; omitted arguments keep their value.
+
+    Raises ``ValueError`` for a non-boolean ``enabled``, a non-string field, a
+    ``port`` outside 1-65535, an ``identity`` that is neither empty nor an
+    existing file, an empty ``devcontainer``, or enabling remote execution with
+    no host and no explicit container name. Pass an empty string to clear
+    ``host``/``user``/``identity``/``workspace``.
+    """
+    cfg = cfg or load_config()
+    current = get_remote(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("remote enabled must be true or false.")
+        current["enabled"] = enabled
+    for key, text in (("host", host), ("user", user), ("workspace", workspace)):
+        if text is not None:
+            if not isinstance(text, str):
+                raise ValueError(f"remote {key} must be a string.")
+            current[key] = text.strip()
+    if port is not None:
+        try:
+            port_number = int(port)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("remote port must be an integer.") from exc
+        if not REMOTE_PORT_MIN <= port_number <= REMOTE_PORT_MAX:
+            raise ValueError(
+                f"remote port must be between {REMOTE_PORT_MIN} and {REMOTE_PORT_MAX}."
+            )
+        current["port"] = port_number
+    if identity is not None:
+        if not isinstance(identity, str):
+            raise ValueError("remote identity must be a path string.")
+        cleaned = identity.strip()
+        if cleaned:
+            path = Path(cleaned).expanduser()
+            if not path.is_file():
+                raise ValueError(f"remote identity file does not exist: {cleaned}")
+            cleaned = str(path)
+        current["identity"] = cleaned
+    if devcontainer is not None:
+        if not isinstance(devcontainer, str) or not devcontainer.strip():
+            raise ValueError(
+                "remote devcontainer must be 'auto', 'off', or a container name."
+            )
+        current["devcontainer"] = devcontainer.strip()
+    if current["enabled"] and not current["host"] and (
+        current["devcontainer"] in REMOTE_SPECIAL_DEVCONTAINERS
+    ):
+        raise ValueError(
+            "remote host is required when remote execution is enabled "
+            "(set a host or name a devcontainer)."
+        )
+    cfg["remote"] = current
     save_config(cfg)
     return current
 
@@ -3273,6 +3402,62 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                                 f"sandbox.extra_writable[{index}]",
                                 "Path must be a non-empty string.",
                             )
+
+    remote_section = cfg.get("remote")
+    if remote_section is not None:
+        if not isinstance(remote_section, dict):
+            add("error", "remote", "'remote' must be an object.")
+        else:
+            if "enabled" in remote_section and not isinstance(
+                remote_section["enabled"], bool
+            ):
+                add("error", "remote.enabled", "'enabled' must be true or false.")
+            for field in ("host", "user", "workspace"):
+                if field in remote_section and not isinstance(
+                    remote_section[field], str
+                ):
+                    add("error", f"remote.{field}", f"'{field}' must be a string.")
+            if "port" in remote_section:
+                try:
+                    remote_port = int(remote_section["port"])
+                except (TypeError, ValueError):
+                    remote_port = -1
+                if not REMOTE_PORT_MIN <= remote_port <= REMOTE_PORT_MAX:
+                    add(
+                        "error",
+                        "remote.port",
+                        "Must be between "
+                        f"{REMOTE_PORT_MIN} and {REMOTE_PORT_MAX}.",
+                    )
+            if "identity" in remote_section:
+                identity = remote_section["identity"]
+                if not isinstance(identity, str):
+                    add("error", "remote.identity", "'identity' must be a string.")
+                elif identity.strip() and not Path(identity).expanduser().is_file():
+                    add(
+                        "error",
+                        "remote.identity",
+                        f"Identity file does not exist: {identity}",
+                    )
+            if "devcontainer" in remote_section:
+                devcontainer = remote_section["devcontainer"]
+                if not isinstance(devcontainer, str) or not devcontainer.strip():
+                    add(
+                        "error",
+                        "remote.devcontainer",
+                        "'devcontainer' must be 'auto', 'off', or a container name.",
+                    )
+            if (
+                remote_section.get("enabled") is True
+                and not str(remote_section.get("host") or "").strip()
+                and str(remote_section.get("devcontainer") or "auto").strip()
+                in REMOTE_SPECIAL_DEVCONTAINERS
+            ):
+                add(
+                    "error",
+                    "remote.host",
+                    "A host is required when remote execution is enabled.",
+                )
 
     acp_section = cfg.get("acp")
     if acp_section is not None:

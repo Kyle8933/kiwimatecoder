@@ -48,6 +48,7 @@ from kiwimatecoder.config import (
     get_profiles,
     get_prompt_cache,
     get_provider_config,
+    get_remote,
     get_sampling,
     get_sandbox,
     get_selected_provider_id,
@@ -85,6 +86,7 @@ from kiwimatecoder.config import (
     set_network,
     set_output_style,
     set_prompt_cache,
+    set_remote,
     set_sampling,
     set_sandbox,
     set_selected_model,
@@ -133,6 +135,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config network show[/cyan]        Proxy, CA bundle, offline mode")
     console.print("  [cyan]config index show[/cyan]          Codebase index status")
     console.print("  [cyan]config sandbox show[/cyan]        OS-level command sandbox")
+    console.print("  [cyan]config remote show[/cyan]         SSH/devcontainer command execution")
     console.print("  [cyan]config acp show[/cyan]            ACP editor-integration timeout")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
@@ -1165,6 +1168,206 @@ def sandbox_clear_paths() -> None:
     console.print(f"[green]{_check()} Sandbox extra writable paths cleared.[/green]")
 
 
+# --- canonical `config remote ...` ------------------------------------------
+
+
+remote_app = typer.Typer(help="Run shell commands over SSH or in a devcontainer.")
+config_app.add_typer(remote_app, name="remote")
+
+
+def _remote_address(settings: dict[str, Any]) -> str:
+    host = str(settings["host"] or "")
+    if not host:
+        return "(none)"
+    address = f"{settings['user']}@{host}" if settings["user"] else host
+    if settings["port"] != 22:
+        address += f":{settings['port']}"
+    return address
+
+
+def _print_remote(settings: dict[str, Any]) -> None:
+    console.print(
+        f"Remote: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
+        f"Host: [cyan]{escape(_remote_address(settings))}[/cyan]\n"
+        f"Identity: [cyan]{escape(settings['identity'] or '(default)')}[/cyan]\n"
+        f"Workspace: [cyan]{escape(settings['workspace'] or '(remote default)')}[/cyan]\n"
+        f"Devcontainer: [cyan]{escape(settings['devcontainer'])}[/cyan]"
+    )
+
+
+@remote_app.command("show")
+def remote_config_show() -> None:
+    """Show remote settings and any devcontainer detected in this directory."""
+    from kiwimatecoder import remote as remote_module
+
+    _print_remote(get_remote())
+    info = remote_module.detect_devcontainer(Path.cwd())
+    if info is not None:
+        console.print(
+            f"Detected devcontainer: [cyan]{escape(info.name)}[/cyan] "
+            f"(workspace folder [cyan]{escape(info.workspace_folder)}[/cyan])"
+        )
+
+
+@remote_app.command("enable")
+def remote_config_enable(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Enable or disable remote/devcontainer command execution."""
+    if state is None:
+        current = "on" if get_remote()["enabled"] else "off"
+        console.print(f"Remote: [cyan]{current}[/cyan]")
+        return
+    try:
+        settings = set_remote(enabled=_parse_on_off(state))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Remote:[/green] "
+        f"{'on' if settings['enabled'] else 'off'}"
+    )
+
+
+@remote_app.command("host")
+def remote_config_host(
+    value: Annotated[
+        str | None, typer.Argument(help="SSH host (omit to show the current value)")
+    ] = None,
+) -> None:
+    """Set the SSH host remote commands run on."""
+    if value is None:
+        console.print(
+            f"Remote host: [cyan]{escape(get_remote()['host'] or '(none)')}[/cyan]"
+        )
+        return
+    try:
+        settings = set_remote(host=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Remote host:[/green] "
+        f"{escape(settings['host'] or '(none)')}"
+    )
+
+
+@remote_app.command("user")
+def remote_config_user(
+    value: Annotated[
+        str | None, typer.Argument(help="SSH user (omit to show the current value)")
+    ] = None,
+) -> None:
+    """Set the SSH user remote commands run as."""
+    if value is None:
+        console.print(
+            f"Remote user: [cyan]{escape(get_remote()['user'] or '(none)')}[/cyan]"
+        )
+        return
+    try:
+        settings = set_remote(user=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Remote user:[/green] "
+        f"{escape(settings['user'] or '(none)')}"
+    )
+
+
+@remote_app.command("port")
+def remote_config_port(
+    value: Annotated[
+        str | None, typer.Argument(help="SSH port 1-65535 (omit to show)")
+    ] = None,
+) -> None:
+    """Set the SSH port (default 22)."""
+    if value is None:
+        console.print(f"Remote port: [cyan]{get_remote()['port']}[/cyan]")
+        return
+    try:
+        settings = set_remote(port=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{_check()} Remote port:[/green] {settings['port']}")
+
+
+@remote_app.command("identity")
+def remote_config_identity(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="SSH identity file (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Set the SSH private key used for remote commands."""
+    if value is None:
+        console.print(
+            f"Remote identity: [cyan]{escape(get_remote()['identity'] or '(default)')}[/cyan]"
+        )
+        return
+    try:
+        settings = set_remote(identity=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Remote identity:[/green] "
+        f"{escape(settings['identity'] or '(default)')}"
+    )
+
+
+@remote_app.command("workspace")
+def remote_config_workspace(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Remote working directory (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Set the directory remote commands run in."""
+    if value is None:
+        console.print(
+            "Remote workspace: "
+            f"[cyan]{escape(get_remote()['workspace'] or '(remote default)')}[/cyan]"
+        )
+        return
+    try:
+        settings = set_remote(workspace=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Remote workspace:[/green] "
+        f"{escape(settings['workspace'] or '(remote default)')}"
+    )
+
+
+@remote_app.command("devcontainer")
+def remote_config_devcontainer(
+    value: Annotated[
+        str | None,
+        typer.Argument(
+            help="'auto', 'off', or a container name (omit to show the current value)"
+        ),
+    ] = None,
+) -> None:
+    """Choose how a detected devcontainer is used for command execution."""
+    if value is None:
+        console.print(f"Devcontainer: [cyan]{escape(get_remote()['devcontainer'])}[/cyan]")
+        return
+    try:
+        settings = set_remote(devcontainer=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Devcontainer:[/green] {escape(settings['devcontainer'])}"
+    )
+
+
 # --- canonical `config acp ...` ---------------------------------------------
 
 
@@ -2045,6 +2248,13 @@ def config_show() -> None:
         + f"[cyan]{network_config['proxy'] or 'none'}[/cyan], "
         + f"CA [cyan]{network_config['ca_bundle'] or 'system'}[/cyan], "
         + f"offline [cyan]{'on' if network_config['offline'] else 'off'}[/cyan]"
+    )
+    remote_config = get_remote(cfg)
+    console.print(
+        "Remote: "
+        + f"[cyan]{'on' if remote_config['enabled'] else 'off'}[/cyan] "
+        + f"(host [cyan]{escape(_remote_address(remote_config))}[/cyan], "
+        + f"devcontainer [cyan]{escape(remote_config['devcontainer'])}[/cyan])"
     )
     project_path = project_config_path()
     if project_path is not None:

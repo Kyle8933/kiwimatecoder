@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from glob import has_magic
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 from rich.markup import escape
@@ -44,6 +44,7 @@ from kiwimatecoder.config import (
     get_profiles,
     get_prompt_cache,
     get_provider_config,
+    get_remote,
     get_sampling,
     get_sandbox,
     get_shell_config,
@@ -74,6 +75,7 @@ from kiwimatecoder.config import (
     set_network,
     set_output_style,
     set_prompt_cache,
+    set_remote,
     set_sampling,
     set_sandbox,
     set_selected_model,
@@ -1037,6 +1039,11 @@ def _config_help(console: Console) -> None:
             "Sandbox shell commands with seatbelt (macOS) or bubblewrap (Linux).",
         ),
         (
+            "/config remote [show|enable on|off|host <h>|user <u>|port <n>|"
+            "identity <path>|workspace <path>|devcontainer <auto|off|name>]",
+            "Run shell commands over SSH or in a devcontainer/Docker container.",
+        ),
+        (
             "/config acp [show|timeout <s>]",
             "Permission timeout for the ACP server used by editors.",
         ),
@@ -1127,6 +1134,13 @@ def _config_show(session: Session, console: Console) -> None:
         f"[cyan]{network_config['proxy'] or 'none'}[/cyan], "
         f"CA [cyan]{network_config['ca_bundle'] or 'system'}[/cyan], "
         f"offline [cyan]{'on' if network_config['offline'] else 'off'}[/cyan]"
+    )
+    remote_config = get_remote()
+    console.print(
+        "Remote: "
+        f"[cyan]{'on' if remote_config['enabled'] else 'off'}[/cyan] "
+        f"(host [cyan]{escape(_remote_summary(remote_config))}[/cyan], "
+        f"devcontainer [cyan]{escape(remote_config['devcontainer'])}[/cyan])"
     )
     project_path = project_config_path()
     if project_path is not None:
@@ -2000,6 +2014,80 @@ def _config_sandbox(action_parts: list[str], console: Console) -> None:
     )
 
 
+def _remote_summary(settings: dict[str, Any]) -> str:
+    host = str(settings.get("host") or "")
+    if host:
+        user = str(settings.get("user") or "")
+        address = f"{user}@{host}" if user else host
+        port = int(settings.get("port") or 22)
+        if port != 22:
+            address += f":{port}"
+    else:
+        address = "(none)"
+    return address
+
+
+def _config_remote(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "ls", "status"}:
+        settings = get_remote()
+        console.print(
+            f"Remote: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
+            f"Host: [cyan]{escape(_remote_summary(settings))}[/cyan]\n"
+            f"Identity: [cyan]{escape(settings['identity'] or '(default)')}[/cyan]\n"
+            f"Workspace: [cyan]{escape(settings['workspace'] or '(remote default)')}[/cyan]\n"
+            f"Devcontainer: [cyan]{escape(settings['devcontainer'])}[/cyan]"
+        )
+        return
+
+    if action in {"enable", "enabled"}:
+        token = rest[0].lower() if rest else ""
+        if token not in {"on", "off"}:
+            console.print("[yellow]Usage: /config remote enable <on|off>[/yellow]")
+            return
+        try:
+            settings = set_remote(enabled=token == "on")
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(f"[green]Remote {'on' if settings['enabled'] else 'off'}.[/green]")
+        return
+
+    fields = {
+        "host": "host",
+        "user": "user",
+        "port": "port",
+        "identity": "identity",
+        "workspace": "workspace",
+        "devcontainer": "devcontainer",
+    }
+    field = fields.get(action)
+    if field is not None:
+        if not rest:
+            current = get_remote()[field]
+            shown = str(current) if current not in ("", None) else "(none)"
+            console.print(f"Remote {field}: [cyan]{escape(shown)}[/cyan]")
+            return
+        try:
+            updates: dict[str, Any] = {field: rest[0]}
+            settings = set_remote(**updates)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        updated = settings[field]
+        shown = str(updated) if updated not in ("", None) else "(none)"
+        console.print(f"[green]Remote {field}:[/green] [cyan]{escape(shown)}[/cyan]")
+        return
+
+    console.print(
+        "[yellow]Usage: /config remote [show|enable on|off|host <host>|"
+        "user <user>|port <n>|identity <path>|workspace <path>|"
+        "devcontainer <auto|off|name>][/yellow]"
+    )
+
+
 def _config_acp(action_parts: list[str], console: Console) -> None:
     action = action_parts[0].lower() if action_parts else "show"
     rest = action_parts[1:]
@@ -2620,6 +2708,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_shell(rest, console)
     elif section == "sandbox":
         _config_sandbox(rest, console)
+    elif section == "remote":
+        _config_remote(rest, console)
     elif section == "acp":
         _config_acp(rest, console)
     elif section == "sampling":
@@ -2683,6 +2773,7 @@ def _config_interact(
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
             CommandOption("browser", "Optional Playwright browser automation"),
             CommandOption("shell", "Persistent shell and background job settings"),
+            CommandOption("remote", "SSH/devcontainer command execution"),
             CommandOption("acp", "ACP editor-integration permission timeout"),
             CommandOption("web", "Web fetch/search limits and local access"),
             CommandOption("network", "Proxy, custom CA bundle, and offline mode"),
@@ -2729,6 +2820,7 @@ def _config_interact(
         "sampling",
         "browser",
         "shell",
+        "remote",
         "acp",
         "web",
         "network",
@@ -3493,6 +3585,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "subagents": "Configure the subagent task tool and its step limit.",
     "browser": "Configure optional Playwright browser automation.",
     "shell": "Configure the persistent shell and background job cap.",
+    "remote": "Configure SSH/devcontainer command execution.",
     "sampling": "Show, set, or reset sampling parameters.",
     "web": "Set web fetch/search limits and local-address access.",
     "network": "Set proxy, CA bundle, and offline mode.",

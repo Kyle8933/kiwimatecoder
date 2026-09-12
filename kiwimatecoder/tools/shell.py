@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiwimatecoder.remote import remote_preview
 from kiwimatecoder.shell import (
     ShellDisabledError,
     ShellError,
@@ -19,15 +20,17 @@ from kiwimatecoder.tools.base import FunctionTool, ToolResult
 
 
 def preview(args: dict[str, Any], session: Any) -> str:
-    """Return the command text for the approval prompt."""
-    return str(args.get("command", ""))
+    """Return the command text (and remote wrapper) for the approval prompt."""
+    command = str(args.get("command", ""))
+    return remote_preview(command, workspace=session.workspace_root)
 
 
 def jobs_preview(args: dict[str, Any], session: Any) -> str:
     """Return a short description of a background-job action for approval."""
     action = str(args.get("action") or "").strip().lower()
     if action == "start":
-        return f"start: {args.get('command', '')}"
+        command = str(args.get("command", ""))
+        return f"start: {remote_preview(command, workspace=session.workspace_root)}"
     if action in ("output", "kill"):
         return f"{action}: {args.get('id', '')}"
     return action or "list"

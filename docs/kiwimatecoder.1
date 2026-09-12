@@ -954,6 +954,108 @@ kiwimatecoder config sandbox clear-paths [OPTIONS]
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.
+.SS \fBconfig remote\fP
+Run shell commands over SSH or in a...
+.PP
+.nf
+kiwimatecoder config remote [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig remote show\fP
+Show remote settings and any devcontainer...
+.PP
+.nf
+kiwimatecoder config remote show [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig remote enable\fP
+Enable or disable remote/devcontainer...
+.PP
+.nf
+kiwimatecoder config remote enable [OPTIONS] [STATE]
+.fi
+.TP
+\fB[STATE]\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig remote host\fP
+Set the SSH host remote commands run on.
+.PP
+.nf
+kiwimatecoder config remote host [OPTIONS] [VALUE]
+.fi
+.TP
+\fB[VALUE]\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig remote user\fP
+Set the SSH user remote commands run as.
+.PP
+.nf
+kiwimatecoder config remote user [OPTIONS] [VALUE]
+.fi
+.TP
+\fB[VALUE]\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig remote port\fP
+Set the SSH port (default 22).
+.PP
+.nf
+kiwimatecoder config remote port [OPTIONS] [VALUE]
+.fi
+.TP
+\fB[VALUE]\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig remote identity\fP
+Set the SSH private key used for remote...
+.PP
+.nf
+kiwimatecoder config remote identity [OPTIONS] [VALUE]
+.fi
+.TP
+\fB[VALUE]\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig remote workspace\fP
+Set the directory remote commands run in.
+.PP
+.nf
+kiwimatecoder config remote workspace [OPTIONS] [VALUE]
+.fi
+.TP
+\fB[VALUE]\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig remote devcontainer\fP
+Choose how a detected devcontainer is used...
+.PP
+.nf
+kiwimatecoder config remote devcontainer [OPTIONS] [VALUE]
+.fi
+.TP
+\fB[VALUE]\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
 .SS \fBconfig acp\fP
 Agent Client Protocol (editor integration)...
 .PP

@@ -178,6 +178,10 @@ Config examples:
 /config budget tokens 500000
 /config budget cost 5.00
 /config trust on
+/config remote host devbox
+/config remote user kiwi
+/config remote workspace /srv/app
+/config remote enable on
 /config browser enable on
 /config browser headless off
 /config browser timeout 20000
@@ -291,6 +295,63 @@ add-path <path>|remove-path <path>|clear-paths]`.
 > to an unsandboxed shell with only a warning. Read access to API keys stored
 > on disk is not blocked, so use `--mode plan` or command rules when that
 > matters.
+
+## Remote and devcontainer execution
+
+Shell commands can run on another machine over SSH or inside a
+devcontainer/Docker container. `run_bash`, the persistent `shell`, and
+`shell_jobs` all execute remotely when it is configured; the approval preview
+shows the wrapper and tool output includes a `[remote]` note. It is **off by
+default**:
+
+```bash
+kiwimatecoder config remote show
+kiwimatecoder config remote host devbox                  # ssh [user@]host
+kiwimatecoder config remote user kiwi                    # optional
+kiwimatecoder config remote port 2222                    # optional (default 22)
+kiwimatecoder config remote identity ~/.ssh/id_ed25519   # optional
+kiwimatecoder config remote workspace /srv/app           # cd before running
+kiwimatecoder config remote devcontainer auto            # auto|off|container name
+kiwimatecoder config remote enable on
+```
+
+The REPL equivalent is `/config remote [show|enable on|off|host <h>|user <u>|
+port <n>|identity <path>|workspace <path>|devcontainer <auto|off|name>]`.
+
+When `devcontainer` is `auto` (the default), the first usable route wins:
+
+1. a `.devcontainer/devcontainer.json` in the workspace **and** the
+   `devcontainer` CLI: `devcontainer exec --workspace-folder <ws> sh -lc ...`;
+2. that detected container through `docker exec -w <workspaceFolder>
+   <name> ...`;
+3. SSH when `remote.host` is set: `ssh -o BatchMode=yes [-p <port>]
+   [-i <identity>] [user@]host -- sh -lc ...`, with
+   `cd <remote.workspace> && <command>` when a remote workspace is set;
+4. local execution with a warning in the tool output.
+
+Set `devcontainer off` to skip detection, or name a container explicitly to
+force `docker exec`. Remote wrapping happens first and a remote command is not
+additionally wrapped in a local sandbox. If `ssh`, `docker`, or `devcontainer`
+is missing, the command runs locally and the output carries the warning.
+
+- Config lives in the `remote` section:
+  `{"enabled": false, "host": "", "user": "", "port": 22, "identity": "",
+  "workspace": "", "devcontainer": "auto"}`. `identity` must point at an
+  existing key file, and enabling remote execution requires a host (or an
+  explicit container name).
+- The persistent shell starts through the same wrapper, so `cd` and exported
+  variables persist on the remote side. SSH uses agent/key auth only
+  (`BatchMode=yes`); there is no password prompt.
+
+> **Limitations:** only commands run remotely. File tools (`read_file`,
+> `write_file`, `edit_file`, `search`, ...) still read the **locally**
+> accessible workspace, so point them at the remote tree with sshfs, a bind
+> mount, or a synced checkout. A full SFTP-backed file layer is deliberately
+> not shipped: a half-working remote filesystem would silently split reads and
+> writes between two machines. Detached agent jobs (`/jobs`) also run locally
+> against that same local view. SSH host keys and identity files are the
+> user's responsibility; remote command approval and command rules work
+> exactly as they do locally.
 
 ## Web access
 

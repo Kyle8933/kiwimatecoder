@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiwimatecoder.config import ensure_config_dir, get_shell_config
+from kiwimatecoder.remote import wrap_remote_command
 from kiwimatecoder.sandbox import wrap_command
 
 if TYPE_CHECKING:
@@ -184,12 +185,21 @@ class PersistentShell:
             self._pending_id = None
             self._exit_code = None
         try:
-            argv = _shell_argv()
-            if os.name != "nt":
-                # Keep the long-lived shell inside the OS sandbox when enabled.
-                argv, _warning = wrap_command(
-                    "exec /bin/sh", workspace=self.workspace
-                )
+            shell_command = "exec /bin/sh"
+            # Remote execution decides where the shell lives; a local sandbox
+            # only applies when the shell is not remote.
+            remote_argv, _remote_warning = wrap_remote_command(
+                shell_command, workspace=self.workspace, interactive=True
+            )
+            if remote_argv is not None:
+                argv = remote_argv
+            else:
+                argv = _shell_argv()
+                if os.name != "nt":
+                    # Keep the local shell inside the OS sandbox when enabled.
+                    argv, _warning = wrap_command(
+                        shell_command, workspace=self.workspace
+                    )
             proc = subprocess.Popen(
                 argv,
                 cwd=str(self.workspace),
@@ -432,10 +442,18 @@ class ShellManager:
             except OSError as exc:
                 raise ShellError(f"Failed to create the job output file: {exc}") from exc
             try:
-                argv, _warning = wrap_command(command, workspace=workdir)
+                remote_argv, _remote_warning = wrap_remote_command(
+                    command, workspace=workdir
+                )
+                if remote_argv is not None:
+                    argv = remote_argv
+                    use_shell = False
+                else:
+                    argv, _warning = wrap_command(command, workspace=workdir)
+                    use_shell = os.name == "nt"
                 proc = subprocess.Popen(
-                    command if os.name == "nt" else argv,
-                    shell=os.name == "nt",
+                    command if use_shell else argv,
+                    shell=use_shell,
                     cwd=str(workdir),
                     stdin=subprocess.DEVNULL,
                     stdout=output_file,

@@ -85,7 +85,7 @@ Goal: usable in CI, IDEs, and remote environments.
 - [x] 4.1 Headless mode: `-p/--print`, JSON/stream-JSON, exit codes, render abstraction (L)
 - [x] 4.2 GitHub Action / CI recipes + pre-commit (M; depends 4.1)
 - [x] 4.3 IDE integration via ACP/LSP server (XL; depends 4.1)
-- [ ] 4.4 Remote/SSH workspaces + devcontainers (XL; depends 4.5)
+- [x] 4.4 Remote/SSH workspaces + devcontainers (XL; depends 4.5)
 - [x] 4.5 Persistent shell sessions + background process management (M)
 - [x] 4.6 Scheduled/background agent tasks (L; depends 4.1, 2.1)
 - [x] 4.7 Azure/Bedrock/Vertex/gateway providers + OAuth/device flow (L; depends 0.5)
@@ -102,6 +102,16 @@ placeholder endpoints because the resource is account-specific; point a custom
 provider at the real URL. Deferred: interactive OAuth/device-code flows, Azure
 managed identity, Google Vertex AI (project-specific endpoint plus OAuth2-only
 auth), and AWS SigV4/IAM request signing.
+
+**4.4 follow-up:** shell commands (`run_bash`, the persistent `shell`, and
+`shell_jobs`) run over SSH (agent/key auth only, `BatchMode=yes`) or inside a
+devcontainer/Docker container, with the approval preview showing the wrapper.
+Preference order for `devcontainer: "auto"`: detected devcontainer + the
+`devcontainer` CLI, then `docker exec`, then SSH, else local with a warning.
+Only *commands* are remote: file tools still read the locally accessible
+workspace, so a full SFTP-backed file layer was deliberately left out (use
+sshfs/bind mount); detached agent jobs (`/jobs`) also keep running locally
+against that view.
 
 **4.11 follow-up:** macOS uses seatbelt (`sandbox-exec`); Linux uses bubblewrap
 (`bwrap`, install the distro `bubblewrap` package); Windows is unsupported and
