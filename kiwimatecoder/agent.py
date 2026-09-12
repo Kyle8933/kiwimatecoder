@@ -537,6 +537,16 @@ class Agent:
             cmd = str(args.get("command", "") or "")
             cmd_short = cmd if len(cmd) <= 40 else f"{cmd[:37]}..."
             return f"bash [dim]`{cmd_short}`[/dim]"
+        if name == "shell":
+            cmd = str(args.get("command", "") or "")
+            cmd_short = cmd if len(cmd) <= 40 else f"{cmd[:37]}..."
+            return f"shell [dim]`{cmd_short}`[/dim]"
+        if name == "shell_jobs":
+            action = str(args.get("action", "") or "")
+            detail = str(args.get("command") or args.get("id") or "")
+            short = detail if len(detail) <= 40 else f"{detail[:37]}..."
+            suffix = f" [dim]{short}[/dim]" if short else ""
+            return f"shell_jobs [dim]{action}[/dim]{suffix}"
         if name == "update_todos":
             todos = args.get("todos")
             count = len(todos) if isinstance(todos, list) else 0

@@ -17,6 +17,8 @@ BUILTIN_NAMES = [
     "write_file",
     "edit_file",
     "run_bash",
+    "shell",
+    "shell_jobs",
     "update_todos",
     "task",
     "ask_user",

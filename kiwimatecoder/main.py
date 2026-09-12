@@ -47,6 +47,7 @@ from kiwimatecoder.config import (
     get_provider_config,
     get_sampling,
     get_selected_provider_id,
+    get_shell_config,
     get_subagents,
     get_system_prompt,
     get_trusted_workspace,
@@ -81,6 +82,7 @@ from kiwimatecoder.config import (
     set_sampling,
     set_selected_model,
     set_selected_provider,
+    set_shell_config,
     set_subagents,
     set_system_prompt,
     set_trusted_workspace,
@@ -892,6 +894,97 @@ def browser_timeout(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Browser timeout:[/green] {settings['timeout_ms']}ms")
+
+
+# --- canonical `config shell ...` -------------------------------------------
+
+
+shell_app = typer.Typer(help="Persistent shell and background job settings.")
+config_app.add_typer(shell_app, name="shell")
+
+
+def _print_shell(settings: dict[str, Any]) -> None:
+    console.print(
+        f"Persistent shell: "
+        f"[cyan]{'on' if settings['persistent'] else 'off'}[/cyan]\n"
+        f"Command timeout: [cyan]{settings['timeout']}s[/cyan]\n"
+        f"Background job cap: [cyan]{settings['max_jobs']}[/cyan]"
+    )
+
+
+def _parse_on_off(value: str) -> bool:
+    token = value.strip().lower()
+    if token in {"on", "true", "enable", "enabled"}:
+        return True
+    if token in {"off", "false", "disable", "disabled"}:
+        return False
+    console.print("[red]Expected 'on' or 'off'.[/red]")
+    raise typer.Exit(1)
+
+
+@shell_app.command("show")
+def shell_show() -> None:
+    """Show persistent-shell settings."""
+    _print_shell(get_shell_config())
+
+
+@shell_app.command("persistent")
+def shell_persistent(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Enable or disable the stateful `shell` tool."""
+    if state is None:
+        current = "on" if get_shell_config()["persistent"] else "off"
+        console.print(f"Persistent shell: [cyan]{current}[/cyan]")
+        return
+    settings = set_shell_config(persistent=_parse_on_off(state))
+    console.print(
+        f"[green]{_check()} Persistent shell:[/green] "
+        f"{'on' if settings['persistent'] else 'off'}"
+    )
+
+
+@shell_app.command("timeout")
+def shell_timeout(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Timeout in seconds 1-3600 (omit to show)"),
+    ] = None,
+) -> None:
+    """Set how long one `shell` command may run before it is killed."""
+    if value is None:
+        console.print(f"Shell timeout: [cyan]{get_shell_config()['timeout']}s[/cyan]")
+        return
+    try:
+        settings = set_shell_config(timeout=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{_check()} Shell timeout:[/green] {settings['timeout']}s")
+
+
+@shell_app.command("max-jobs")
+def shell_max_jobs(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Concurrent background jobs 1-100 (omit to show)"),
+    ] = None,
+) -> None:
+    """Set the maximum number of concurrent background jobs."""
+    if value is None:
+        console.print(
+            f"Background job cap: [cyan]{get_shell_config()['max_jobs']}[/cyan]"
+        )
+        return
+    try:
+        settings = set_shell_config(max_jobs=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{_check()} Background job cap:[/green] {settings['max_jobs']}")
 
 
 @config_app.command("trusted-workspace")

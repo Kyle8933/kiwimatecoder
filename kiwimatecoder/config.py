@@ -140,6 +140,11 @@ def _empty_config() -> dict[str, Any]:
             "headless": True,
             "timeout_ms": 15000,
         },
+        "shell": {
+            "persistent": True,
+            "timeout": 120,
+            "max_jobs": 8,
+        },
     }
 
 
@@ -270,6 +275,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("vision", {})
     cfg.setdefault("lsp", {})
     cfg.setdefault("index", {})
+    cfg.setdefault("shell", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
     # stored empty list, a non-list, or a list of junk is seeded the same way.
@@ -1448,6 +1454,95 @@ def set_browser(
     cfg["browser"] = current
     save_config(cfg)
     return get_browser(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Persistent shell and background processes
+# ---------------------------------------------------------------------------
+
+SHELL_DEFAULTS: dict[str, Any] = {
+    "persistent": True,
+    "timeout": 120,
+    "max_jobs": 8,
+}
+SHELL_TIMEOUT_MIN = 1
+SHELL_TIMEOUT_MAX = 3600
+SHELL_MAX_JOBS_MIN = 1
+SHELL_MAX_JOBS_MAX = 100
+
+
+def get_shell_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized persistent-shell settings, always fully populated.
+
+    Malformed stored values fall back to :data:`SHELL_DEFAULTS` so a
+    hand-edited config can never crash the shell tools; ``validate_config``
+    reports exactly what would be ignored.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("shell") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(SHELL_DEFAULTS)
+    persistent = stored.get("persistent")
+    if isinstance(persistent, bool):
+        effective["persistent"] = persistent
+    effective["timeout"] = _bounded_int(
+        stored.get("timeout"),
+        int(SHELL_DEFAULTS["timeout"]),
+        SHELL_TIMEOUT_MIN,
+        SHELL_TIMEOUT_MAX,
+    )
+    effective["max_jobs"] = _bounded_int(
+        stored.get("max_jobs"),
+        int(SHELL_DEFAULTS["max_jobs"]),
+        SHELL_MAX_JOBS_MIN,
+        SHELL_MAX_JOBS_MAX,
+    )
+    return effective
+
+
+def set_shell_config(
+    persistent: bool | None = None,
+    timeout: int | str | None = None,
+    max_jobs: int | str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update persistent-shell settings; omitted arguments keep their value.
+
+    Raises ``ValueError`` for a non-boolean ``persistent`` or a ``timeout`` /
+    ``max_jobs`` outside the supported range, so callers validate eagerly.
+    """
+    cfg = cfg or load_config()
+    current = get_shell_config(cfg)
+    if persistent is not None:
+        if not isinstance(persistent, bool):
+            raise ValueError("shell persistent must be true or false.")
+        current["persistent"] = persistent
+    if timeout is not None:
+        try:
+            value = int(timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("shell timeout must be an integer.") from exc
+        if not SHELL_TIMEOUT_MIN <= value <= SHELL_TIMEOUT_MAX:
+            raise ValueError(
+                f"shell timeout must be between {SHELL_TIMEOUT_MIN} and "
+                f"{SHELL_TIMEOUT_MAX} seconds."
+            )
+        current["timeout"] = value
+    if max_jobs is not None:
+        try:
+            jobs = int(max_jobs)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("shell max_jobs must be an integer.") from exc
+        if not SHELL_MAX_JOBS_MIN <= jobs <= SHELL_MAX_JOBS_MAX:
+            raise ValueError(
+                f"shell max_jobs must be between {SHELL_MAX_JOBS_MIN} and "
+                f"{SHELL_MAX_JOBS_MAX}."
+            )
+        current["max_jobs"] = jobs
+    cfg["shell"] = current
+    save_config(cfg)
+    return current
 
 
 def get_compact_at_tokens(cfg: dict[str, Any] | None = None) -> int:
@@ -2873,6 +2968,40 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                         "browser.timeout_ms",
                         "Must be between "
                         f"{BROWSER_TIMEOUT_MIN} and {BROWSER_TIMEOUT_MAX}.",
+                    )
+
+    shell_section = cfg.get("shell")
+    if shell_section is not None:
+        if not isinstance(shell_section, dict):
+            add("error", "shell", "'shell' must be an object.")
+        else:
+            if "persistent" in shell_section and not isinstance(
+                shell_section["persistent"], bool
+            ):
+                add("error", "shell.persistent", "'persistent' must be true or false.")
+            if "timeout" in shell_section:
+                try:
+                    shell_timeout = int(shell_section["timeout"])
+                except (TypeError, ValueError):
+                    shell_timeout = -1
+                if not SHELL_TIMEOUT_MIN <= shell_timeout <= SHELL_TIMEOUT_MAX:
+                    add(
+                        "error",
+                        "shell.timeout",
+                        "Must be between "
+                        f"{SHELL_TIMEOUT_MIN} and {SHELL_TIMEOUT_MAX} seconds.",
+                    )
+            if "max_jobs" in shell_section:
+                try:
+                    shell_jobs = int(shell_section["max_jobs"])
+                except (TypeError, ValueError):
+                    shell_jobs = -1
+                if not SHELL_MAX_JOBS_MIN <= shell_jobs <= SHELL_MAX_JOBS_MAX:
+                    add(
+                        "error",
+                        "shell.max_jobs",
+                        "Must be between "
+                        f"{SHELL_MAX_JOBS_MIN} and {SHELL_MAX_JOBS_MAX}.",
                     )
 
     profiles = cfg.get("profiles")

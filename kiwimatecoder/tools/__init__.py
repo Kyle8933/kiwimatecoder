@@ -50,6 +50,9 @@ from kiwimatecoder.tools.run_bash import preview as _bash_preview
 from kiwimatecoder.tools.run_bash import run_bash_tool
 from kiwimatecoder.tools.search import search_tool
 from kiwimatecoder.tools.selection import select_hunks as select_hunks
+from kiwimatecoder.tools.shell import jobs_preview as _shell_jobs_preview
+from kiwimatecoder.tools.shell import preview as _shell_preview
+from kiwimatecoder.tools.shell import shell_jobs_tool, shell_tool
 from kiwimatecoder.tools.skill import load_skill_tool
 from kiwimatecoder.tools.task import task_tool
 from kiwimatecoder.tools.todo import update_todos_tool
@@ -69,6 +72,8 @@ _ALL_TOOLS: list[FunctionTool] = [
     write_file_tool,
     edit_file_tool,
     run_bash_tool,
+    shell_tool,
+    shell_jobs_tool,
     update_todos_tool,
     task_tool,
     ask_user_tool,
@@ -99,6 +104,8 @@ _PREVIEWS: dict[str, Callable[[dict[str, Any], Any], str]] = {
     "write_file": _write_preview,
     "edit_file": _edit_preview,
     "run_bash": _bash_preview,
+    "shell": _shell_preview,
+    "shell_jobs": _shell_jobs_preview,
     "git_write": _git_write_preview,
     "forge_write": _forge_write_preview,
     "remember": _remember_preview,

@@ -70,6 +70,7 @@ from kiwimatecoder.hunks import Hunk, parse_hunk_selection, split_hunks
 from kiwimatecoder.permissions import ApprovalResult, ConfirmFn
 from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
+from kiwimatecoder.shell import close_shell
 from kiwimatecoder.templates import find_template, render_template
 from kiwimatecoder.tools.paths import PathError, resolve_in_workspace
 
@@ -933,6 +934,7 @@ async def _run_interactive(
             current_lsp.shutdown()
         lsp.set_manager(None)
         browser.reset_driver()
+        close_shell(session)
         _autosave(session)
 
 

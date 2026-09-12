@@ -20,6 +20,7 @@ from kiwimatecoder.config import (
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.pricing import estimate_messages_tokens
 from kiwimatecoder.providers import ProviderConfig
+from kiwimatecoder.shell import ShellManager
 
 SESSION_FORMAT_VERSION = 2
 
@@ -71,6 +72,8 @@ class Session:
     # Images attached via @path or the view_image tool, awaiting the next
     # request. Ephemeral: cleared after being attached to the conversation.
     pending_images: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    # Persistent shell + background processes (runtime-only, never saved).
+    shell: ShellManager | None = field(default=None, repr=False)
 
     @property
     def format_version(self) -> int:

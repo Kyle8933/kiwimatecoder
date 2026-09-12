@@ -199,6 +199,10 @@ The assistant has these capabilities, all scoped to the workspace:
 - `write_file`, `edit_file` — create/modify files (approval-gated; each is
   checkpointed first so `/undo` can restore it).
 - `run_bash` — run shell commands (approval-gated, subject to command rules).
+- `shell` — run a command in a persistent shell that remembers `cd` and exported
+  environment state between calls (approval-gated; see below).
+- `shell_jobs` — start, list, read, or kill detached background commands
+  (approval-gated; see below).
 - `update_todos` — keep the visible task list in sync with multi-step work.
 - `task` — delegate a focused investigation to a subagent with its own context
   (approval-gated; see below).
@@ -221,6 +225,34 @@ The assistant has these capabilities, all scoped to the workspace:
   (see below).
 - `lsp_diagnostics`, `lsp_definition`, `lsp_references` — language-server
   diagnostics and navigation, when enabled (see below).
+
+## Persistent shell
+
+`run_bash` starts a fresh process per call, so `cd` and exported environment
+variables never survive between commands. The `shell` tool instead drives one
+long-lived shell per session (`/bin/sh` on POSIX, `cmd.exe` on Windows) so state
+sticks:
+
+```text
+shell: cd backend
+shell: source .venv/bin/activate
+shell: pytest -q        # runs inside backend with the venv active
+```
+
+- The shell starts in the session workspace root. Output (stdout + stderr
+  combined) is capped at 30 KB with a truncation note, and every call reports
+  the exit code.
+- A command that exceeds the timeout (default 120 s) is killed and the shell is
+  restarted, so a hung command can never wedge the session.
+- `shell_jobs` runs commands detached from the shell and captures their output
+  under `~/.kiwimatecoder/jobs/shell/`. `action: list` shows tracked jobs,
+  `action: output` reads one, and `action: kill` terminates it. At most
+  `shell.max_jobs` (default 8) run at once.
+- Settings: `/config shell [show|persistent on|off|timeout <s>|max-jobs <n>]`
+  in the REPL, or `kiwimatecoder config shell ...` from the shell.
+- Exiting the session terminates the persistent shell and every tracked
+  background job. `run_bash` is unchanged and still the right tool for
+  one-shot commands.
 
 ## Web access
 
