@@ -354,6 +354,7 @@ def test_continue_resumes_autosave(tmp_path, monkeypatch):
 
     captured = {}
     monkeypatch.setattr(repl, "run", lambda session: captured.setdefault("session", session))
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
 
     result = CliRunner().invoke(main.app, ["--continue"])
 
@@ -372,6 +373,7 @@ def test_continue_without_saved_session_starts_fresh(tmp_path, monkeypatch):
     monkeypatch.setattr(
         repl, "run", lambda session: captured.setdefault("session", session)
     )
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
 
     result = CliRunner().invoke(main.app, ["--continue"])
 
@@ -656,6 +658,7 @@ def test_launch_with_profile_applies_session_without_persisting(monkeypatch):
     monkeypatch.setattr(
         repl, "run", lambda session: captured.setdefault("session", session)
     )
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
 
     result = CliRunner().invoke(main.app, ["--profile", "work"])
 
@@ -701,6 +704,7 @@ def test_profile_with_resume_overlays_mode_and_model(tmp_path, monkeypatch):
     monkeypatch.setattr(
         repl, "run", lambda session: captured.setdefault("session", session)
     )
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
 
     result = CliRunner().invoke(main.app, ["--resume", "keep", "--profile", "work"])
 

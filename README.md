@@ -636,6 +636,32 @@ CI example:
     cat review.json
 ```
 
+More recipes (ready-made GitHub Actions workflows, exit-code gating, and
+pre-commit setup) live in [docs/ci.md](docs/ci.md).
+
+## Shell completions and man page
+
+Typer ships shell completion for bash, zsh, fish, and PowerShell:
+
+```bash
+kiwimatecoder --install-completion          # detect and install for your shell
+kiwimatecoder --show-completion bash        # print the script to stdout instead
+```
+
+A troff man page is committed at `docs/kiwimatecoder.1`; view it with `man
+./docs/kiwimatecoder.1` (on Linux, `man -l docs/kiwimatecoder.1`). Regenerate it
+from the Typer command tree after changing the CLI:
+
+```bash
+python scripts/generate_man.py           # rewrite the man page
+python scripts/generate_man.py --check   # fail when the committed file is stale
+```
+
+Interactive sessions need a real terminal. When stdin is not a TTY (a pipe, a
+CI job, cron), the bare command — and `--resume`/`--continue` — exits with code
+`2` and a note pointing at headless mode instead of starting prompt_toolkit.
+Use `kiwimatecoder -p "..."` or `echo "..." | kiwimatecoder -p -`.
+
 ## Python SDK
 
 Embed the agent in a Python program with `kiwimatecoder.sdk`:

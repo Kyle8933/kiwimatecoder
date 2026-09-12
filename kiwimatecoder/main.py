@@ -2344,6 +2344,15 @@ def main(
             }
         apply_session_profile(session, profile_values)
 
+    # The REPL needs a real terminal: prompt_toolkit cannot read piped stdin.
+    # Point scripts and CI at the headless path instead of crashing or hanging.
+    if not _stdin_is_tty():
+        sys.stderr.write(
+            "Interactive session needs a TTY. Use: "
+            'kiwimatecoder -p "..." or echo ... | kiwimatecoder -p -\n'
+        )
+        raise typer.Exit(2)
+
     # repl.run loads user (and opted-in project) plugins before the agent is
     # constructed, turning any failure into a dim warning rather than a crash.
     repl.run(session)
