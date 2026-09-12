@@ -960,14 +960,17 @@ def _config_help(console: Console) -> None:
         ("/config", "Show active providers, model, key, and model filter."),
         ("/config providers", "List built-in and custom providers."),
         (
-            "/config provider add <id> <name> <base_url> <default_model> [key_env]",
-            "Add an OpenAI-compatible custom provider. Quote names with spaces.",
+            "/config provider add <id> <name> <base_url> <default_model> [key_env] "
+            "[key_header=...] [key_prefix=...] [api_version=...]",
+            "Add an OpenAI-compatible custom provider. Quote names with spaces. "
+            "Use key_header=api-key key_prefix= api_version=<date> for Azure.",
         ),
         ("/config provider remove <id>", "Remove a custom provider."),
         ("/config provider use <id>", "Persist and switch to a provider."),
         (
             "/config provider edit <id> name=... base_url=... default_model=... "
-            "[key_env=...] [compat=...]",
+            "[key_env=...] [compat=...] [key_header=...] [key_prefix=...] "
+            "[api_version=...]",
             "Update fields of a custom provider.",
         ),
         ("/config key set <provider> <key>", "Save an API key."),
@@ -1122,6 +1125,7 @@ def _config_providers(
         table.add_column("type")
         table.add_column("name")
         table.add_column("default model")
+        table.add_column("auth")
         table.add_column("base URL")
         active = {item.id for item in session.active_providers}
         for provider in list_provider_configs():
@@ -1133,27 +1137,61 @@ def _config_providers(
                 kind = "local"
             else:
                 kind = "built-in" if provider.id in REGISTRY else "custom"
+            auth = provider.key_header
+            if provider.key_prefix:
+                auth += f": {provider.key_prefix.strip()}"
             table.add_row(
                 provider.id + marker,
                 kind,
                 provider.name,
                 provider.default_model or "(from server)",
+                auth,
                 provider.base_url,
             )
         console.print(table)
         return
 
+    provider_add_fields = {"key_header", "key_prefix", "api_version"}
+
     if action in {"add", "create"}:
         if len(rest) < 4:
             console.print(
                 "[yellow]Usage: /config provider add <id> <name> "
-                "<base_url> <default_model> [key_env][/yellow]"
+                "<base_url> <default_model> [key_env] [key_header=...] "
+                "[key_prefix=...] [api_version=...][/yellow]"
             )
             return
         provider_id, name, base_url, default_model = rest[:4]
-        key_env = rest[4] if len(rest) > 4 else None
+        extras = rest[4:]
+        key_env: str | None = None
+        if extras and "=" not in extras[0]:
+            key_env = extras.pop(0)
+        options: dict[str, str] = {}
+        for pair in extras:
+            if "=" not in pair:
+                console.print(
+                    f"[yellow]Expected field=value, got '{pair}'. "
+                    "Known fields: key_header, key_prefix, api_version.[/yellow]"
+                )
+                return
+            field, _, value = pair.partition("=")
+            field = field.strip()
+            if field not in provider_add_fields:
+                console.print(
+                    f"[yellow]Unknown provider field '{field}'. "
+                    "Known fields: key_header, key_prefix, api_version.[/yellow]"
+                )
+                return
+            options[field] = value
         try:
-            provider = add_provider(provider_id, name, base_url, default_model, key_env)
+            provider = add_provider(
+                provider_id,
+                name,
+                base_url,
+                default_model,
+                key_env,
+                **options,
+            )
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
             return
@@ -1202,32 +1240,37 @@ def _config_providers(
         if len(rest) < 2:
             console.print(
                 "[yellow]Usage: /config provider edit <id> name=... "
-                "base_url=... default_model=... key_env=... compat=...[/yellow]"
+                "base_url=... default_model=... key_env=... compat=... "
+                "key_header=... key_prefix=... api_version=...[/yellow]"
             )
             return
         provider_id = rest[0]
+        known_fields = {
+            "name",
+            "base_url",
+            "default_model",
+            "key_env",
+            "compat",
+            "key_header",
+            "key_prefix",
+            "api_version",
+        }
         kwargs: dict[str, str] = {}
         for pair in rest[1:]:
             if "=" not in pair:
                 console.print(
                     f"[yellow]Expected field=value, got '{pair}'. "
                     "Known fields: name, base_url, default_model, key_env, "
-                    "compat.[/yellow]"
+                    "compat, key_header, key_prefix, api_version.[/yellow]"
                 )
                 return
             field, _, value = pair.partition("=")
             field = field.strip()
-            if field not in {
-                "name",
-                "base_url",
-                "default_model",
-                "key_env",
-                "compat",
-            }:
+            if field not in known_fields:
                 console.print(
                     f"[yellow]Unknown provider field '{field}'. "
                     "Known fields: name, base_url, default_model, key_env, "
-                    "compat.[/yellow]"
+                    "compat, key_header, key_prefix, api_version.[/yellow]"
                 )
                 return
             kwargs[field] = value

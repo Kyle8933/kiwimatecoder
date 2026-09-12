@@ -419,8 +419,8 @@ class UnifiedClient:
     def _url(self) -> str:
         base = self.provider.base_url.rstrip("/")
         if self.is_anthropic:
-            return f"{base}/messages"
-        return f"{base}/chat/completions"
+            return self.provider.versioned_url(f"{base}/messages")
+        return self.provider.versioned_url(f"{base}/chat/completions")
 
     def _headers(self) -> dict[str, str]:
         # Auth headers are only sent when there is a key — local servers
@@ -431,7 +431,12 @@ class UnifiedClient:
             if self.api_key:
                 headers["x-api-key"] = self.api_key
         elif self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+            # Cloud providers usually want Authorization: Bearer <key>; Azure
+            # OpenAI wants `api-key: <key>` with no prefix. The provider config
+            # carries both so custom providers can follow either scheme.
+            headers[self.provider.key_header] = (
+                f"{self.provider.key_prefix}{self.api_key}"
+            )
         headers.update(self.provider.extra_headers)
         return headers
 

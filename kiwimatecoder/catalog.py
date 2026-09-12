@@ -109,16 +109,18 @@ class ModelCatalog:
 
 
 def models_url(provider: ProviderConfig) -> str:
-    """Return the listing endpoint for ``provider``."""
-    return f"{provider.base_url.rstrip('/')}/models"
+    """Return the listing endpoint for ``provider`` (with any api-version)."""
+    return provider.versioned_url(f"{provider.base_url.rstrip('/')}/models")
 
 
 def request_headers(provider: ProviderConfig, api_key: str | None) -> dict[str, str]:
     """Build auth headers for a listing request.
 
     Anthropic's native API wants ``x-api-key`` plus a version header; every
-    OpenAI-compatible provider takes a bearer token. Provider ``extra_headers``
-    are applied last so a custom provider can override anything.
+    OpenAI-compatible provider uses its configured ``key_header``/``key_prefix``
+    (``Authorization: Bearer`` by default, ``api-key`` for Azure). Provider
+    ``extra_headers`` are applied last so a custom provider can override
+    anything.
     """
     headers = {"Accept": "application/json"}
     if provider.compat == "anthropic":
@@ -126,7 +128,7 @@ def request_headers(provider: ProviderConfig, api_key: str | None) -> dict[str, 
         if api_key:
             headers["x-api-key"] = api_key
     elif api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        headers[provider.key_header] = f"{provider.key_prefix}{api_key}"
     headers.update(provider.extra_headers)
     return headers
 
@@ -265,7 +267,8 @@ def fetch_models(
             response = client.get(
                 url,
                 headers=request_headers(provider, api_key),
-                params=request_params(provider),
+                # ``params={}`` would drop an api-version already in the URL.
+                params=request_params(provider) or None,
             )
     except httpx.HTTPError as exc:
         raise CatalogFetchError(f"{provider.name}: {exc}") from exc
@@ -312,7 +315,7 @@ def probe(
             response = client.get(
                 models_url(provider),
                 headers=request_headers(provider, api_key),
-                params=request_params(provider),
+                params=request_params(provider) or None,
             )
     except httpx.HTTPError:
         return False

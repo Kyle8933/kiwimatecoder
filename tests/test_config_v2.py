@@ -457,3 +457,81 @@ def test_validate_flags_non_object_ui_section():
     assert any(
         issue["level"] == "error" and issue["key"] == "ui" for issue in issues
     )
+
+
+# ---------------------------------------------------------------------------
+# Custom provider auth fields (Azure-style)
+# ---------------------------------------------------------------------------
+
+
+def test_custom_provider_roundtrip_persists_auth_fields():
+    provider = config.add_provider(
+        "my-azure",
+        "My Azure",
+        "https://my-resource.openai.azure.com/openai/v1",
+        "my-deployment",
+        "AZURE_OPENAI_API_KEY",
+        key_header="api-key",
+        key_prefix="",
+        api_version="2024-10-21",
+    )
+
+    assert provider.key_header == "api-key"
+    assert provider.key_prefix == ""
+    assert provider.api_version == "2024-10-21"
+
+    # A fresh load reads the same values back from disk.
+    fresh = config.get_provider_config("my-azure", config.load_config())
+    assert fresh.key_header == "api-key"
+    assert fresh.key_prefix == ""
+    assert fresh.api_version == "2024-10-21"
+
+    stored = json.loads(config.CONFIG_FILE.read_text())
+    assert stored["providers"]["my-azure"]["key_header"] == "api-key"
+
+
+def test_update_provider_changes_and_clears_auth_fields():
+    config.add_provider(
+        "my-azure",
+        "My Azure",
+        "https://r.openai.azure.com/openai/v1",
+        "deploy",
+        "AZURE_OPENAI_API_KEY",
+    )
+
+    updated = config.update_provider(
+        "my-azure",
+        key_header="X-API-Key",
+        key_prefix="Token ",
+        api_version="2025-01-01",
+    )
+    assert updated.key_header == "X-API-Key"
+    assert updated.key_prefix == "Token "
+    assert updated.api_version == "2025-01-01"
+
+    cleared = config.update_provider(
+        "my-azure", key_prefix="", api_version=""
+    )
+    assert cleared.key_prefix == ""
+    assert cleared.api_version == ""
+
+    with pytest.raises(ValueError):
+        config.update_provider("my-azure", key_header="   ")
+
+
+def test_legacy_custom_provider_without_auth_fields_gets_defaults():
+    cfg = config.load_config()
+    cfg["providers"]["old"] = {
+        "name": "Old",
+        "base_url": "https://old.example.com/v1",
+        "default_model": "old-model",
+        "key_env": "OLD_API_KEY",
+        "compat": "openai",
+    }
+    config.save_config(cfg)
+
+    provider = config.get_provider_config("old")
+
+    assert provider.key_header == "Authorization"
+    assert provider.key_prefix == "Bearer "
+    assert provider.api_version == ""

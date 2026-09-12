@@ -246,9 +246,16 @@ def provider_list() -> None:
     table.add_column("id", style="cyan")
     table.add_column("name")
     table.add_column("default model")
+    table.add_column("auth")
     for provider in list_provider_configs():
+        auth = provider.key_header
+        if provider.key_prefix:
+            auth += f": {provider.key_prefix.strip()}"
         table.add_row(
-            provider.id, provider.name, provider.default_model or "(from server)"
+            provider.id,
+            provider.name,
+            provider.default_model or "(from server)",
+            auth,
         )
     console.print(table)
 
@@ -266,10 +273,40 @@ def provider_add(
             help="API key environment variable (default: <ID>_API_KEY)",
         ),
     ] = None,
+    key_header: Annotated[
+        str | None,
+        typer.Option(
+            "--key-header",
+            help="Auth header name (default: Authorization)",
+        ),
+    ] = None,
+    key_prefix: Annotated[
+        str | None,
+        typer.Option(
+            "--key-prefix",
+            help="Prefix before the key (default: 'Bearer '; use '' for none)",
+        ),
+    ] = None,
+    api_version: Annotated[
+        str | None,
+        typer.Option(
+            "--api-version",
+            help="Azure-style ?api-version= value (default: none)",
+        ),
+    ] = None,
 ) -> None:
     """Add an OpenAI-compatible custom provider."""
     try:
-        provider = add_provider(provider_id, name, base_url, default_model, key_env)
+        provider = add_provider(
+            provider_id,
+            name,
+            base_url,
+            default_model,
+            key_env,
+            key_header=key_header,
+            key_prefix=key_prefix,
+            api_version=api_version,
+        )
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
@@ -303,6 +340,24 @@ def provider_edit(
     compat: Annotated[
         str | None, typer.Option("--compat", help="'openai' or 'anthropic'")
     ] = None,
+    key_header: Annotated[
+        str | None,
+        typer.Option("--key-header", help="New auth header name"),
+    ] = None,
+    key_prefix: Annotated[
+        str | None,
+        typer.Option(
+            "--key-prefix",
+            help="New prefix before the key ('' clears the prefix)",
+        ),
+    ] = None,
+    api_version: Annotated[
+        str | None,
+        typer.Option(
+            "--api-version",
+            help="New ?api-version= value ('' clears it)",
+        ),
+    ] = None,
 ) -> None:
     """Update fields of a custom provider."""
     try:
@@ -313,6 +368,9 @@ def provider_edit(
             default_model=default_model,
             key_env=key_env,
             compat=compat,
+            key_header=key_header,
+            key_prefix=key_prefix,
+            api_version=api_version,
         )
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")

@@ -88,12 +88,20 @@ Goal: usable in CI, IDEs, and remote environments.
 - [ ] 4.4 Remote/SSH workspaces + devcontainers (XL; depends 4.5)
 - [x] 4.5 Persistent shell sessions + background process management (M)
 - [x] 4.6 Scheduled/background agent tasks (L; depends 4.1, 2.1)
-- [ ] 4.7 Azure/Bedrock/Vertex/gateway providers + OAuth/device flow (L; depends 0.5)
+- [x] 4.7 Azure/Bedrock/Vertex/gateway providers + OAuth/device flow (L; depends 0.5)
 - [ ] 4.8 Proxy/CA config + offline/air-gapped mode (M; depends 0.5)
 - [ ] 4.9 Cross-machine session sync (opt-in) (XL; depends 1.1)
 - [ ] 4.10 Non-TTY fallback, shell completions (bash/zsh/fish), man page (M)
 - [ ] 4.11 OS-level sandbox (seatbelt/landlock) + network policy (L; depends 1.3)
 - [x] 4.12 Embedded SDK / headless library API (M; depends 4.1)
+
+**4.7 follow-up:** gateway providers ship through the OpenAI-compatible path —
+Azure OpenAI (`api-key` header and `?api-version=`), AWS Bedrock bearer tokens,
+Groq, Together, Fireworks, Cerebras, and DeepInfra. Azure and Bedrock keep
+placeholder endpoints because the resource is account-specific; point a custom
+provider at the real URL. Deferred: interactive OAuth/device-code flows, Azure
+managed identity, Google Vertex AI (project-specific endpoint plus OAuth2-only
+auth), and AWS SigV4/IAM request signing.
 
 ## P5 — Ecosystem and polish (ongoing)
 

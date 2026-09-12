@@ -143,6 +143,35 @@ def test_config_provider_use_unknown_fails():
     assert "Unknown provider" in result.output
 
 
+def test_config_provider_add_accepts_auth_flags():
+    result = CliRunner().invoke(
+        main.app,
+        [
+            "config",
+            "provider",
+            "add",
+            "my-azure",
+            "My Azure",
+            "https://my-resource.openai.azure.com/openai/v1",
+            "my-deployment",
+            "--key-env",
+            "AZURE_OPENAI_API_KEY",
+            "--key-header",
+            "api-key",
+            "--key-prefix",
+            "",
+            "--api-version",
+            "2024-10-21",
+        ],
+    )
+
+    assert result.exit_code == 0
+    provider = config.get_provider_config("my-azure")
+    assert provider.key_header == "api-key"
+    assert provider.key_prefix == ""
+    assert provider.api_version == "2024-10-21"
+
+
 def test_config_model_set_and_reset():
     result = CliRunner().invoke(
         main.app, ["config", "model", "set", "gpt-test"]

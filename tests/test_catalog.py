@@ -152,6 +152,38 @@ def test_fetch_models_uses_anthropic_auth_scheme():
     assert request.url.params["limit"] == "1000"
 
 
+def test_fetch_models_uses_configured_auth_header_and_api_version():
+    """Azure-style providers list models with `api-key` and ?api-version=."""
+    seen: list[httpx.Request] = []
+    provider = _provider(
+        base_url="https://my-resource.openai.azure.com/openai/v1",
+        key_header="api-key",
+        key_prefix="",
+        api_version="2024-10-21",
+    )
+
+    catalog.fetch_models(
+        provider,
+        "az-key",
+        transport=_json_transport({"data": [{"id": "deploy"}]}, seen=seen),
+    )
+
+    request = seen[0]
+    assert request.headers["api-key"] == "az-key"
+    assert "Authorization" not in request.headers
+    assert request.url.params["api-version"] == "2024-10-21"
+    assert request.url.path.endswith("/models")
+
+
+def test_models_url_appends_api_version():
+    provider = _provider(api_version="2024-10-21")
+
+    assert catalog.models_url(provider) == (
+        "https://demo.test/v1/models?api-version=2024-10-21"
+    )
+    assert catalog.models_url(_provider()) == "https://demo.test/v1/models"
+
+
 def test_fetch_models_raises_on_http_error():
     provider = REGISTRY["openai"]
     transport = _json_transport({"error": "bad key"}, status_code=401)

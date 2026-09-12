@@ -434,9 +434,44 @@ providers with `config provider add`.
 | `qwen` | `qwen3.7-max` | `DASHSCOPE_API_KEY` |
 | `moonshot` | `kimi-k2.7-code` | `MOONSHOT_API_KEY` |
 | `openrouter` | `anthropic/claude-sonnet-5` | `OPENROUTER_API_KEY` |
+| `azure` | `gpt-5.6-sol` *(deployment)* | `AZURE_OPENAI_API_KEY` |
+| `bedrock` | `openai.gpt-5.6-sol` | `AWS_BEARER_TOKEN_BEDROCK` |
+| `groq` | `llama-4.1-70b-versatile` | `GROQ_API_KEY` |
+| `together` | `meta-llama/Llama-4.1-70B-Instruct-Turbo` | `TOGETHER_API_KEY` |
+| `fireworks` | `accounts/fireworks/models/llama-v4-70b-instruct` | `FIREWORKS_API_KEY` |
+| `cerebras` | `llama-4.1-70b` | `CEREBRAS_API_KEY` |
+| `deepinfra` | `meta-llama/Llama-4.1-70B-Instruct` | `DEEPINFRA_API_KEY` |
 | `ollama` | *(from server)* | `OLLAMA_API_KEY` (optional) |
 | `lmstudio` | *(from server)* | `LMSTUDIO_API_KEY` (optional) |
 | `unsloth` | *(from server)* | `UNSLOTH_API_KEY` (required) |
+
+Groq, Together, Fireworks, Cerebras, and DeepInfra work out of the box once
+their API key is set — they speak the standard OpenAI-compatible protocol.
+
+`azure` and `bedrock` ship **placeholder** endpoints because the endpoint is
+account-specific (`https://<resource>.openai.azure.com/openai/v1` and
+`https://bedrock-runtime.<region>.amazonaws.com/openai/v1`). Point them at your
+own resource by adding a custom provider (built-in entries cannot be edited):
+
+```bash
+kiwimatecoder config provider add my-azure "My Azure" \
+  https://my-resource.openai.azure.com/openai/v1 my-deployment \
+  --key-env AZURE_OPENAI_API_KEY --key-header api-key --key-prefix "" \
+  --api-version 2024-10-21
+kiwimatecoder config key set my-azure <key>
+
+kiwimatecoder config provider add bedrock-eu "Bedrock (eu-central-1)" \
+  https://bedrock-runtime.eu-central-1.amazonaws.com/openai/v1 \
+  openai.gpt-5.6-sol --key-env AWS_BEARER_TOKEN_BEDROCK
+```
+
+Azure OpenAI authenticates with an `api-key` header (no `Bearer` prefix) and
+versions its API with `?api-version=`; both are configurable per custom provider
+(`--key-header`, `--key-prefix`, `--api-version`, or the slash equivalents).
+AWS Bedrock's OpenAI-compatible endpoint accepts a bearer token only: SigV4/IAM
+signing, Azure managed identity, Google Vertex AI (project-specific endpoint,
+OAuth2-only auth), and interactive OAuth/device-code flows are not implemented
+(deferred; see ROADMAP).
 
 These defaults are a starting point; the live catalog below is what `/model`
 actually offers once a provider is in use.

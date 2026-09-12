@@ -355,6 +355,12 @@ def _provider_from_config(provider_id: str, data: object) -> ProviderConfig | No
     models = tuple(
         dict.fromkeys(str(model).strip() for model in raw_models if str(model).strip())
     )
+    key_header = str(data.get("key_header") or "Authorization").strip()
+    if not key_header:
+        key_header = "Authorization"
+    raw_prefix = data.get("key_prefix")
+    key_prefix = "Bearer " if raw_prefix is None else str(raw_prefix)
+    api_version = str(data.get("api_version") or "").strip()
 
     return ProviderConfig(
         id=provider_id,
@@ -365,6 +371,9 @@ def _provider_from_config(provider_id: str, data: object) -> ProviderConfig | No
         compat=compat,
         extra_headers={str(k): str(v) for k, v in extra_headers.items()},
         models=models,
+        key_header=key_header,
+        key_prefix=key_prefix,
+        api_version=api_version,
     )
 
 
@@ -410,8 +419,17 @@ def add_provider(
     default_model: str,
     key_env: str | None = None,
     compat: str = "openai",
+    key_header: str | None = None,
+    key_prefix: str | None = None,
+    api_version: str | None = None,
 ) -> ProviderConfig:
-    """Persist a user-defined provider and return its config."""
+    """Persist a user-defined provider and return its config.
+
+    ``key_header``/``key_prefix`` follow the OpenAI auth scheme (defaults:
+    ``Authorization``/``Bearer ``); Azure-style endpoints use
+    ``key_header="api-key"``, ``key_prefix=""``, and an ``api_version`` that is
+    appended as ``?api-version=``.
+    """
     provider_id = provider_id.strip().lower()
     if not provider_id or any(ch.isspace() for ch in provider_id):
         raise ValueError("Provider id must be non-empty and contain no spaces.")
@@ -429,14 +447,24 @@ def add_provider(
     if compat not in {"openai", "anthropic"}:
         raise ValueError("Provider compat must be 'openai' or 'anthropic'.")
 
-    cfg = load_config()
-    cfg["providers"][provider_id] = {
+    data: dict[str, Any] = {
         "name": name.strip(),
         "base_url": base_url.strip().rstrip("/"),
         "default_model": default_model.strip(),
         "key_env": (key_env or _default_key_env(provider_id)).strip(),
         "compat": compat,
     }
+    if key_header is not None:
+        if not key_header.strip():
+            raise ValueError("Provider key_header is required.")
+        data["key_header"] = key_header.strip()
+    if key_prefix is not None:
+        data["key_prefix"] = str(key_prefix)
+    if api_version is not None:
+        data["api_version"] = str(api_version).strip()
+
+    cfg = load_config()
+    cfg["providers"][provider_id] = data
     save_config(cfg)
     return get_provider_config(provider_id, cfg)
 
@@ -480,13 +508,17 @@ def update_provider(
     default_model: str | None = None,
     key_env: str | None = None,
     compat: str | None = None,
+    key_header: str | None = None,
+    key_prefix: str | None = None,
+    api_version: str | None = None,
 ) -> ProviderConfig:
     """Update fields of a user-defined provider and return its config.
 
     Only fields given are changed; None leaves the current value alone.
     ``name``, ``base_url``, and ``default_model`` must stay non-empty when
-    changed. ``compat`` must be 'openai' or 'anthropic'. Built-in providers
-    cannot be edited (their config lives in the registry).
+    changed. ``compat`` must be 'openai' or 'anthropic'. ``key_prefix`` may be
+    cleared with an empty string, and ``api_version`` with an empty string.
+    Built-in providers cannot be edited (their config lives in the registry).
     """
     if provider_id in REGISTRY:
         raise ValueError(f"'{provider_id}' is built in and cannot be edited.")
@@ -517,6 +549,14 @@ def update_provider(
         if compat not in {"openai", "anthropic"}:
             raise ValueError("Provider compat must be 'openai' or 'anthropic'.")
         data["compat"] = compat
+    if key_header is not None:
+        if not key_header.strip():
+            raise ValueError("Provider key_header is required.")
+        data["key_header"] = key_header.strip()
+    if key_prefix is not None:
+        data["key_prefix"] = str(key_prefix)
+    if api_version is not None:
+        data["api_version"] = str(api_version).strip()
 
     cfg["providers"][provider_id] = data
     save_config(cfg)

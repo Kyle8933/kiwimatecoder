@@ -26,7 +26,7 @@ the server can be used.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 # Hosts that serve the local machine (LM Studio, Ollama, llama.cpp, Unsloth,
 # ...). ``*.local`` hosts are treated the same way. Local does not imply
@@ -51,6 +51,14 @@ class ProviderConfig:
     # Curated catalog offered by /model; not exhaustive, and any id can still
     # be set by name. The default model is always offered even if absent here.
     models: tuple[str, ...] = ()
+    # Auth header used for OpenAI-compatible requests. Cloud providers want
+    # ``Authorization: Bearer <key>``; Azure OpenAI wants ``api-key: <key>``.
+    # Both fields are ignored for native Anthropic providers (x-api-key).
+    key_header: str = "Authorization"
+    key_prefix: str = "Bearer "
+    # Azure-style API versioning: appended as ``?api-version=<value>`` to chat,
+    # catalog, and embedding URLs when non-empty.
+    api_version: str = ""
 
     @property
     def is_local(self) -> bool:
@@ -62,6 +70,18 @@ class ProviderConfig:
     def needs_key(self) -> bool:
         """Whether requests fail without an API key (cloud or auth-enforcing local server)."""
         return self.requires_key or not self.is_local
+
+    def versioned_url(self, url: str) -> str:
+        """Append ``api_version`` as an ``api-version`` query when set.
+
+        Azure OpenAI versions its endpoint with a date query parameter, so the
+        client, catalog, and embeddings all build URLs through here. Providers
+        without an ``api_version`` get the URL back untouched.
+        """
+        if not self.api_version:
+            return url
+        separator = "&" if "?" in url else "?"
+        return f"{url}{separator}api-version={quote(self.api_version, safe='')}"
 
 
 class UnknownProviderError(KeyError):
@@ -163,6 +183,85 @@ REGISTRY: dict[str, ProviderConfig] = {
             "moonshotai/kimi-k2.7-code",
             "mistralai/devstral-2512",
             "z-ai/glm-5.2",
+        ),
+    ),
+    "azure": ProviderConfig(
+        id="azure",
+        name="Azure OpenAI",
+        # Placeholder only: replace <resource> with your Azure resource name.
+        # Because built-in entries are not editable, the supported path is a
+        # custom provider pointed at your resource, e.g.
+        # ``config provider add my-azure "My Azure" \
+        #   https://my-resource.openai.azure.com/openai/v1 my-deployment \
+        #   --key-env AZURE_OPENAI_API_KEY --key-header api-key \
+        #   --key-prefix "" --api-version 2024-10-21``.
+        # Deployment names are user-defined, so set your own with /model.
+        base_url="https://<resource>.openai.azure.com/openai/v1",
+        default_model="gpt-5.6-sol",
+        key_env="AZURE_OPENAI_API_KEY",
+        key_header="api-key",
+        key_prefix="",
+        api_version="2024-10-21",
+        models=("gpt-5.6-sol", "gpt-5.5"),
+    ),
+    "bedrock": ProviderConfig(
+        id="bedrock",
+        name="AWS Bedrock",
+        # Placeholder only: replace <region> with your AWS region. Bedrock's
+        # OpenAI-compatible runtime accepts a bearer token; SigV4/IAM signing is
+        # out of scope (use a signing proxy or custom provider if you need it).
+        base_url="https://bedrock-runtime.<region>.amazonaws.com/openai/v1",
+        default_model="openai.gpt-5.6-sol",
+        key_env="AWS_BEARER_TOKEN_BEDROCK",
+        models=("openai.gpt-5.6-sol", "mistral.devstral-2512"),
+    ),
+    "groq": ProviderConfig(
+        id="groq",
+        name="Groq",
+        base_url="https://api.groq.com/openai/v1",
+        default_model="llama-4.1-70b-versatile",
+        key_env="GROQ_API_KEY",
+        models=("llama-4.1-70b-versatile", "qwen3.7-32b"),
+    ),
+    "together": ProviderConfig(
+        id="together",
+        name="Together AI",
+        base_url="https://api.together.xyz/v1",
+        default_model="meta-llama/Llama-4.1-70B-Instruct-Turbo",
+        key_env="TOGETHER_API_KEY",
+        models=(
+            "meta-llama/Llama-4.1-70B-Instruct-Turbo",
+            "Qwen/Qwen3.7-72B-Instruct-Turbo",
+        ),
+    ),
+    "fireworks": ProviderConfig(
+        id="fireworks",
+        name="Fireworks AI",
+        base_url="https://api.fireworks.ai/inference/v1",
+        default_model="accounts/fireworks/models/llama-v4-70b-instruct",
+        key_env="FIREWORKS_API_KEY",
+        models=(
+            "accounts/fireworks/models/llama-v4-70b-instruct",
+            "accounts/fireworks/models/qwen3.7-32b-instruct",
+        ),
+    ),
+    "cerebras": ProviderConfig(
+        id="cerebras",
+        name="Cerebras",
+        base_url="https://api.cerebras.ai/v1",
+        default_model="llama-4.1-70b",
+        key_env="CEREBRAS_API_KEY",
+        models=("llama-4.1-70b", "qwen-3.7-32b"),
+    ),
+    "deepinfra": ProviderConfig(
+        id="deepinfra",
+        name="DeepInfra",
+        base_url="https://api.deepinfra.com/v1/openai",
+        default_model="meta-llama/Llama-4.1-70B-Instruct",
+        key_env="DEEPINFRA_API_KEY",
+        models=(
+            "meta-llama/Llama-4.1-70B-Instruct",
+            "Qwen/Qwen3.7-72B-Instruct",
         ),
     ),
     "ollama": ProviderConfig(

@@ -584,6 +584,60 @@ def test_config_provider_edit_requires_pairs(session):
     assert "Expected field=value" in _output(console)
 
 
+def test_config_provider_add_accepts_azure_auth_fields(session):
+    console = _console()
+
+    dispatch(
+        '/config provider add my-azure "My Azure" '
+        "https://my-resource.openai.azure.com/openai/v1 deploy "
+        "AZURE_OPENAI_API_KEY key_header=api-key key_prefix= "
+        "api_version=2024-10-21",
+        session,
+        console,
+    )
+
+    provider = config.get_provider_config("my-azure")
+    assert provider.key_header == "api-key"
+    assert provider.key_prefix == ""
+    assert provider.api_version == "2024-10-21"
+
+
+def test_config_provider_edit_updates_auth_fields(session):
+    config.add_provider(
+        "my-azure",
+        "My Azure",
+        "https://my-resource.openai.azure.com/openai/v1",
+        "deploy",
+    )
+    console = _console()
+
+    dispatch(
+        "/config provider edit my-azure key_header=api-key key_prefix= "
+        "api_version=2024-10-21",
+        session,
+        console,
+    )
+
+    provider = config.get_provider_config("my-azure")
+    assert provider.key_header == "api-key"
+    assert provider.key_prefix == ""
+    assert provider.api_version == "2024-10-21"
+
+
+def test_config_provider_add_rejects_unknown_auth_field(session):
+    console = _console()
+
+    dispatch(
+        '/config provider add weird "Weird" https://w.example/v1 m nope=1',
+        session,
+        console,
+    )
+
+    assert "Unknown provider field" in _output(console)
+    with pytest.raises(KeyError):
+        config.get_provider_config("weird")
+
+
 # ---------------------------------------------------------------------------
 # bare /config interactive menu
 # ---------------------------------------------------------------------------

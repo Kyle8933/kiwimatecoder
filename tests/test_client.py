@@ -8,7 +8,7 @@ from kiwimatecoder.client import (
     format_anthropic_messages,
     parse_sse_chunk,
 )
-from kiwimatecoder.providers import REGISTRY
+from kiwimatecoder.providers import REGISTRY, ProviderConfig
 
 
 def test_parse_text_delta():
@@ -76,6 +76,93 @@ def test_headers_omit_authorization_when_keyless():
 
     keyed = UnifiedClient(REGISTRY["openai"], "sk-test")
     assert keyed._headers()["Authorization"] == "Bearer sk-test"
+
+
+# ---------------------------------------------------------------------------
+# Custom auth headers and Azure-style api-version
+# ---------------------------------------------------------------------------
+
+
+def _azure_like(**overrides):
+    fields = {
+        "id": "my-azure",
+        "name": "My Azure",
+        "base_url": "https://my-resource.openai.azure.com/openai/v1",
+        "default_model": "my-deployment",
+        "key_env": "AZURE_OPENAI_API_KEY",
+        "key_header": "api-key",
+        "key_prefix": "",
+        "api_version": "2024-10-21",
+    }
+    fields.update(overrides)
+    return ProviderConfig(**fields)
+
+
+def test_headers_emit_configured_api_key_header_without_bearer():
+    client = UnifiedClient(_azure_like(), "secret-key")
+
+    headers = client._headers()
+
+    assert headers["api-key"] == "secret-key"
+    assert "Authorization" not in headers
+
+
+def test_headers_keep_bearer_for_default_providers():
+    client = UnifiedClient(REGISTRY["deepseek"], "sk-test")
+
+    headers = client._headers()
+
+    assert headers["Authorization"] == "Bearer sk-test"
+    assert "api-key" not in headers
+
+
+def test_headers_azure_registry_entry_uses_api_key():
+    client = UnifiedClient(REGISTRY["azure"], "az-key")
+
+    assert client._headers()["api-key"] == "az-key"
+    assert "Authorization" not in client._headers()
+
+
+def test_headers_custom_prefix_is_used_verbatim():
+    client = UnifiedClient(_azure_like(key_prefix="Token "), "abc")
+
+    assert client._headers()["api-key"] == "Token abc"
+
+
+def test_url_appends_api_version_query():
+    client = UnifiedClient(_azure_like(), "secret-key")
+
+    assert client._url == (
+        "https://my-resource.openai.azure.com/openai/v1/chat/completions"
+        "?api-version=2024-10-21"
+    )
+
+
+def test_url_unchanged_without_api_version():
+    client = UnifiedClient(REGISTRY["openai"], "sk-test")
+
+    assert client._url == "https://api.openai.com/v1/chat/completions"
+
+
+def test_anthropic_headers_ignore_custom_auth_fields():
+    custom = ProviderConfig(
+        id="claude-proxy",
+        name="Claude proxy",
+        base_url="https://proxy.example.com/v1",
+        default_model="claude-sonnet-5",
+        key_env="CLAUDE_PROXY_KEY",
+        compat="anthropic",
+        key_header="api-key",
+        key_prefix="",
+    )
+    client = UnifiedClient(custom, "sk-ant")
+
+    headers = client._headers()
+
+    assert headers["x-api-key"] == "sk-ant"
+    assert headers["anthropic-version"] == "2023-06-01"
+    assert "api-key" not in headers
+    assert "Authorization" not in headers
 
 
 def test_payload_omits_tool_choice_for_local_providers():
