@@ -179,7 +179,9 @@ Environment:
 
 Tools: you can read files, list directories, search the codebase, write and \
 edit files, and run shell commands — all scoped to the workspace root. Use them \
-to gather context before answering, and to carry out the user's requests. Keep \
+to gather context before answering, and to carry out the user's requests. For \
+search, use mode='grep' for exact strings and mode='semantic' for conceptual \
+questions ("where is authentication handled?"). Keep \
 multi-step work visible with update_todos, and use ask_user when a decision \
 genuinely needs the user's input.
 

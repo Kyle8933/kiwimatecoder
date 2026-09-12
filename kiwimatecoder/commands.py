@@ -2552,6 +2552,65 @@ def _memory_append(
     return CommandResult.CONTINUE
 
 
+_INDEX_USAGE = "/index [status|build|clear]"
+
+
+def _format_bytes(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def _index(arg: str, session: Session, console: Console) -> str:
+    from kiwimatecoder import config as config_module
+    from kiwimatecoder.index import builder
+    from kiwimatecoder.index.store import clear_store, index_status
+
+    action = arg.strip().lower() or "status"
+    try:
+        if action in {"status", "show", "list", "ls"}:
+            status = index_status(session.workspace_root)
+            state = "on" if status.enabled else "off"
+            console.print(
+                f"Codebase index: [cyan]{state}[/cyan]\n"
+                f"Files indexed: [cyan]{status.files}[/cyan] "
+                f"([yellow]{status.stale}[/yellow] stale)\n"
+                f"Terms: [cyan]{status.terms}[/cyan]\n"
+                f"Store: [cyan]{_format_bytes(status.size_bytes)}[/cyan] "
+                f"[dim]{status.path}[/dim]\n"
+                f"Embeddings: [cyan]{'on' if status.embeddings else 'off'}[/cyan]"
+            )
+            return CommandResult.CONTINUE
+        if action in {"build", "update", "refresh"}:
+            if not config_module.get_index()["enabled"]:
+                console.print(
+                    "[yellow]Codebase indexing is disabled. Set "
+                    '"index": {"enabled": true} in the config to enable it.[/yellow]'
+                )
+                return CommandResult.CONTINUE
+            stats = builder.build_index(session.workspace_root)
+            console.print(
+                f"[green]Indexed {stats.files} file(s):[/green] "
+                f"{stats.added} added, {stats.updated} updated, "
+                f"{stats.removed} removed, {stats.unchanged} unchanged "
+                f"([cyan]{stats.terms}[/cyan] terms)."
+            )
+            return CommandResult.CONTINUE
+        if action in {"clear", "remove", "delete", "reset"}:
+            if clear_store(session.workspace_root):
+                console.print("[green]Codebase index cleared.[/green]")
+            else:
+                console.print("[dim]No codebase index to clear.[/dim]")
+            return CommandResult.CONTINUE
+    except OSError as exc:
+        console.print(f"[red]Codebase index unavailable: {exc}[/red]")
+        return CommandResult.CONTINUE
+    console.print(f"[yellow]Usage: {_INDEX_USAGE}[/yellow]")
+    return CommandResult.CONTINUE
+
+
 def _compact(arg: str, session: Session, console: Console) -> str:
     target: int | None = None
     token = arg.strip()
@@ -2609,6 +2668,7 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "todos": _todos,
     "memory": _memory,
     "compact": _compact,
+    "index": _index,
     "templates": _templates,
     "mcp": _mcp,
     "lsp": _lsp,
@@ -2675,6 +2735,11 @@ _HELP_GROUPS = [
             (
                 "/memory [list|add|add-user|clear]",
                 "Show or edit persistent project and user memory.",
+            ),
+            (
+                "/index [status|build|clear]",
+                "Show, refresh, or delete the codebase index used by semantic "
+                "search.",
             ),
             ("/compact [budget]", "Trim older history to fit a token budget."),
             ("/templates", "List custom prompt templates."),
@@ -2765,6 +2830,7 @@ _COMMAND_DESCRIPTIONS = {
     "todos": "Show the agent's task list.",
     "memory": "Show or edit persistent project and user memory.",
     "compact": "Trim older history to fit a token budget.",
+    "index": "Show, refresh, or delete the codebase index used by semantic search.",
     "templates": "List custom prompt templates.",
     "mcp": "List MCP servers and tools, or reconnect and re-register them.",
     "lsp": "Show or toggle language-server diagnostics and navigation.",
@@ -2794,6 +2860,12 @@ _MEMORY_ACTION_DESCRIPTIONS = {
     "add": "Append a fact to project memory.",
     "add-user": "Append a fact to user memory.",
     "clear": "Delete project or user memory.",
+}
+
+_INDEX_ACTION_DESCRIPTIONS = {
+    "status": "Show indexed files, terms, size, and stale count.",
+    "build": "Refresh the index incrementally.",
+    "clear": "Delete the index for this workspace.",
 }
 
 _CONFIG_ACTION_DESCRIPTIONS = {
@@ -2916,6 +2988,8 @@ def slash_argument_completions(
         choices = _MODE_DESCRIPTIONS
     elif command == "memory":
         choices = _MEMORY_ACTION_DESCRIPTIONS
+    elif command == "index":
+        choices = _INDEX_ACTION_DESCRIPTIONS
     elif command == "model" and session is not None:
         # Completion runs on every keystroke, so this reads the cached catalog
         # only — refreshing from the provider happens in /model itself.

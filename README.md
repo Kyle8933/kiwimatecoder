@@ -134,6 +134,7 @@ paths outside the workspace root; writes stay sandboxed.
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
 | `/memory [list\|add\|add-user\|clear]` | Show or edit persistent project and user memory. |
+| `/index [status\|build\|clear]` | Show, refresh, or delete the local codebase index used by semantic search. |
 | `/config` | Show or change providers, keys, models, filters, permissions, command rules, sampling, styles, themes, output modes, accessibility, verify, and budgets. |
 | `/mcp [list\|reload]` | List configured MCP servers, their status, and registered tools; `reload` reconnects every server. |
 | `/cost` | Show token usage, context gauge, and estimated USD cost for this session (per-model pricing). |
@@ -188,8 +189,8 @@ show which file or environment variable the active key comes from.
 
 The assistant has these capabilities, all scoped to the workspace:
 
-- `read_file`, `list_dir`, `search` (grep + glob) — read-only, always allowed;
-  batches of read-only calls run in parallel.
+- `read_file`, `list_dir`, `search` (grep + glob + semantic) — read-only,
+  always allowed; batches of read-only calls run in parallel.
 - `view_image` — attach a workspace image (`.png`, `.jpg`, `.jpeg`, `.gif`,
   `.webp`) so a vision-capable model can see it (see below).
 - `write_file`, `edit_file` — create/modify files (approval-gated; each is
@@ -678,6 +679,58 @@ so they start fresh on next use. Settings live under `lsp` in
     }
   }
 }
+```
+
+## Codebase index and semantic search
+
+`search` gains a third mode: `mode='semantic'` ranks files against a
+natural-language query using a local, persistent index instead of a regex, and
+returns paths, line numbers, and source snippets. The agent chooses it for
+questions like "where is authentication handled?", and grep/glob keep working
+exactly as before.
+
+The index is built automatically the first time semantic search runs, then
+refreshed incrementally: only files whose size or modification time changed
+are re-tokenized, deleted files are dropped, and `.gitignore` plus the default
+skip directories (`node_modules`, `venv`, `__pycache__`, …) are respected.
+Binary files, files larger than the byte cap, and anything beyond the file cap
+are skipped. It is a cache: the store lives at
+`~/.kiwimatecoder/index/<hash-of-workspace>.json` and `clear` simply deletes it.
+
+```text
+/index                 # status: files, terms, store size, stale count, embeddings
+/index build           # refresh incrementally; prints added/updated/removed
+/index clear           # delete the store for this workspace
+```
+
+Ranking uses BM25 over file term frequencies, so there are no API calls and
+semantic search works out of the box. Settings live under the `index` key:
+
+```json
+{
+  "index": {
+    "enabled": true,
+    "max_files": 5000,
+    "max_file_bytes": 262144,
+    "embeddings": { "provider": "", "model": "", "batch_size": 32 }
+  }
+}
+```
+
+Embeddings are optional and **OpenAI-compatible only**: set a provider id and
+an embedding model (the provider must serve `POST /embeddings` and its API key
+is read from the same config/env as chat) to additionally store chunk vectors.
+When vectors exist, search blends the lexical and vector scores; if the
+embedding provider is unavailable or errors for any reason, search silently
+falls back to lexical ranking. Embeddings are never required to use the
+feature.
+
+```bash
+kiwimatecoder config index show
+kiwimatecoder config index embed-provider openai
+kiwimatecoder config index embed-model text-embedding-3-small
+kiwimatecoder config index embed-provider none    # turn embeddings off
+kiwimatecoder config index clear
 ```
 
 ## Sampling and output styles

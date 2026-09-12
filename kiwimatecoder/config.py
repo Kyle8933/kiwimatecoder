@@ -124,6 +124,12 @@ def _empty_config() -> dict[str, Any]:
             "diagnostics_after_edits": True,
             "servers": {},
         },
+        "index": {
+            "enabled": True,
+            "max_files": 5000,
+            "max_file_bytes": 262144,
+            "embeddings": {"provider": "", "model": "", "batch_size": 32},
+        },
     }
 
 
@@ -253,6 +259,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("memory", {})
     cfg.setdefault("vision", {})
     cfg.setdefault("lsp", {})
+    cfg.setdefault("index", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
     # stored empty list, a non-list, or a list of junk is seeded the same way.
@@ -1833,6 +1840,155 @@ def set_lsp(
 
 
 # ---------------------------------------------------------------------------
+# Codebase index / semantic search
+# ---------------------------------------------------------------------------
+
+INDEX_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "max_files": 5000,
+    "max_file_bytes": 262144,
+    "embeddings": {"provider": "", "model": "", "batch_size": 32},
+}
+INDEX_MAX_FILES_MIN = 1
+INDEX_MAX_FILES_MAX = 100_000
+INDEX_MAX_FILE_BYTES_MIN = 1_024
+INDEX_MAX_FILE_BYTES_MAX = 50_000_000
+INDEX_BATCH_SIZE_MIN = 1
+INDEX_BATCH_SIZE_MAX = 256
+
+
+def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    """Coerce ``value`` to an int inside ``[minimum, maximum]``, else default."""
+    try:
+        number = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return default
+    return number if minimum <= number <= maximum else default
+
+
+def get_index(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized codebase-index settings, always fully populated.
+
+    Malformed stored values fall back to :data:`INDEX_DEFAULTS` so a
+    hand-edited config can never crash semantic search; ``validate_config``
+    reports exactly what would be ignored.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("index") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective: dict[str, Any] = {
+        "enabled": INDEX_DEFAULTS["enabled"],
+        "max_files": INDEX_DEFAULTS["max_files"],
+        "max_file_bytes": INDEX_DEFAULTS["max_file_bytes"],
+        "embeddings": dict(INDEX_DEFAULTS["embeddings"]),
+    }
+    enabled = stored.get("enabled")
+    if isinstance(enabled, bool):
+        effective["enabled"] = enabled
+    effective["max_files"] = _bounded_int(
+        stored.get("max_files"),
+        int(INDEX_DEFAULTS["max_files"]),
+        INDEX_MAX_FILES_MIN,
+        INDEX_MAX_FILES_MAX,
+    )
+    effective["max_file_bytes"] = _bounded_int(
+        stored.get("max_file_bytes"),
+        int(INDEX_DEFAULTS["max_file_bytes"]),
+        INDEX_MAX_FILE_BYTES_MIN,
+        INDEX_MAX_FILE_BYTES_MAX,
+    )
+    embeddings = stored.get("embeddings") or {}
+    if isinstance(embeddings, dict):
+        provider = embeddings.get("provider")
+        effective["embeddings"]["provider"] = (
+            provider.strip() if isinstance(provider, str) else ""
+        )
+        model = embeddings.get("model")
+        effective["embeddings"]["model"] = (
+            model.strip() if isinstance(model, str) else ""
+        )
+        effective["embeddings"]["batch_size"] = _bounded_int(
+            embeddings.get("batch_size"),
+            int(INDEX_DEFAULTS["embeddings"]["batch_size"]),
+            INDEX_BATCH_SIZE_MIN,
+            INDEX_BATCH_SIZE_MAX,
+        )
+    return effective
+
+
+def set_index(
+    enabled: bool | None = None,
+    max_files: int | str | None = None,
+    max_file_bytes: int | str | None = None,
+    embed_provider: str | None = None,
+    embed_model: str | None = None,
+    embed_batch_size: int | str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update codebase-index settings; omitted arguments keep their value.
+
+    Raises ``ValueError`` for an out-of-range cap, an unknown embedding
+    provider, or a non-boolean ``enabled`` so callers can validate eagerly.
+    Pass an empty provider/model to turn embeddings back off.
+    """
+    cfg = cfg or load_config()
+    current = get_index(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("index enabled must be true or false.")
+        current["enabled"] = enabled
+    if max_files is not None:
+        try:
+            value = int(max_files)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("index max_files must be an integer.") from exc
+        if not INDEX_MAX_FILES_MIN <= value <= INDEX_MAX_FILES_MAX:
+            raise ValueError(
+                f"index max_files must be between {INDEX_MAX_FILES_MIN} and "
+                f"{INDEX_MAX_FILES_MAX}."
+            )
+        current["max_files"] = value
+    if max_file_bytes is not None:
+        try:
+            size = int(max_file_bytes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("index max_file_bytes must be an integer.") from exc
+        if not INDEX_MAX_FILE_BYTES_MIN <= size <= INDEX_MAX_FILE_BYTES_MAX:
+            raise ValueError(
+                "index max_file_bytes must be between "
+                f"{INDEX_MAX_FILE_BYTES_MIN} and {INDEX_MAX_FILE_BYTES_MAX}."
+            )
+        current["max_file_bytes"] = size
+    if embed_provider is not None:
+        provider_id = str(embed_provider).strip()
+        if provider_id:
+            try:
+                get_provider_config(provider_id, cfg)
+            except KeyError as exc:
+                raise ValueError(str(exc)) from exc
+        current["embeddings"]["provider"] = provider_id
+    if embed_model is not None:
+        current["embeddings"]["model"] = str(embed_model).strip()
+    if embed_batch_size is not None:
+        try:
+            batch = int(embed_batch_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "index embeddings batch_size must be an integer."
+            ) from exc
+        if not INDEX_BATCH_SIZE_MIN <= batch <= INDEX_BATCH_SIZE_MAX:
+            raise ValueError(
+                "index embeddings batch_size must be between "
+                f"{INDEX_BATCH_SIZE_MIN} and {INDEX_BATCH_SIZE_MAX}."
+            )
+        current["embeddings"]["batch_size"] = batch
+    cfg["index"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
 # UI preferences (color, theme, output mode, ASCII)
 # ---------------------------------------------------------------------------
 
@@ -2714,6 +2870,85 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                             _normalize_lsp_server(name, spec)
                         except ValueError as exc:
                             add("error", f"lsp.servers.{name}", str(exc))
+
+    index_section = cfg.get("index")
+    if index_section is not None:
+        if not isinstance(index_section, dict):
+            add("error", "index", "'index' must be an object.")
+        else:
+            if "enabled" in index_section and not isinstance(
+                index_section["enabled"], bool
+            ):
+                add("error", "index.enabled", "'enabled' must be true or false.")
+            if "max_files" in index_section:
+                try:
+                    max_files = int(index_section["max_files"])
+                except (TypeError, ValueError):
+                    max_files = -1
+                if not INDEX_MAX_FILES_MIN <= max_files <= INDEX_MAX_FILES_MAX:
+                    add(
+                        "error",
+                        "index.max_files",
+                        "Must be between "
+                        f"{INDEX_MAX_FILES_MIN} and {INDEX_MAX_FILES_MAX}.",
+                    )
+            if "max_file_bytes" in index_section:
+                try:
+                    max_bytes = int(index_section["max_file_bytes"])
+                except (TypeError, ValueError):
+                    max_bytes = -1
+                if not (
+                    INDEX_MAX_FILE_BYTES_MIN
+                    <= max_bytes
+                    <= INDEX_MAX_FILE_BYTES_MAX
+                ):
+                    add(
+                        "error",
+                        "index.max_file_bytes",
+                        "Must be between "
+                        f"{INDEX_MAX_FILE_BYTES_MIN} and "
+                        f"{INDEX_MAX_FILE_BYTES_MAX}.",
+                    )
+            embeddings = index_section.get("embeddings")
+            if embeddings is not None:
+                if not isinstance(embeddings, dict):
+                    add(
+                        "error",
+                        "index.embeddings",
+                        "'embeddings' must be an object.",
+                    )
+                else:
+                    provider = embeddings.get("provider")
+                    if provider is not None and str(provider).strip():
+                        try:
+                            get_provider_config(str(provider).strip(), cfg)
+                        except KeyError:
+                            add(
+                                "error",
+                                "index.embeddings.provider",
+                                f"Unknown provider '{provider}'.",
+                            )
+                    if "model" in embeddings and not isinstance(
+                        embeddings["model"], str
+                    ):
+                        add(
+                            "error",
+                            "index.embeddings.model",
+                            "'model' must be a string.",
+                        )
+                    if "batch_size" in embeddings:
+                        try:
+                            batch = int(embeddings["batch_size"])
+                        except (TypeError, ValueError):
+                            batch = -1
+                        if not INDEX_BATCH_SIZE_MIN <= batch <= INDEX_BATCH_SIZE_MAX:
+                            add(
+                                "error",
+                                "index.embeddings.batch_size",
+                                "Must be between "
+                                f"{INDEX_BATCH_SIZE_MIN} and "
+                                f"{INDEX_BATCH_SIZE_MAX}.",
+                            )
 
     prompt = cfg.get("system_prompt")
     if prompt is not None and not isinstance(prompt, str):

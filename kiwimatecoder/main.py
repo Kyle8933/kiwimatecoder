@@ -31,6 +31,7 @@ from kiwimatecoder.config import (
     get_compact_at_tokens,
     get_context_window,
     get_default_mode,
+    get_index,
     get_key,
     get_lsp,
     get_mcp_servers,
@@ -65,6 +66,7 @@ from kiwimatecoder.config import (
     save_profile,
     set_budget,
     set_default_mode,
+    set_index,
     set_key,
     set_lsp,
     set_mcp_server,
@@ -114,6 +116,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config models show[/cyan]         List the models offered")
     console.print("  [cyan]config ui show[/cyan]             Theme, color, output, ASCII")
     console.print("  [cyan]config web show[/cyan]            Web fetch/search limits")
+    console.print("  [cyan]config index show[/cyan]          Codebase index status")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
 
@@ -931,6 +934,82 @@ def web_allow_local(
     else:
         console.print("[red]Expected 'on' or 'off'.[/red]")
         raise typer.Exit(1)
+
+
+# --- canonical `config index ...` -------------------------------------------
+
+index_app = typer.Typer(help="Codebase index and semantic search settings.")
+config_app.add_typer(index_app, name="index")
+
+
+@index_app.command("show")
+def index_show() -> None:
+    """Show the index status for the current directory."""
+    from kiwimatecoder.index.store import index_status
+
+    settings = get_index()
+    status = index_status(Path.cwd())
+    embeddings = settings["embeddings"]
+    if embeddings["provider"] and embeddings["model"]:
+        embed_line = f"[cyan]on[/cyan] ({embeddings['provider']}:{embeddings['model']})"
+    else:
+        embed_line = "[cyan]off[/cyan]"
+    console.print(
+        f"Index: [cyan]{'on' if status.enabled else 'off'}[/cyan]\n"
+        f"Files indexed: [cyan]{status.files}[/cyan] "
+        f"([yellow]{status.stale}[/yellow] stale)\n"
+        f"Terms: [cyan]{status.terms}[/cyan]\n"
+        f"Store: [cyan]{status.path}[/cyan] ({status.size_bytes} bytes)\n"
+        f"Embeddings: {embed_line}"
+    )
+
+
+@index_app.command("embed-provider")
+def index_embed_provider(
+    provider: Annotated[
+        str,
+        typer.Argument(help="Provider id ('none' or empty clears it)"),
+    ] = "",
+) -> None:
+    """Set the OpenAI-compatible provider used for embeddings."""
+    cleaned = provider.strip()
+    if cleaned.lower() in {"", "none", "off", "-", "clear"}:
+        cleaned = ""
+    try:
+        settings = set_index(embed_provider=cleaned)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Embedding provider:[/green] "
+        f"[cyan]{settings['embeddings']['provider'] or 'off'}[/cyan]"
+    )
+
+
+@index_app.command("embed-model")
+def index_embed_model(
+    model: Annotated[str, typer.Argument(help="Embedding model id")],
+) -> None:
+    """Set the embedding model id (empty clears it)."""
+    cleaned = model.strip()
+    if cleaned.lower() in {"none", "off", "-", "clear"}:
+        cleaned = ""
+    settings = set_index(embed_model=cleaned)
+    console.print(
+        f"[green]{_check()} Embedding model:[/green] "
+        f"[cyan]{settings['embeddings']['model'] or 'off'}[/cyan]"
+    )
+
+
+@index_app.command("clear")
+def index_clear() -> None:
+    """Delete the index for the current directory."""
+    from kiwimatecoder.index.store import clear_store
+
+    if clear_store(Path.cwd()):
+        console.print(f"[green]{_check()} Codebase index cleared.[/green]")
+    else:
+        console.print("[dim]No codebase index to clear.[/dim]")
 
 
 # --- canonical `config memory ...` ------------------------------------------

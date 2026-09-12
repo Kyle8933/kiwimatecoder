@@ -19,6 +19,8 @@ from kiwimatecoder.tools.paths import (
 )
 
 MAX_MATCHES = 200
+DEFAULT_SEMANTIC_HITS = 10
+MAX_SEMANTIC_HITS = 50
 
 
 def _iter_files(root: Path, session: Session, glob_pattern: str | None = None) -> Iterator[Path]:
@@ -91,6 +93,58 @@ def _grep_search(
     return results
 
 
+def _semantic_search(
+    root: Path, query: str, args: dict[str, Any], session: Session
+) -> list[str]:
+    """Rank the workspace index against ``query`` and format the hits.
+
+    The index is refreshed incrementally first (and auto-built on first use).
+    Indexing failures are converted to ``ValueError`` so the tool returns a
+    friendly error instead of raising.
+    """
+    from kiwimatecoder import config
+    from kiwimatecoder.index import builder, search as index_search
+
+    try:
+        if not config.get_index()["enabled"]:
+            raise ValueError(
+                "Codebase indexing is disabled. Set "
+                '"index": {"enabled": true} in the config to use mode=\'semantic\'.'
+            )
+        builder.build_index(session.workspace_root)
+        limit_value = args.get("limit")
+        try:
+            limit = (
+                int(limit_value)
+                if limit_value is not None
+                else DEFAULT_SEMANTIC_HITS
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("'limit' must be an integer") from exc
+        limit = max(1, min(limit, MAX_SEMANTIC_HITS))
+        hits = index_search.search_index(
+            query, limit=limit, workspace_root=session.workspace_root
+        )
+    except ValueError:
+        raise
+    except Exception as exc:  # indexing must never crash a tool call
+        raise ValueError(f"Semantic search failed: {exc}") from exc
+
+    workspace = session.workspace_root.resolve()
+    prefix = ""
+    if root != workspace:
+        try:
+            prefix = root.relative_to(workspace).as_posix() + "/"
+        except ValueError as exc:
+            raise ValueError("The search path is outside the workspace.") from exc
+    results: list[str] = []
+    for hit in hits:
+        if prefix and not hit.path.startswith(prefix):
+            continue
+        results.append(f"{hit.path}:{hit.start_line}: {hit.snippet}")
+    return results
+
+
 def _search(args: dict[str, Any], session: Session) -> ToolResult:
     pattern = str(args.get("pattern") or "")
     if not pattern:
@@ -105,7 +159,9 @@ def _search(args: dict[str, Any], session: Session) -> ToolResult:
         return ToolResult.error(f"'{path}' is not a directory")
 
     try:
-        if mode == "glob":
+        if mode == "semantic":
+            results = _semantic_search(root, pattern, args, session)
+        elif mode == "glob":
             results = _glob_search(root, pattern, session)
         else:
             glob_arg = args.get("glob")
@@ -127,18 +183,24 @@ search_tool = FunctionTool(
     description=(
         "Search the workspace. mode='grep' finds a regex in file contents "
         "(optionally filtered by a glob); mode='glob' finds files by name "
-        "pattern (e.g. '**/*.py')."
+        "pattern (e.g. '**/*.py'); mode='semantic' ranks files against a "
+        "natural-language query using the local codebase index (auto-built and "
+        "refreshed incrementally) and returns paths, line numbers, and "
+        "snippets."
     ),
     parameters={
         "type": "object",
         "properties": {
             "pattern": {
                 "type": "string",
-                "description": "Regex (grep mode) or filename glob (glob mode).",
+                "description": (
+                    "Regex (grep mode), filename glob (glob mode), or a "
+                    "natural-language query (semantic mode)."
+                ),
             },
             "mode": {
                 "type": "string",
-                "enum": ["grep", "glob"],
+                "enum": ["grep", "glob", "semantic"],
                 "description": "Search mode. Defaults to grep.",
             },
             "path": {
@@ -148,6 +210,12 @@ search_tool = FunctionTool(
             "glob": {
                 "type": "string",
                 "description": "Optional filename glob to restrict grep (e.g. '**/*.py').",
+            },
+            "limit": {
+                "type": "integer",
+                "description": (
+                    "Maximum semantic hits to return (default 10, max 50)."
+                ),
             },
         },
         "required": ["pattern"],
