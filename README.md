@@ -276,6 +276,44 @@ the model to cite the URLs it relies on.
   and may need updating if that page's markup changes; `web_fetch` is
   unaffected.
 
+## Proxy, custom CA, and offline mode
+
+Every outbound request — chat streaming, model catalogs, `web_fetch`/
+`web_search`, and embeddings — honors the `network` settings in
+`~/.kiwimatecoder/config.json`:
+
+```json
+{
+  "network": {
+    "proxy": "http://proxy.corp:8080",
+    "ca_bundle": "/etc/ssl/certs/corp-ca.pem",
+    "offline": false
+  }
+}
+```
+
+Set them from the REPL with `/config network ...` or from the shell with
+`kiwimatecoder config network ...`:
+
+```bash
+kiwimatecoder config network show
+kiwimatecoder config network proxy http://proxy.corp:8080   # or: clear
+kiwimatecoder config network ca /etc/ssl/certs/corp-ca.pem  # or: clear
+kiwimatecoder config network offline on                     # or: off
+```
+
+- `proxy` routes all requests through an HTTP(S) proxy (`proxy`/`verify` are
+  passed to the underlying `httpx` clients).
+- `ca_bundle` points at a PEM file used instead of the system trust store for
+  TLS verification — for corporate MITM proxies or self-signed CAs. The file
+  must exist when set.
+- `offline on` is air-gapped mode: cloud chat, model catalogs, web tools, and
+  embeddings are refused with an "offline mode is enabled" error before any
+  request is made. **Local providers keep working** — `ollama`, `lmstudio`,
+  `unsloth`, and custom providers on `localhost`/`*.local` are still reachable
+  for chat, catalog, and embedding calls. `web_fetch`/`web_search` always
+  refuse offline because they only reach the public internet.
+
 ## Browser automation
 
 The `browser` tool drives a headless Chromium page through Playwright when you
@@ -1198,9 +1236,9 @@ The REPL equivalent is `/config profile list|show|save|use|remove`.
 issues, exiting non-zero when any error-level problem is found. It surfaces
 exactly what the tolerant getters would silently drop: unknown top-level keys
 (warning), malformed provider/model-filter/sampling/budget/hook/command-rule/
-profile/MCP/plugin entries, invalid regexes, unknown hook events, and bad
-default mode, output style, UI (theme/color/ASCII/output mode), or
-workspace-flag values.
+profile/MCP/plugin entries, invalid regexes, unknown hook events, bad network
+(proxy/CA/offline) values, and bad default mode, output style, UI
+(theme/color/ASCII/output mode), or workspace-flag values.
 
 ## Development
 

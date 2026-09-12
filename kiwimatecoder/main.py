@@ -41,6 +41,7 @@ from kiwimatecoder.config import (
     get_memory,
     get_model_catalog,
     get_model_filter,
+    get_network,
     get_output_style,
     get_profile,
     get_profiles,
@@ -78,6 +79,7 @@ from kiwimatecoder.config import (
     set_mcp_server,
     set_memory,
     set_model_filter,
+    set_network,
     set_output_style,
     set_prompt_cache,
     set_sampling,
@@ -124,6 +126,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config models show[/cyan]         List the models offered")
     console.print("  [cyan]config ui show[/cyan]             Theme, color, output, ASCII")
     console.print("  [cyan]config web show[/cyan]            Web fetch/search limits")
+    console.print("  [cyan]config network show[/cyan]        Proxy, CA bundle, offline mode")
     console.print("  [cyan]config index show[/cyan]          Codebase index status")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
@@ -1268,6 +1271,106 @@ def web_allow_local(
         raise typer.Exit(1)
 
 
+# --- canonical `config network ...` -----------------------------------------
+
+network_app = typer.Typer(help="Proxy, custom CA, and offline mode.")
+config_app.add_typer(network_app, name="network")
+
+_NETWORK_CLEAR_TOKENS = {"clear", "none", "off", "-", "default"}
+
+
+def _is_network_clear(value: str) -> bool:
+    return value.strip().lower() in _NETWORK_CLEAR_TOKENS
+
+
+def _print_network(settings: dict[str, Any]) -> None:
+    console.print(
+        f"Proxy: [cyan]{settings['proxy'] or 'none'}[/cyan]\n"
+        f"CA bundle: [cyan]{settings['ca_bundle'] or 'system default'}[/cyan]\n"
+        f"Offline mode: [cyan]{'on' if settings['offline'] else 'off'}[/cyan]"
+    )
+
+
+@network_app.command("show")
+def network_show() -> None:
+    """Show proxy, custom CA bundle, and offline-mode settings."""
+    _print_network(get_network())
+
+
+@network_app.command("proxy")
+def network_proxy(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Proxy URL, 'clear', or omit to show the current value"),
+    ] = None,
+) -> None:
+    """Set or clear the HTTP(S) proxy used for every request."""
+    if value is None:
+        console.print(f"Proxy: [cyan]{get_network()['proxy'] or 'none'}[/cyan]")
+        return
+    cleaned = "" if _is_network_clear(value) else value
+    try:
+        settings = set_network(proxy=cleaned)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{_check()} Proxy:[/green] {settings['proxy'] or 'none'}")
+
+
+@network_app.command("ca")
+def network_ca(
+    value: Annotated[
+        str | None,
+        typer.Argument(
+            help="CA bundle path, 'clear', or omit to show the current value"
+        ),
+    ] = None,
+) -> None:
+    """Set or clear the custom CA bundle used for TLS verification."""
+    if value is None:
+        console.print(
+            f"CA bundle: [cyan]{get_network()['ca_bundle'] or 'system default'}[/cyan]"
+        )
+        return
+    cleaned = "" if _is_network_clear(value) else value
+    try:
+        settings = set_network(ca_bundle=cleaned)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} CA bundle:[/green] "
+        f"{settings['ca_bundle'] or 'system default'}"
+    )
+
+
+@network_app.command("offline")
+def network_offline(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Block cloud requests; local providers keep working."""
+    if state is None:
+        current = "on" if get_network()["offline"] else "off"
+        console.print(f"Offline mode: [cyan]{current}[/cyan]")
+        return
+    token = state.strip().lower()
+    if token in {"on", "true", "enable", "enabled", "yes"}:
+        set_network(offline=True)
+        console.print(
+            f"[yellow]{_check()} Offline mode on:[/yellow] cloud requests and web "
+            "tools are blocked; local providers still work."
+        )
+    elif token in {"off", "false", "disable", "disabled", "no"}:
+        set_network(offline=False)
+        console.print(f"[green]{_check()} Offline mode off.[/green]")
+    else:
+        console.print("[red]Expected 'on' or 'off'.[/red]")
+        raise typer.Exit(1)
+
+
 # --- canonical `config index ...` -------------------------------------------
 
 index_app = typer.Typer(help="Codebase index and semantic search settings.")
@@ -1782,6 +1885,13 @@ def config_show() -> None:
         + f"[cyan]{ui_config['color']}[/cyan] color, "
         + f"[cyan]{ui_config['output_mode']}[/cyan] output, "
         + f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan]"
+    )
+    network_config = get_network(cfg)
+    console.print(
+        "Network: proxy "
+        + f"[cyan]{network_config['proxy'] or 'none'}[/cyan], "
+        + f"CA [cyan]{network_config['ca_bundle'] or 'system'}[/cyan], "
+        + f"offline [cyan]{'on' if network_config['offline'] else 'off'}[/cyan]"
     )
     project_path = project_config_path()
     if project_path is not None:

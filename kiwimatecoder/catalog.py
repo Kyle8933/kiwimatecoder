@@ -33,6 +33,7 @@ from typing import Any
 
 import httpx
 
+from kiwimatecoder import network
 from kiwimatecoder.providers import ProviderConfig
 
 # A catalog older than this is refetched the next time the models are shown.
@@ -259,10 +260,17 @@ def fetch_models(
     "nothing usable came back" failure so callers have a single thing to catch.
     ``transport`` is an injection point for tests.
     """
+    if not provider.is_local and network.offline_enabled():
+        raise CatalogFetchError(
+            f"{provider.name}: {network.offline_message('model catalog fetch')}"
+        )
     url = models_url(provider)
     try:
         with httpx.Client(
-            timeout=timeout, transport=transport, follow_redirects=True
+            timeout=timeout,
+            transport=transport,
+            follow_redirects=True,
+            **network.current_options(),
         ) as client:
             response = client.get(
                 url,
@@ -307,10 +315,18 @@ def probe(
     server the user can still pull models into. A 401 also counts as running
     for providers that enforce auth (Unsloth): the server is up, only the key
     is missing — and it may not exist yet when the wizard first probes.
+
+    With offline mode on, cloud providers are reported as not running without a
+    request; local servers are still probed so the setup wizard keeps working.
     """
+    if not provider.is_local and network.offline_enabled():
+        return False
     try:
         with httpx.Client(
-            timeout=timeout, transport=transport, follow_redirects=True
+            timeout=timeout,
+            transport=transport,
+            follow_redirects=True,
+            **network.current_options(),
         ) as client:
             response = client.get(
                 models_url(provider),

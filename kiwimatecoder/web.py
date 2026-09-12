@@ -17,6 +17,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import httpx
 
+from kiwimatecoder import network
+
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -271,6 +273,8 @@ def fetch_url(
     anything else is summarized as ``[binary content: <type>, <n> bytes]``.
     Failures raise :class:`WebError` (never a raw ``httpx`` exception).
     """
+    if network.offline_enabled():
+        raise WebError(network.offline_message("web fetch"))
     cleaned = clean_url(url)
     if is_local_address(cleaned) and not allow_local:
         raise WebError(
@@ -285,7 +289,10 @@ def fetch_url(
     body = b""
     try:
         with httpx.Client(
-            timeout=timeout, transport=transport, follow_redirects=True
+            timeout=timeout,
+            transport=transport,
+            follow_redirects=True,
+            **network.current_options(),
         ) as client:
             with client.stream(
                 "GET",
@@ -466,6 +473,8 @@ def search_web(
     Failures raise :class:`WebError`.
     """
     del api_key  # reserved for providers that need a key
+    if network.offline_enabled():
+        raise WebError(network.offline_message("web search"))
     cleaned = str(query).strip()
     if not cleaned:
         raise WebError("Search query must not be empty.")
@@ -480,6 +489,7 @@ def search_web(
             transport=transport,
             follow_redirects=True,
             headers={"User-Agent": USER_AGENT, "Accept": "text/html"},
+            **network.current_options(),
         ) as client:
             response = client.get(DDG_HTML_URL, params={"q": cleaned})
     except httpx.HTTPError as exc:

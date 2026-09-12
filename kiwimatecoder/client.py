@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from kiwimatecoder import network
 from kiwimatecoder.providers import ProviderConfig
 
 
@@ -499,16 +500,23 @@ class UnifiedClient:
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, model: str
     ) -> AsyncIterator[StreamEvent]:
         """Yield :class:`StreamEvent` objects for one completion, with retry on transient errors."""
+        if not self.provider.is_local and network.offline_enabled():
+            raise ProviderError(
+                network.offline_message(f"{self.provider.name} chat completions")
+            )
         payload = self._payload(messages, tools, model)
         headers = self._headers()
         url = self._url
+        connect_options = network.current_options()
 
         max_attempts = 3
         backoff_delays = [0.5, 1.0, 2.0]
 
         for attempt in range(max_attempts):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with httpx.AsyncClient(
+                    timeout=self.timeout, **connect_options
+                ) as client:
                     async with client.stream(
                         "POST", url, json=payload, headers=headers
                     ) as response:

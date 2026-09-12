@@ -12,7 +12,7 @@ from collections.abc import Sequence
 
 import httpx
 
-from kiwimatecoder import config
+from kiwimatecoder import config, network
 from kiwimatecoder.providers import ProviderConfig
 
 DEFAULT_TIMEOUT = 30.0
@@ -101,6 +101,8 @@ def embed_texts(
     if not provider_id or not model:
         raise EmbeddingError("Embeddings need both a provider and a model.")
     provider, api_key = _provider_and_key(provider_id)
+    if not provider.is_local and network.offline_enabled():
+        raise EmbeddingError(network.offline_message("embeddings"))
 
     if batch_size is None:
         batch_size = int(config.get_index()["embeddings"]["batch_size"])
@@ -108,12 +110,16 @@ def embed_texts(
 
     headers = {"Content-Type": "application/json", **provider.extra_headers}
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    url = f"{provider.base_url.rstrip('/')}/embeddings"
+        headers[provider.key_header] = f"{provider.key_prefix}{api_key}"
+    url = provider.versioned_url(f"{provider.base_url.rstrip('/')}/embeddings")
 
     vectors: list[list[float]] = []
     try:
-        with httpx.Client(timeout=timeout, transport=transport) as client:
+        with httpx.Client(
+            timeout=timeout,
+            transport=transport,
+            **network.current_options(),
+        ) as client:
             for start in range(0, len(texts), size):
                 batch = [str(text) for text in texts[start : start + size]]
                 response = client.post(

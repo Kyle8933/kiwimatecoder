@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from kiwimatecoder import catalog
+from kiwimatecoder import network as network_settings
 from kiwimatecoder.catalog import CatalogFetchError, ModelCatalog
 from kiwimatecoder.events import POST_TOOL, PRE_TOOL, SESSION_END, SESSION_START
 from kiwimatecoder.permissions import PermissionMode
@@ -109,6 +110,11 @@ def _empty_config() -> dict[str, Any]:
             "allow_local": False,
             "search_provider": "duckduckgo",
             "search_api_key": "",
+        },
+        "network": {
+            "proxy": "",
+            "ca_bundle": "",
+            "offline": False,
         },
         "memory": {
             "enabled": True,
@@ -271,6 +277,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("context_window", 128000)
     cfg.setdefault("ui", {})
     cfg.setdefault("web", {})
+    cfg.setdefault("network", {})
     cfg.setdefault("memory", {})
     cfg.setdefault("vision", {})
     cfg.setdefault("lsp", {})
@@ -1853,6 +1860,59 @@ def set_web(
 
 
 # ---------------------------------------------------------------------------
+# Network transport (proxy, custom CA, offline mode)
+# ---------------------------------------------------------------------------
+
+
+def get_network(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return validated proxy/CA/offline settings, always fully populated.
+
+    Malformed stored values fall back to :data:`network.NETWORK_DEFAULTS`
+    (same tolerance as the other getters); ``validate_config`` reports exactly
+    what would be ignored.
+    """
+    cfg = cfg or load_config()
+    return network_settings.normalize(cfg.get("network"))
+
+
+def set_network(
+    proxy: str | None = None,
+    ca_bundle: str | None = None,
+    offline: bool | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update network transport settings; omitted arguments keep their value.
+
+    Raises ``ValueError`` for a proxy that is not an http(s) URL, a CA bundle
+    path that does not exist, or a non-boolean ``offline``, so callers can
+    validate eagerly. Pass an empty string to clear ``proxy``/``ca_bundle``.
+    """
+    cfg = cfg or load_config()
+    current = get_network(cfg)
+    if proxy is not None:
+        current["proxy"] = network_settings.validate_proxy(proxy)
+    if ca_bundle is not None:
+        current["ca_bundle"] = network_settings.validate_ca_bundle(ca_bundle)
+    if offline is not None:
+        if not isinstance(offline, bool):
+            raise ValueError("network offline must be true or false.")
+        current["offline"] = offline
+    cfg["network"] = current
+    save_config(cfg)
+    return current
+
+
+def get_network_options(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return ``httpx`` client keyword arguments for the active network config."""
+    return network_settings.httpx_options(get_network(cfg))
+
+
+def offline_enabled(cfg: dict[str, Any] | None = None) -> bool:
+    """Whether outbound cloud requests are blocked by offline mode."""
+    return bool(get_network(cfg)["offline"])
+
+
+# ---------------------------------------------------------------------------
 # Persistent memory
 # ---------------------------------------------------------------------------
 
@@ -3147,6 +3207,24 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                 )
             if "search_api_key" in web and not isinstance(web["search_api_key"], str):
                 add("error", "web.search_api_key", "'search_api_key' must be a string.")
+
+    network = cfg.get("network")
+    if network is not None:
+        if not isinstance(network, dict):
+            add("error", "network", "'network' must be an object.")
+        else:
+            if "proxy" in network:
+                try:
+                    network_settings.validate_proxy(network["proxy"])
+                except ValueError as exc:
+                    add("error", "network.proxy", str(exc))
+            if "ca_bundle" in network:
+                try:
+                    network_settings.validate_ca_bundle(network["ca_bundle"])
+                except ValueError as exc:
+                    add("error", "network.ca_bundle", str(exc))
+            if "offline" in network and not isinstance(network["offline"], bool):
+                add("error", "network.offline", "'offline' must be true or false.")
 
     memory = cfg.get("memory")
     if memory is not None:

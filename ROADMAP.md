@@ -89,7 +89,7 @@ Goal: usable in CI, IDEs, and remote environments.
 - [x] 4.5 Persistent shell sessions + background process management (M)
 - [x] 4.6 Scheduled/background agent tasks (L; depends 4.1, 2.1)
 - [x] 4.7 Azure/Bedrock/Vertex/gateway providers + OAuth/device flow (L; depends 0.5)
-- [ ] 4.8 Proxy/CA config + offline/air-gapped mode (M; depends 0.5)
+- [x] 4.8 Proxy/CA config + offline/air-gapped mode (M; depends 0.5)
 - [ ] 4.9 Cross-machine session sync (opt-in) (XL; depends 1.1)
 - [ ] 4.10 Non-TTY fallback, shell completions (bash/zsh/fish), man page (M)
 - [ ] 4.11 OS-level sandbox (seatbelt/landlock) + network policy (L; depends 1.3)

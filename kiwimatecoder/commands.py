@@ -38,6 +38,7 @@ from kiwimatecoder.config import (
     get_memory,
     get_model_catalog,
     get_model_filter,
+    get_network,
     get_profile,
     get_profiles,
     get_prompt_cache,
@@ -67,6 +68,7 @@ from kiwimatecoder.config import (
     set_key,
     set_lsp,
     set_model_filter,
+    set_network,
     set_output_style,
     set_prompt_cache,
     set_sampling,
@@ -1034,6 +1036,11 @@ def _config_help(console: Console) -> None:
             "Set web fetch/search limits and local-address access.",
         ),
         (
+            "/config network [show|proxy <url|clear>|ca <path|clear>|"
+            "offline <on|off>]",
+            "Set the proxy, custom CA bundle, and offline mode.",
+        ),
+        (
             "/config vision [show|max-bytes <n>|max-images <n>]",
             "Set image attachment size and per-turn count limits.",
         ),
@@ -1100,6 +1107,13 @@ def _config_show(session: Session, console: Console) -> None:
         f"[cyan]{ui_config['color']}[/cyan] color, "
         f"[cyan]{ui_config['output_mode']}[/cyan] output, "
         f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan]"
+    )
+    network_config = get_network()
+    console.print(
+        "Network: proxy "
+        f"[cyan]{network_config['proxy'] or 'none'}[/cyan], "
+        f"CA [cyan]{network_config['ca_bundle'] or 'system'}[/cyan], "
+        f"offline [cyan]{'on' if network_config['offline'] else 'off'}[/cyan]"
     )
     project_path = project_config_path()
     if project_path is not None:
@@ -2076,6 +2090,78 @@ def _config_web(action_parts: list[str], console: Console) -> None:
     )
 
 
+_NETWORK_CLEAR_TOKENS = {"clear", "none", "off", "-", "default"}
+
+
+def _config_network(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "ls", "status"}:
+        settings = get_network()
+        console.print(
+            f"Proxy: [cyan]{settings['proxy'] or 'none'}[/cyan]\n"
+            f"CA bundle: [cyan]{settings['ca_bundle'] or 'system default'}[/cyan]\n"
+            f"Offline mode: [cyan]{'on' if settings['offline'] else 'off'}[/cyan]"
+        )
+        return
+
+    if action in {"proxy", "http-proxy"}:
+        if not rest:
+            console.print("[yellow]Usage: /config network proxy <url|clear>[/yellow]")
+            return
+        value = "" if rest[0].strip().lower() in _NETWORK_CLEAR_TOKENS else rest[0]
+        try:
+            settings = set_network(proxy=value)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(f"[green]Proxy:[/green] {settings['proxy'] or 'none'}")
+        return
+
+    if action in {"ca", "ca-bundle", "ca_bundle"}:
+        if not rest:
+            console.print(
+                "[yellow]Usage: /config network ca <path|clear>[/yellow]"
+            )
+            return
+        value = "" if rest[0].strip().lower() in _NETWORK_CLEAR_TOKENS else rest[0]
+        try:
+            settings = set_network(ca_bundle=value)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]CA bundle:[/green] "
+            f"{settings['ca_bundle'] or 'system default'}"
+        )
+        return
+
+    if action in {"offline", "air-gap", "airgap"}:
+        if not rest:
+            current = "on" if get_network()["offline"] else "off"
+            console.print(f"Offline mode: [cyan]{current}[/cyan]")
+            return
+        token = rest[0].strip().lower()
+        if token in {"on", "true", "yes"}:
+            set_network(offline=True)
+            console.print(
+                "[yellow]Offline mode on:[/yellow] cloud requests and web tools "
+                "are blocked; local providers still work."
+            )
+        elif token in {"off", "false", "no"}:
+            set_network(offline=False)
+            console.print("[green]Offline mode off.[/green]")
+        else:
+            console.print("[red]Expected 'on' or 'off'.[/red]")
+        return
+
+    console.print(
+        "[yellow]Usage: /config network [show|proxy <url|clear>|ca <path|clear>|"
+        "offline <on|off>][/yellow]"
+    )
+
+
 def _config_vision(action_parts: list[str], console: Console) -> None:
     action = action_parts[0].lower() if action_parts else "show"
     rest = action_parts[1:]
@@ -2420,6 +2506,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_sampling(rest, console)
     elif section == "web":
         _config_web(rest, console)
+    elif section == "network":
+        _config_network(rest, console)
     elif section == "vision":
         _config_vision(rest, console)
     elif section == "ui":
@@ -2476,6 +2564,7 @@ def _config_interact(
             CommandOption("browser", "Optional Playwright browser automation"),
             CommandOption("shell", "Persistent shell and background job settings"),
             CommandOption("web", "Web fetch/search limits and local access"),
+            CommandOption("network", "Proxy, custom CA bundle, and offline mode"),
             CommandOption("vision", "Image attachment size and count limits"),
             CommandOption("style", "Show or set the output style"),
             CommandOption("ui", "Theme, color, output mode, and ASCII mode"),
@@ -2520,6 +2609,7 @@ def _config_interact(
         "browser",
         "shell",
         "web",
+        "network",
         "vision",
         "style",
         "ui",
@@ -3283,6 +3373,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "shell": "Configure the persistent shell and background job cap.",
     "sampling": "Show, set, or reset sampling parameters.",
     "web": "Set web fetch/search limits and local-address access.",
+    "network": "Set proxy, CA bundle, and offline mode.",
     "vision": "Set image attachment size and count limits.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",
