@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiwimatecoder.documents import extract_document
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
 from kiwimatecoder.tools.paths import PathError, resolve_for_read
@@ -32,6 +33,16 @@ def _read_file(args: dict[str, Any], session: Session) -> ToolResult:
         return ToolResult.error(f"File not found: {path}")
     if resolved.is_dir():
         return ToolResult.error(f"'{path}' is a directory, use list_dir")
+
+    document = extract_document(resolved)
+    if document is not None:
+        content, kind = document
+        return ToolResult(
+            content=(
+                f"[{kind} document: extracted text; offset/limit are ignored "
+                f"for documents]\n{content or '[empty document]'}"
+            )
+        )
 
     data = resolved.read_bytes()
     if _is_binary(data[:1024]):
@@ -76,7 +87,9 @@ read_file_tool = FunctionTool(
     name="read_file",
     description=(
         "Read the contents of a text file in the workspace. Returns the file "
-        "with 1-based line numbers. Use offset/limit for large files."
+        "with 1-based line numbers. Use offset/limit for large files. Jupyter "
+        "notebooks (.ipynb), PDFs (.pdf), and Word documents (.docx) are "
+        "extracted to text automatically (offset/limit do not apply)."
     ),
     parameters={
         "type": "object",

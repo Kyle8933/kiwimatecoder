@@ -307,6 +307,26 @@ native Anthropic providers are supported. Limits live under
 4 images per turn); oversized or invalid images produce a clear message instead
 of a failed request.
 
+## Notebooks, PDFs, and docx
+
+`read_file` extracts structured documents to text automatically, so the model
+can read them without extra tooling:
+
+- **Jupyter notebooks** (`.ipynb`) render as `## Cell N (type)` sections with
+  cell sources plus text and stream outputs; image outputs are summarized as
+  `[image/png output, N bytes]`.
+- **Word documents** (`.docx`) are unzipped and `word/document.xml` is stripped
+  to text with paragraph and line breaks preserved.
+- **PDFs** (`.pdf`) use the `pdftotext` CLI (from Poppler) when installed for
+  reliable extraction. When it is missing, a conservative stdlib fallback
+  inflates FlateDecode streams and reads text from `BT`/`ET` blocks; if nothing
+  is parseable the result explains how to install `pdftotext` instead of
+  failing.
+
+Document output is capped at ~200 KB with a truncation note, and `offset`/
+`limit` are ignored for documents (they apply to plain text files only).
+Malformed documents always return a clear message rather than raising.
+
 ## Providers
 
 KiwiMateCoder ships a built-in registry of providers. Switch live with `/provider`,

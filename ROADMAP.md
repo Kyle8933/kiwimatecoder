@@ -74,7 +74,7 @@ Goal: the agent can see the whole project and the outside world.
 - [x] 3.5 Memory: project + user-level persisted facts (L; depends 0.9)
 - [ ] 3.6 Codebase indexing / semantic search (XL; depends 0.4)
 - [ ] 3.7 Subagents / Task tool (XL; depends 1.7, 2.2)
-- [ ] 3.8 Notebook (.ipynb), PDF/doc reading (M)
+- [x] 3.8 Notebook (.ipynb), PDF/doc reading (M)
 - [ ] 3.9 Browser automation (Playwright) (L; depends 2.3)
 - [x] 3.10 Clipboard + HTTP/API testing tools (S–M)
 
