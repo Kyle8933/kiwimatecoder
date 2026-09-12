@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -27,6 +28,9 @@ from kiwimatecoder.prompts import build_system_prompt
 from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import ToolResult
+
+POST_EDIT_DIAGNOSTICS_TIMEOUT = 3.0
+MAX_EDIT_DIAGNOSTICS = 10
 
 
 class Agent:
@@ -457,6 +461,12 @@ class Agent:
             method = str(args.get("method", "") or "GET").upper()
             label = "GET" if name == "http_get" else method
             return f"http [dim]{label} {short}[/dim]"
+        if name in ("lsp_diagnostics", "lsp_definition", "lsp_references"):
+            action = name[len("lsp_") :]
+            path = str(args.get("path", "") or "")
+            if action == "diagnostics" and not path:
+                return "lsp [dim]diagnostics recent files[/dim]"
+            return f"lsp [dim]{action} {path}[/dim]"
         return name
 
     # Only purely read-only tools are safe to run concurrently: they do not
@@ -634,7 +644,45 @@ class Agent:
         content = result.content
         if result.ok and partial_hunks is not None:
             content += f" (applied hunks: {', '.join(str(h) for h in partial_hunks)})"
+        if edited:
+            content += self._post_edit_diagnostics(args)
         return self._tool_message(call.id, content), edited
+
+    def _post_edit_diagnostics(self, args: dict[str, Any]) -> str:
+        """Return ``LSP:`` lines for an edited file, or an empty string.
+
+        Best-effort and bounded: disabled config, a missing server, a timeout,
+        or any other failure appends nothing and never delays past the
+        configured timeout (capped further for post-edit latency).
+        """
+        from kiwimatecoder import config, lsp
+        from kiwimatecoder.tools.lsp import format_diagnostic
+
+        path = str(args.get("path") or "").strip()
+        if not path:
+            return ""
+        try:
+            settings = config.get_lsp()
+            if not (settings["enabled"] and settings["diagnostics_after_edits"]):
+                return ""
+            target = Path(path)
+            if not target.is_absolute():
+                target = self.session.workspace_root / target
+            manager = lsp.get_manager()
+            if manager is None:
+                manager = lsp.ensure_manager(root=self.session.workspace_root)
+            timeout = min(float(settings["timeout"]), POST_EDIT_DIAGNOSTICS_TIMEOUT)
+            diagnostics = manager.diagnostics_for(str(target), timeout=timeout)
+        except Exception:
+            return ""
+        if not diagnostics:
+            return ""
+        shown = diagnostics[:MAX_EDIT_DIAGNOSTICS]
+        lines = [f"LSP: {format_diagnostic(path, item)}" for item in shown]
+        hidden = len(diagnostics) - len(shown)
+        if hidden > 0:
+            lines.append(f"LSP: … {hidden} more diagnostic(s)")
+        return "\n" + "\n".join(lines)
 
     def _verbose_args(self, args: dict[str, Any]) -> str:
         """Render the verbose-mode argument block: redacted and capped."""

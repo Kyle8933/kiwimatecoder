@@ -31,6 +31,11 @@ from kiwimatecoder.tools.io import (
 from kiwimatecoder.tools.io import http_request_preview as _http_request_preview
 from kiwimatecoder.tools.io import write_clipboard_preview as _clipboard_write_preview
 from kiwimatecoder.tools.list_dir import list_dir_tool
+from kiwimatecoder.tools.lsp import (
+    lsp_definition_tool,
+    lsp_diagnostics_tool,
+    lsp_references_tool,
+)
 from kiwimatecoder.tools.memory import preview as _remember_preview
 from kiwimatecoder.tools.memory import recall_tool, remember_tool
 from kiwimatecoder.tools.read_file import read_file_tool
@@ -75,6 +80,9 @@ _ALL_TOOLS: list[FunctionTool] = [
     write_clipboard_tool,
     http_get_tool,
     http_request_tool,
+    lsp_diagnostics_tool,
+    lsp_definition_tool,
+    lsp_references_tool,
 ]
 
 TOOLS = ToolRegistry()

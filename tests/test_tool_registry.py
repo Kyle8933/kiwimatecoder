@@ -31,6 +31,9 @@ BUILTIN_NAMES = [
     "write_clipboard",
     "http_get",
     "http_request",
+    "lsp_diagnostics",
+    "lsp_definition",
+    "lsp_references",
 ]
 
 

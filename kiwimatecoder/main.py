@@ -32,6 +32,7 @@ from kiwimatecoder.config import (
     get_context_window,
     get_default_mode,
     get_key,
+    get_lsp,
     get_mcp_servers,
     get_memory,
     get_model_catalog,
@@ -65,6 +66,7 @@ from kiwimatecoder.config import (
     set_budget,
     set_default_mode,
     set_key,
+    set_lsp,
     set_mcp_server,
     set_memory,
     set_model_filter,
@@ -629,6 +631,87 @@ def mcp_remove(name: Annotated[str, typer.Argument(help="Server name")]) -> None
         console.print(f"[green]{_check()} Removed MCP server {name}.[/green]")
     else:
         console.print(f"[dim]No MCP server named {name}.[/dim]")
+
+
+# --- canonical `config lsp ...` ---------------------------------------------
+
+lsp_app = typer.Typer(help="Language server diagnostics settings.")
+config_app.add_typer(lsp_app, name="lsp")
+
+
+def _lsp_state(value: str) -> bool:
+    """Parse an on/off argument, raising ``ValueError`` otherwise."""
+    token = value.strip().lower()
+    if token in {"on", "true", "yes", "enable", "enabled"}:
+        return True
+    if token in {"off", "false", "no", "disable", "disabled"}:
+        return False
+    raise ValueError("Expected 'on' or 'off'.")
+
+
+@lsp_app.command("show")
+def lsp_show() -> None:
+    """Show language server settings and which presets are installed."""
+    from kiwimatecoder import lsp as lsp_module
+
+    settings = get_lsp()
+    state = "on" if settings["enabled"] else "off"
+    console.print(
+        f"LSP: [cyan]{state}[/cyan] "
+        f"(timeout {settings['timeout']:g}s, diagnostics after edits "
+        f"[cyan]{'on' if settings['diagnostics_after_edits'] else 'off'}[/cyan])"
+    )
+    installed = lsp_module.available_servers()
+    if installed:
+        console.print(
+            "Available servers: "
+            + ", ".join(
+                f"[cyan]{name}[/cyan] ({spec.command})"
+                for name, spec in sorted(installed.items())
+            )
+        )
+    else:
+        console.print("[dim]No language server commands found on PATH.[/dim]")
+    overrides = settings["servers"]
+    if overrides:
+        console.print(
+            "Overrides: "
+            + ", ".join(f"[cyan]{name}[/cyan]" for name in sorted(overrides))
+        )
+
+
+@lsp_app.command("enable")
+def lsp_enable(
+    state: Annotated[str, typer.Argument(help="'on' or 'off'")] = "on",
+) -> None:
+    """Enable or disable language-server diagnostics."""
+    try:
+        enabled = _lsp_state(state)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    settings = set_lsp(enabled=enabled)
+    label = "on" if settings["enabled"] else "off"
+    console.print(
+        f"[green]{_check()} LSP {label}.[/green] Servers start on first use."
+    )
+
+
+@lsp_app.command("after-edits")
+def lsp_after_edits(
+    state: Annotated[str, typer.Argument(help="'on' or 'off'")] = "on",
+) -> None:
+    """Toggle diagnostics appended after successful file edits."""
+    try:
+        enabled = _lsp_state(state)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    settings = set_lsp(diagnostics_after_edits=enabled)
+    label = "on" if settings["diagnostics_after_edits"] else "off"
+    console.print(
+        f"[green]{_check()} LSP diagnostics after edits {label}.[/green]"
+    )
 
 
 @config_app.command("trusted-workspace")

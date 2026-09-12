@@ -210,6 +210,8 @@ The assistant has these capabilities, all scoped to the workspace:
   to it (see below).
 - `http_get`, `http_request` — exercise an HTTP API and inspect the response
   (see below).
+- `lsp_diagnostics`, `lsp_definition`, `lsp_references` — language-server
+  diagnostics and navigation, when enabled (see below).
 
 ## Web access
 
@@ -621,6 +623,62 @@ skipped — it never blocks startup. Connections close when the session exits.
 
 Authentication is whatever headers (HTTP) or environment variables (stdio) you
 configure. Interactive OAuth is not implemented yet; see ROADMAP.md.
+
+## Language server diagnostics
+
+When enabled, KiwiMateCoder can talk to language servers for compiler-grade
+diagnostics and navigation. It is **opt-in** and off by default; no server
+process starts until the feature is enabled and a matching file is queried.
+
+- `lsp_diagnostics` — errors and warnings for one file, or for the five most
+  recently touched files when no path is given.
+- `lsp_definition` / `lsp_references` — where a symbol is defined, and every
+  place it is used. Positions are 1-based line and column numbers.
+
+Built-in presets start automatically when their command is on `PATH`:
+
+| Language | Command | Extensions |
+|----------|---------|------------|
+| python | `pyright-langserver --stdio` | `.py`, `.pyi` |
+| typescript | `typescript-language-server --stdio` | `.ts`, `.tsx`, `.js`, `.jsx` |
+| go | `gopls` | `.go` |
+| rust | `rust-analyzer` | `.rs` |
+| c/cpp | `clangd` | `.c`, `.h`, `.cpp`, `.hpp` |
+
+After a successful `write_file`/`edit_file`, diagnostics for the edited file
+are appended to the tool result as `LSP:` lines (capped at ten) when
+`diagnostics_after_edits` is on. A timeout or missing server appends nothing,
+so LSP can never fail a turn or delay it beyond the configured timeout.
+
+Enable it in-session with `/lsp on`, or from the shell:
+
+```bash
+kiwimatecoder config lsp enable on            # on | off
+kiwimatecoder config lsp after-edits on       # on | off
+kiwimatecoder config lsp show
+```
+
+Use `/lsp status` to see whether LSP is on, which server commands are
+installed, and which clients are running; `/lsp restart` stops running servers
+so they start fresh on next use. Settings live under `lsp` in
+`~/.kiwimatecoder/config.json`; add your own server or override a preset:
+
+```json
+{
+  "lsp": {
+    "enabled": true,
+    "timeout": 10.0,
+    "diagnostics_after_edits": true,
+    "servers": {
+      "python": {
+        "command": "basedpyright-langserver",
+        "args": ["--stdio"],
+        "extensions": [".py", ".pyi"]
+      }
+    }
+  }
+}
+```
 
 ## Sampling and output styles
 

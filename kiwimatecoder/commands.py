@@ -31,6 +31,7 @@ from kiwimatecoder.config import (
     get_budget,
     get_command_rules,
     get_default_mode,
+    get_lsp,
     get_mcp_servers,
     get_memory,
     get_model_catalog,
@@ -59,6 +60,7 @@ from kiwimatecoder.config import (
     set_budget,
     set_default_mode,
     set_key,
+    set_lsp,
     set_model_filter,
     set_output_style,
     set_prompt_cache,
@@ -88,6 +90,7 @@ from kiwimatecoder.templates import discover_templates
 from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_workspace
 
 if TYPE_CHECKING:
+    from kiwimatecoder.lsp import LspManager
     from kiwimatecoder.mcp import McpManager
 
 
@@ -860,6 +863,86 @@ def _mcp_show(manager: "McpManager | None", console: Console) -> None:
         for row in tool_rows:
             tool_table.add_row(*row)
         console.print(tool_table)
+
+
+def _lsp(arg: str, session: Session, console: Console) -> str:
+    from kiwimatecoder import lsp
+
+    parts = arg.strip().split(maxsplit=1)
+    action = parts[0].lower() if parts and parts[0] else "status"
+    manager = lsp.get_manager()
+    if action in {"status", "show", "list", "ls"}:
+        _lsp_show(manager, console)
+        return CommandResult.CONTINUE
+    if action in {"on", "enable", "enabled"}:
+        settings = set_lsp(enabled=True)
+        console.print(
+            "[green]LSP on:[/green] servers start on first use "
+            "(diagnostics after edits: "
+            f"{'on' if settings['diagnostics_after_edits'] else 'off'})."
+        )
+        _lsp_show(manager, console)
+        return CommandResult.CONTINUE
+    if action in {"off", "disable", "disabled"}:
+        set_lsp(enabled=False)
+        if manager is not None:
+            manager.shutdown()
+        console.print("[green]LSP off.[/green] Running language servers stopped.")
+        return CommandResult.CONTINUE
+    if action in {"restart", "reload"}:
+        if manager is None:
+            console.print("[dim]No language servers have started yet.[/dim]")
+            return CommandResult.CONTINUE
+        manager.shutdown()
+        console.print(
+            "[green]LSP restarted:[/green] running servers stopped and "
+            "failures cleared; they start again on first use."
+        )
+        return CommandResult.CONTINUE
+    console.print("[yellow]Usage: /lsp [status|on|off|restart][/yellow]")
+    return CommandResult.CONTINUE
+
+
+def _lsp_show(manager: "LspManager | None", console: Console) -> None:
+    from kiwimatecoder import lsp
+
+    settings = get_lsp()
+    state = "on" if settings["enabled"] else "off"
+    console.print(
+        f"LSP: [cyan]{state}[/cyan] "
+        f"(timeout {settings['timeout']:g}s, diagnostics after edits "
+        f"[cyan]{'on' if settings['diagnostics_after_edits'] else 'off'}[/cyan])"
+    )
+    servers = lsp.effective_servers()
+    installed = lsp.available_servers()
+    if installed:
+        console.print(
+            "Available servers: "
+            + ", ".join(
+                f"[cyan]{name}[/cyan] ({spec.command})"
+                for name, spec in sorted(installed.items())
+            )
+        )
+    else:
+        console.print(
+            "[dim]No language server commands found on PATH (install e.g. "
+            "pyright-langserver, typescript-language-server, gopls, "
+            "rust-analyzer, or clangd).[/dim]"
+        )
+    missing = sorted(set(servers) - set(installed))
+    if missing:
+        console.print(
+            "[dim]Not installed: "
+            + ", ".join(f"{name} ({servers[name].command})" for name in missing)
+            + "[/dim]"
+        )
+    running = sorted(manager.clients) if manager is not None else []
+    if running:
+        console.print(
+            "Running clients: " + ", ".join(f"[cyan]{name}[/cyan]" for name in running)
+        )
+    else:
+        console.print("[dim]Running clients: none[/dim]")
 
 
 def _config_help(console: Console) -> None:
@@ -2528,6 +2611,7 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "compact": _compact,
     "templates": _templates,
     "mcp": _mcp,
+    "lsp": _lsp,
 }
 
 
@@ -2642,6 +2726,11 @@ _HELP_GROUPS = [
                 "List configured MCP servers and their tools, or reconnect "
                 "every server and re-register its tools.",
             ),
+            (
+                "/lsp [status|on|off|restart]",
+                "Show or toggle language-server diagnostics and navigation "
+                "(definitions, references).",
+            ),
         ],
     ),
 ]
@@ -2678,6 +2767,7 @@ _COMMAND_DESCRIPTIONS = {
     "compact": "Trim older history to fit a token budget.",
     "templates": "List custom prompt templates.",
     "mcp": "List MCP servers and tools, or reconnect and re-register them.",
+    "lsp": "Show or toggle language-server diagnostics and navigation.",
 }
 
 _CONTEXT_ACTION_DESCRIPTIONS = {
@@ -2736,6 +2826,13 @@ _CONFIG_ACTION_DESCRIPTIONS = {
 _MCP_ACTION_DESCRIPTIONS = {
     "list": "Show configured servers, status, and registered tools.",
     "reload": "Reconnect every server and re-register its tools.",
+}
+
+_LSP_ACTION_DESCRIPTIONS = {
+    "status": "Show LSP settings, available servers, and running clients.",
+    "on": "Enable language-server diagnostics.",
+    "off": "Disable LSP and stop running servers.",
+    "restart": "Stop running servers and clear failures.",
 }
 
 
@@ -2835,6 +2932,8 @@ def slash_argument_completions(
         choices = _CONFIG_ACTION_DESCRIPTIONS
     elif command == "mcp":
         choices = _MCP_ACTION_DESCRIPTIONS
+    elif command == "lsp":
+        choices = _LSP_ACTION_DESCRIPTIONS
     elif command == "load":
         choices = {
             s["name"]: f"{s['provider']}:{s['model']} ({s['messages']} msgs)"

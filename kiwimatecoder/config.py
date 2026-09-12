@@ -118,6 +118,12 @@ def _empty_config() -> dict[str, Any]:
             "max_image_bytes": 5000000,
             "max_images_per_turn": 4,
         },
+        "lsp": {
+            "enabled": False,
+            "timeout": 10.0,
+            "diagnostics_after_edits": True,
+            "servers": {},
+        },
     }
 
 
@@ -246,6 +252,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("web", {})
     cfg.setdefault("memory", {})
     cfg.setdefault("vision", {})
+    cfg.setdefault("lsp", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
     # stored empty list, a non-list, or a list of junk is seeded the same way.
@@ -1688,6 +1695,144 @@ def set_vision(
 
 
 # ---------------------------------------------------------------------------
+# Language server (LSP) diagnostics
+# ---------------------------------------------------------------------------
+
+LSP_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "timeout": 10.0,
+    "diagnostics_after_edits": True,
+    "servers": {},
+}
+LSP_TIMEOUT_MIN = 1.0
+LSP_TIMEOUT_MAX = 60.0
+
+
+def _normalize_lsp_server(name: object, spec: object) -> dict[str, Any]:
+    """Validate one LSP server override, raising ``ValueError``.
+
+    A spec is ``{"command": str, "args": [str], "extensions": [str]}``.
+    Extensions are normalized to lowercase with a leading dot; a user spec may
+    omit them to inherit the built-in preset's extensions.
+    """
+    server = str(name).strip()
+    if not server:
+        raise ValueError("LSP server name must be non-empty.")
+    if not isinstance(spec, dict):
+        raise ValueError(f"LSP server '{server}': spec must be an object.")
+    command = spec.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError(
+            f"LSP server '{server}': 'command' must be a non-empty string."
+        )
+    raw_args = spec.get("args") or []
+    if not isinstance(raw_args, list):
+        raise ValueError(f"LSP server '{server}': 'args' must be a list of strings.")
+    raw_extensions = spec.get("extensions") or []
+    if not isinstance(raw_extensions, list):
+        raise ValueError(
+            f"LSP server '{server}': 'extensions' must be a list of strings."
+        )
+    extensions: list[str] = []
+    for raw in raw_extensions:
+        extension = str(raw).strip().lower()
+        if not extension:
+            raise ValueError(
+                f"LSP server '{server}': extension entries must be non-empty."
+            )
+        if not extension.startswith("."):
+            extension = "." + extension
+        if extension not in extensions:
+            extensions.append(extension)
+    return {
+        "command": command.strip(),
+        "args": [str(arg) for arg in raw_args],
+        "extensions": extensions,
+    }
+
+
+def get_lsp(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized LSP settings, always fully populated.
+
+    ``servers`` holds only the user's overrides/additions; built-in presets are
+    merged by the LSP manager. Malformed entries are dropped.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("lsp") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(LSP_DEFAULTS)
+    enabled = stored.get("enabled")
+    if isinstance(enabled, bool):
+        effective["enabled"] = enabled
+    after_edits = stored.get("diagnostics_after_edits")
+    if isinstance(after_edits, bool):
+        effective["diagnostics_after_edits"] = after_edits
+    try:
+        timeout = float(stored.get("timeout", LSP_DEFAULTS["timeout"]))
+    except (TypeError, ValueError):
+        timeout = float(LSP_DEFAULTS["timeout"])
+    if LSP_TIMEOUT_MIN <= timeout <= LSP_TIMEOUT_MAX:
+        effective["timeout"] = timeout
+    servers: dict[str, dict[str, Any]] = {}
+    raw_servers = stored.get("servers")
+    if isinstance(raw_servers, dict):
+        for name, spec in raw_servers.items():
+            try:
+                servers[str(name)] = _normalize_lsp_server(name, spec)
+            except ValueError:
+                continue
+    effective["servers"] = servers
+    return effective
+
+
+def set_lsp(
+    enabled: bool | None = None,
+    timeout: float | str | None = None,
+    diagnostics_after_edits: bool | None = None,
+    servers: dict[str, Any] | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update LSP settings; omitted arguments keep their current value.
+
+    ``servers`` replaces the whole override map and must be a mapping of
+    name -> ``{"command", "args", "extensions"}``. Raises ``ValueError`` for an
+    out-of-range timeout or a malformed spec so callers can validate eagerly.
+    """
+    cfg = cfg or load_config()
+    current = get_lsp(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("lsp enabled must be true or false.")
+        current["enabled"] = enabled
+    if timeout is not None:
+        try:
+            value = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("lsp timeout must be a number of seconds.") from exc
+        if not LSP_TIMEOUT_MIN <= value <= LSP_TIMEOUT_MAX:
+            raise ValueError(
+                f"lsp timeout must be between {LSP_TIMEOUT_MIN:g} "
+                f"and {LSP_TIMEOUT_MAX:g} seconds."
+            )
+        current["timeout"] = value
+    if diagnostics_after_edits is not None:
+        if not isinstance(diagnostics_after_edits, bool):
+            raise ValueError("lsp diagnostics_after_edits must be true or false.")
+        current["diagnostics_after_edits"] = diagnostics_after_edits
+    if servers is not None:
+        if not isinstance(servers, dict):
+            raise ValueError("LSP servers must be a mapping of name -> spec.")
+        normalized: dict[str, dict[str, Any]] = {}
+        for name, spec in servers.items():
+            normalized[str(name).strip()] = _normalize_lsp_server(name, spec)
+        current["servers"] = normalized
+    cfg["lsp"] = current
+    save_config(cfg)
+    return get_lsp(cfg)
+
+
+# ---------------------------------------------------------------------------
 # UI preferences (color, theme, output mode, ASCII)
 # ---------------------------------------------------------------------------
 
@@ -2531,6 +2676,44 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                         "Must be between "
                         f"{VISION_MAX_IMAGES_MIN} and {VISION_MAX_IMAGES_MAX}.",
                     )
+
+    lsp = cfg.get("lsp")
+    if lsp is not None:
+        if not isinstance(lsp, dict):
+            add("error", "lsp", "'lsp' must be an object.")
+        else:
+            if "enabled" in lsp and not isinstance(lsp["enabled"], bool):
+                add("error", "lsp.enabled", "'enabled' must be true or false.")
+            if "diagnostics_after_edits" in lsp and not isinstance(
+                lsp["diagnostics_after_edits"], bool
+            ):
+                add(
+                    "error",
+                    "lsp.diagnostics_after_edits",
+                    "'diagnostics_after_edits' must be true or false.",
+                )
+            if "timeout" in lsp:
+                try:
+                    timeout = float(lsp["timeout"])
+                except (TypeError, ValueError):
+                    timeout = -1.0
+                if not LSP_TIMEOUT_MIN <= timeout <= LSP_TIMEOUT_MAX:
+                    add(
+                        "error",
+                        "lsp.timeout",
+                        "Must be between "
+                        f"{LSP_TIMEOUT_MIN:g} and {LSP_TIMEOUT_MAX:g} seconds.",
+                    )
+            servers = lsp.get("servers")
+            if servers is not None:
+                if not isinstance(servers, dict):
+                    add("error", "lsp.servers", "'servers' must be an object.")
+                else:
+                    for name, spec in servers.items():
+                        try:
+                            _normalize_lsp_server(name, spec)
+                        except ValueError as exc:
+                            add("error", f"lsp.servers.{name}", str(exc))
 
     prompt = cfg.get("system_prompt")
     if prompt is not None and not isinstance(prompt, str):
