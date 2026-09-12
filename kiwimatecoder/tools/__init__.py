@@ -49,6 +49,7 @@ from kiwimatecoder.tools.run_bash import run_bash_tool
 from kiwimatecoder.tools.search import search_tool
 from kiwimatecoder.tools.selection import select_hunks as select_hunks
 from kiwimatecoder.tools.skill import load_skill_tool
+from kiwimatecoder.tools.task import task_tool
 from kiwimatecoder.tools.todo import update_todos_tool
 from kiwimatecoder.tools.web import web_fetch_tool, web_search_tool
 from kiwimatecoder.tools.write_file import preview as _write_preview
@@ -67,6 +68,7 @@ _ALL_TOOLS: list[FunctionTool] = [
     edit_file_tool,
     run_bash_tool,
     update_todos_tool,
+    task_tool,
     ask_user_tool,
     web_fetch_tool,
     web_search_tool,

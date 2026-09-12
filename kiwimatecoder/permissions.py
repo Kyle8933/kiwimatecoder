@@ -165,7 +165,7 @@ def gate(
 
 def _summarize_args(args: dict[str, Any]) -> str:
     parts = []
-    for key in ("path", "command"):
+    for key in ("path", "command", "description"):
         if key in args:
             parts.append(f"{key}={args[key]!r}")
     return ", ".join(parts)

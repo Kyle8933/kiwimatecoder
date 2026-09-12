@@ -18,6 +18,7 @@ BUILTIN_NAMES = [
     "edit_file",
     "run_bash",
     "update_todos",
+    "task",
     "ask_user",
     "web_fetch",
     "web_search",

@@ -197,6 +197,8 @@ The assistant has these capabilities, all scoped to the workspace:
   checkpointed first so `/undo` can restore it).
 - `run_bash` — run shell commands (approval-gated, subject to command rules).
 - `update_todos` — keep the visible task list in sync with multi-step work.
+- `task` — delegate a focused investigation to a subagent with its own context
+  (approval-gated; see below).
 - `ask_user` — ask a clarifying question with optional choices (interactive
   sessions only).
 - `web_fetch`, `web_search` — read a page or search the web; read-only, and
@@ -732,6 +734,44 @@ kiwimatecoder config index embed-model text-embedding-3-small
 kiwimatecoder config index embed-provider none    # turn embeddings off
 kiwimatecoder config index clear
 ```
+
+## Subagents
+
+The `task` tool delegates a focused, self-contained investigation to a
+subagent that runs in its own context with the same workspace, provider, and
+tools. The subagent's intermediate tool output stays out of the parent
+conversation; it returns a final report (plus a step/token count) as the tool
+result. Use it for broad searches or self-contained questions that would
+otherwise flood the main context.
+
+- Spawning a subagent is approval-gated like a command because the subagent can
+  write files and run commands. Its own actions still go through the normal
+  permission gate (including plan mode and command rules), and its edits are
+  checkpointed so `/undo` covers them.
+- Subagents cannot spawn nested subagents and cannot use `ask_user`; put every
+  decision they need in the prompt.
+- A subagent shares the parent's remaining token budget and stops at the
+  configured step limit, returning a partial report with a note when either cap
+  is hit. While subagents are disabled, `task` is not advertised at all.
+
+```json
+{
+  "subagents": {
+    "enabled": true,
+    "max_steps": 20,
+    "model": ""
+  }
+}
+```
+
+```bash
+kiwimatecoder config subagents show
+kiwimatecoder config subagents enable on
+kiwimatecoder config subagents max-steps 10
+kiwimatecoder config subagents model gpt-5-mini
+```
+
+Or in the REPL: `/config subagents [show|enable on|off|max-steps <n>]`.
 
 ## Sampling and output styles
 

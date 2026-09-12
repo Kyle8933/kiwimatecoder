@@ -41,6 +41,7 @@ from kiwimatecoder.config import (
     get_prompt_cache,
     get_provider_config,
     get_sampling,
+    get_subagents,
     get_ui,
     get_vision,
     get_web,
@@ -67,6 +68,7 @@ from kiwimatecoder.config import (
     set_sampling,
     set_selected_model,
     set_selected_provider,
+    set_subagents,
     set_system_prompt,
     set_trusted_workspace,
     set_ui,
@@ -1004,6 +1006,10 @@ def _config_help(console: Console) -> None:
             "Set or clear session token/cost limits.",
         ),
         (
+            "/config subagents [show|enable on|off|max-steps <n>]",
+            "Configure the subagent task tool and its step limit.",
+        ),
+        (
             "/config sampling [show|set key=value ...|reset]",
             "Get or set temperature, top_p, max_tokens, reasoning_effort.",
         ),
@@ -1641,6 +1647,63 @@ def _config_budget(action_parts: list[str], session: Session, console: Console) 
     )
 
 
+def _config_subagents(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "status"}:
+        settings = get_subagents()
+        state = "on" if settings["enabled"] else "off"
+        model = settings["model"] or "(session model)"
+        console.print(
+            f"Subagents: [cyan]{state}[/cyan] "
+            f"(max steps {settings['max_steps']}, model {model})"
+        )
+        return
+
+    if action in {"enable", "enabled", "on", "off"}:
+        token = action if action in {"on", "off"} else (rest[0].lower() if rest else "")
+        if token not in {"on", "off"}:
+            console.print("[yellow]Usage: /config subagents enable <on|off>[/yellow]")
+            return
+        settings = set_subagents(enabled=token == "on")
+        console.print(
+            f"[green]Subagents {'on' if settings['enabled'] else 'off'}.[/green]"
+        )
+        return
+
+    if action in {"max-steps", "steps"}:
+        if not rest:
+            console.print(
+                f"Subagent max steps: [cyan]{get_subagents()['max_steps']}[/cyan]"
+            )
+            return
+        try:
+            settings = set_subagents(max_steps=rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(f"[green]Subagent max steps:[/green] {settings['max_steps']}")
+        return
+
+    if action == "model":
+        if not rest:
+            current = get_subagents()["model"] or "(session model)"
+            console.print(f"Subagent model: [cyan]{current}[/cyan]")
+            return
+        value = "" if rest[0].strip().lower() in {"clear", "none", "off"} else rest[0]
+        settings = set_subagents(model=value)
+        console.print(
+            f"[green]Subagent model:[/green] {settings['model'] or '(session model)'}"
+        )
+        return
+
+    console.print(
+        "[yellow]Usage: /config subagents "
+        "[show|enable on|off|max-steps <n>][/yellow]"
+    )
+
+
 def _config_commands(  # noqa: C901 - small parser, mirrors the other config sections
     action_parts: list[str], session: Session, console: Console
 ) -> None:
@@ -2155,6 +2218,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_verify(rest, session, console)
     elif section == "budget":
         _config_budget(rest, session, console)
+    elif section in {"subagents", "subagent"}:
+        _config_subagents(rest, console)
     elif section == "sampling":
         _config_sampling(rest, console)
     elif section == "web":
@@ -2884,6 +2949,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "trust": "Allow or forbid reads outside the workspace root.",
     "verify": "Set the command run automatically after edits.",
     "budget": "Set or clear token/cost budget limits.",
+    "subagents": "Configure the subagent task tool and its step limit.",
     "sampling": "Show, set, or reset sampling parameters.",
     "web": "Set web fetch/search limits and local-address access.",
     "vision": "Set image attachment size and count limits.",

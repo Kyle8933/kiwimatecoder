@@ -63,6 +63,8 @@ class Session:
     checkpoint_store: CheckpointStore | None = field(default=None, repr=False)
     # Injected by the REPL so the ask_user tool can prompt interactively.
     ask_user: Callable[[str, list[str]], str] | None = field(default=None, repr=False)
+    # True for sessions created by the task tool (runtime-only).
+    subagent: bool = field(default=False, repr=False)
     # Runtime-only queues: lines typed while a turn is streaming (never saved).
     steering: deque[str] = field(default_factory=deque, repr=False)
     deferred_commands: deque[str] = field(default_factory=deque, repr=False)

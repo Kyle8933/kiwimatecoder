@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +28,50 @@ from kiwimatecoder.permissions import ConfirmFn, PermissionMode, gate
 from kiwimatecoder.prompts import build_system_prompt
 from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
-from kiwimatecoder.tools.base import ToolResult
+from kiwimatecoder.tools.base import FunctionTool, ToolResult
 
 POST_EDIT_DIAGNOSTICS_TIMEOUT = 3.0
 MAX_EDIT_DIAGNOSTICS = 10
+TASK_RESULT_MAX_CHARS = 8000
+
+
+class TaskConsole(Console):
+    """Console wrapper that tags every child line with dim ``[task]``.
+
+    Prints are delegated to the parent console so subagent output stays in the
+    same stream (and under the same test harness); the tag is emitted once per
+    line even when text is streamed with ``end=""``.
+    """
+
+    def __init__(self, parent: Console, label: str = "task") -> None:
+        super().__init__(quiet=True)
+        self._parent = parent
+        self._tag = f"[dim]\\[{label}][/dim]"
+        self._at_line_start = True
+
+    def print(self, *objects: Any, **kwargs: Any) -> None:
+        end = str(kwargs.get("end", "\n"))
+        if objects and self._at_line_start:
+            self._parent.print(self._tag, end=" ", markup=True, highlight=False)
+            self._at_line_start = False
+        self._parent.print(*objects, **kwargs)
+        if end.endswith("\n"):
+            self._at_line_start = True
+
+    def status(self, status: Any, **kwargs: Any) -> Any:
+        return self._parent.status(f"{self._tag} {status}", **kwargs)
+
+
+@dataclass
+class _PreparedCall:
+    """A tool call that passed parsing, approval, hooks, and checkpointing."""
+
+    call: AssembledToolCall
+    tool: FunctionTool
+    args: dict[str, Any]
+    original_args: dict[str, Any]
+    summary: str
+    partial_hunks: tuple[int, ...] | None = None
 
 
 class Agent:
@@ -276,6 +317,32 @@ class Agent:
             }
         )
 
+    def _tool_schemas(self) -> list[dict[str, Any]]:
+        """Tool schemas advertised for the next request.
+
+        In plan mode only read-only tools are advertised (the gate blocks the
+        rest as a second line of defense). Subagents never see ``task`` (no
+        nested subagents) or ``ask_user`` (no interactive user), and ``task``
+        is hidden for everyone while subagents are disabled.
+        """
+        from kiwimatecoder.config import get_subagents
+
+        schemas = tools.tool_schemas(
+            read_only=self.session.mode is PermissionMode.PLAN
+        )
+        excluded: set[str] = set()
+        if self.session.subagent:
+            excluded.update({"task", "ask_user"})
+        if not get_subagents()["enabled"]:
+            excluded.add("task")
+        if excluded:
+            schemas = [
+                schema
+                for schema in schemas
+                if schema["function"]["name"] not in excluded
+            ]
+        return schemas
+
     async def _stream_once(
         self, model_override: str | None = None
     ) -> tuple[dict[str, Any], list[AssembledToolCall]]:
@@ -289,8 +356,7 @@ class Agent:
         ``model_override`` (per-turn model routing) applies to the primary
         provider only; fallback providers keep their own model.
         """
-        read_only = self.session.mode is PermissionMode.PLAN
-        schemas = tools.tool_schemas(read_only=read_only)
+        schemas = self._tool_schemas()
 
         errors: list[ProviderError] = []
         providers = self.session.active_providers
@@ -467,6 +533,10 @@ class Agent:
             if action == "diagnostics" and not path:
                 return "lsp [dim]diagnostics recent files[/dim]"
             return f"lsp [dim]{action} {path}[/dim]"
+        if name == "task":
+            description = str(args.get("description", "") or "")
+            short = description if len(description) <= 50 else f"{description[:47]}..."
+            return f"task [dim]{short}[/dim]"
         return name
 
     # Only purely read-only tools are safe to run concurrently: they do not
@@ -484,12 +554,20 @@ class Agent:
 
     async def _handle_tool_calls(self, calls: list[AssembledToolCall]) -> bool:
         """Run a batch of tool calls; returns whether any file edit succeeded."""
+        results: list[tuple[dict[str, Any], bool]]
         if self._can_run_parallel(calls):
             results = await asyncio.gather(
                 *(asyncio.to_thread(self._run_tool_call, call) for call in calls)
             )
         else:
-            results = [self._run_tool_call(call) for call in calls]
+            results = []
+            for call in calls:
+                # ``task`` drives a nested async loop, so it cannot go through
+                # the synchronous runner (or a worker thread).
+                if call.name == "task":
+                    results.append(await self._run_task_call(call))
+                else:
+                    results.append(self._run_tool_call(call))
         self.session.messages.extend(message for message, _edited in results)
         # Images attached by this batch go after its tool results (and only
         # once, even when several calls attached one).
@@ -499,21 +577,33 @@ class Agent:
     def _tool_message(self, tool_call_id: str, content: str) -> dict[str, Any]:
         return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
 
-    def _run_tool_call(
+    def _prepare_tool_call(
         self, call: AssembledToolCall
-    ) -> tuple[dict[str, Any], bool]:
-        """Execute one tool call; returns (tool message, edited_file)."""
+    ) -> tuple[_PreparedCall | None, tuple[dict[str, Any], bool] | None]:
+        """Parse, gate, hook-check, and checkpoint one tool call.
+
+        Returns ``(prepared, None)`` when the call may execute, or
+        ``(None, early_result)`` with the tool message to return instead
+        (unknown tool, bad JSON, denied, dry-run, or hook-blocked).
+        """
         tool = tools.get_tool(call.name)
         if tool is None:
-            return (
+            return None, (
                 self._tool_message(call.id, f"Error: unknown tool '{call.name}'"),
+                False,
+            )
+        if call.name == "task" and self.session.subagent:
+            return None, (
+                self._tool_message(
+                    call.id, "Error: subagents cannot spawn nested subagents."
+                ),
                 False,
             )
 
         try:
             args = call.parse_arguments()
         except json.JSONDecodeError as exc:
-            return (
+            return None, (
                 self._tool_message(
                     call.id, f"Error: could not parse arguments as JSON: {exc}"
                 ),
@@ -538,14 +628,14 @@ class Agent:
             self._print_markup(
                 f"[yellow]{self._glyph('blocked')} {summary}: {decision.reason}[/yellow]"
             )
-            return self._tool_message(call.id, decision.reason), False
+            return None, (self._tool_message(call.id, decision.reason), False)
 
         if self.session.dry_run and tool.needs_approval:
             audit.record_tool_event(tool=call.name, args=args, decision="dry_run")
             self.console.print(f"[yellow]dry-run[/yellow] {summary}")
             if preview_text:
                 self.console.print(preview_text, markup=False, highlight=False)
-            return (
+            return None, (
                 self._tool_message(
                     call.id,
                     f"DRY RUN: {summary} was not executed; no files or state changed.",
@@ -578,7 +668,7 @@ class Agent:
                 self._print_markup(
                     f"[yellow]{self._glyph('blocked')} {summary}: {reason}[/yellow]"
                 )
-                return self._tool_message(call.id, reason), False
+                return None, (self._tool_message(call.id, reason), False)
             args = selected_args
             partial_hunks = decision.selected_hunks
 
@@ -595,58 +685,238 @@ class Agent:
             self._print_markup(
                 f"[red]{self._glyph('blocked')} {summary}: {reason}[/red]"
             )
-            return self._tool_message(call.id, self._hook_block_message(blocked)), False
+            return None, (
+                self._tool_message(call.id, self._hook_block_message(blocked)),
+                False,
+            )
 
         if call.name in ("write_file", "edit_file"):
             path = str(args.get("path") or "").strip()
             if path:
                 self.session.checkpoint([path], f"{call.name} {path}")
 
+        return (
+            _PreparedCall(
+                call=call,
+                tool=tool,
+                args=args,
+                original_args=original_args,
+                summary=summary,
+                partial_hunks=partial_hunks,
+            ),
+            None,
+        )
+
+    def _run_tool_call(
+        self, call: AssembledToolCall
+    ) -> tuple[dict[str, Any], bool]:
+        """Execute one tool call; returns (tool message, edited_file)."""
+        prepared, early = self._prepare_tool_call(call)
+        if early is not None:
+            return early
+        assert prepared is not None
         if self.output_mode == "verbose":
-            self.console.print(self._verbose_args(args))
+            self.console.print(self._verbose_args(prepared.args))
 
         t0 = time.perf_counter()
         try:
-            with self.console.status(f"{summary}…"):
-                result = tool.execute(args, self.session)
+            with self.console.status(f"{prepared.summary}…"):
+                result = prepared.tool.execute(prepared.args, self.session)
         except Exception as exc:
             result = ToolResult.error(f"Tool crashed: {exc!r}")
-        duration_ms = int((time.perf_counter() - t0) * 1000)
+        return self._finish_tool_call(prepared, result, t0)
+
+    async def _run_task_call(
+        self, call: AssembledToolCall
+    ) -> tuple[dict[str, Any], bool]:
+        """Execute a ``task`` call, awaiting the nested subagent loop."""
+        prepared, early = self._prepare_tool_call(call)
+        if early is not None:
+            return early
+        assert prepared is not None
+        if self.output_mode == "verbose":
+            self.console.print(self._verbose_args(prepared.args))
+
+        t0 = time.perf_counter()
+        try:
+            with self.console.status(f"{prepared.summary}…"):
+                result = await self._run_task(prepared.args)
+        except Exception as exc:
+            result = ToolResult.error(f"Tool crashed: {exc!r}")
+        return self._finish_tool_call(prepared, result, t0)
+
+    def _finish_tool_call(
+        self,
+        prepared: _PreparedCall,
+        result: ToolResult,
+        started_at: float,
+    ) -> tuple[dict[str, Any], bool]:
+        """Record, render, and package the outcome of a prepared call."""
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
         decision_value = (
-            "allowed_partial" if partial_hunks is not None else "allowed"
+            "allowed_partial" if prepared.partial_hunks is not None else "allowed"
         )
         audit.record_tool_event(
-            tool=call.name,
-            args=original_args,
+            tool=prepared.call.name,
+            args=prepared.original_args,
             decision=decision_value,
             duration_ms=duration_ms,
             ok=result.ok,
-            hunks=partial_hunks,
+            hunks=prepared.partial_hunks,
         )
         self._run_post_tool_hooks(
-            call.name, original_args, result.ok, duration_ms, decision_value
+            prepared.call.name,
+            prepared.original_args,
+            result.ok,
+            duration_ms,
+            decision_value,
         )
 
         if result.ok:
             if self.output_mode != "compact":
                 self._print_markup(
-                    f"[bold green]{self._glyph('check')}[/bold green] {summary} "
-                    f"[dim]({duration_ms}ms)[/dim]"
+                    f"[bold green]{self._glyph('check')}[/bold green] "
+                    f"{prepared.summary} [dim]({duration_ms}ms)[/dim]"
                 )
         else:
             self._print_markup(
-                f"[bold red]{self._glyph('cross')}[/bold red] {summary} "
-                f"[red](failed)[/red] [dim]({duration_ms}ms)[/dim]"
+                f"[bold red]{self._glyph('cross')}[/bold red] "
+                f"{prepared.summary} [red](failed)[/red] [dim]({duration_ms}ms)[/dim]"
             )
         if self.output_mode == "verbose":
             self.console.print(f"[dim]result: {len(result.content):,} chars[/dim]")
-        edited = call.name in ("write_file", "edit_file") and result.ok
+        edited = prepared.call.name in ("write_file", "edit_file") and result.ok
         content = result.content
-        if result.ok and partial_hunks is not None:
-            content += f" (applied hunks: {', '.join(str(h) for h in partial_hunks)})"
+        if result.ok and prepared.partial_hunks is not None:
+            content += (
+                f" (applied hunks: {', '.join(str(h) for h in prepared.partial_hunks)})"
+            )
         if edited:
-            content += self._post_edit_diagnostics(args)
-        return self._tool_message(call.id, content), edited
+            content += self._post_edit_diagnostics(prepared.args)
+        return self._tool_message(prepared.call.id, content), edited
+
+    def _build_child_session(self, model: str) -> Session:
+        """Create the isolated session a subagent runs in.
+
+        The child inherits the workspace, provider roster/model, permission
+        mode, rules, and trust settings, but starts with empty conversation
+        history, context, todos, checkpoints, and steering.
+        """
+        parent = self.session
+        return Session(
+            provider_id=parent.provider_id,
+            model=model,
+            mode=parent.mode,
+            workspace_root=parent.workspace_root,
+            always_allowed=set(parent.always_allowed),
+            active_provider_ids=list(parent.active_provider_ids),
+            models=dict(parent.models),
+            output_style=parent.output_style,
+            custom_system_prompt=parent.custom_system_prompt,
+            command_rules={
+                kind: list(patterns)
+                for kind, patterns in parent.command_rules.items()
+            },
+            dry_run=parent.dry_run,
+            trusted_workspace=parent.trusted_workspace,
+            compact_at_tokens=parent.compact_at_tokens,
+            context_window=parent.context_window,
+            subagent=True,
+        )
+
+    async def _run_task(self, args: dict[str, Any]) -> ToolResult:
+        """Run one subagent to completion and return its final report."""
+        from kiwimatecoder.config import get_budget, get_subagents
+
+        settings = get_subagents()
+        if not settings["enabled"]:
+            return ToolResult.error(
+                "Subagents are disabled. Enable them with "
+                "`/config subagents enable on`."
+            )
+        prompt = str(args.get("prompt") or "").strip()
+        if not prompt:
+            return ToolResult.error("'prompt' is required")
+
+        token_cap: int | None = None
+        max_tokens = get_budget().get("max_tokens")
+        if max_tokens:
+            remaining = int(max_tokens) - self.session.total_tokens
+            if remaining <= 0:
+                return ToolResult.error(
+                    "The token budget is already exhausted; raise it with "
+                    "`/config budget tokens <n>` before delegating."
+                )
+            token_cap = remaining
+
+        model = (
+            str(args.get("model") or "").strip()
+            or str(settings["model"])
+            or self.session.model
+        )
+        max_steps = int(settings["max_steps"])
+        child_session = self._build_child_session(model)
+        child = Agent(
+            child_session,
+            TaskConsole(self.console),
+            self.confirm,
+            bus=self.bus,
+            ascii_mode=self.ascii_mode,
+            output_mode=self.output_mode,
+        )
+
+        child_session.messages.append({"role": "user", "content": prompt})
+        steps = 0
+        last_text = ""
+        last_state = ""
+        stop_note = ""
+        try:
+            while True:
+                try:
+                    assistant_msg, tool_calls = await child._stream_once()
+                except ProviderError as exc:
+                    return ToolResult.error(f"Subagent failed: {exc}")
+                child_session.messages.append(assistant_msg)
+                if assistant_msg.get("content"):
+                    last_text = str(assistant_msg["content"])
+                if not tool_calls:
+                    break
+                await child._handle_tool_calls(tool_calls)
+                steps += 1
+                last_message = child_session.messages[-1]
+                if last_message.get("role") == "tool":
+                    last_state = str(last_message.get("content") or "")
+                if steps >= max_steps:
+                    stop_note = f"step limit ({max_steps}) reached"
+                    break
+                if token_cap is not None and child_session.total_tokens >= token_cap:
+                    stop_note = (
+                        f"inherited token budget ({token_cap:,} tokens) reached"
+                    )
+                    break
+        finally:
+            # Subagent usage counts against the parent's budget and its edits
+            # stay undoable from the parent conversation.
+            self.session.add_usage(
+                child_session.prompt_tokens, child_session.completion_tokens
+            )
+            for path in child_session.touched_files:
+                self.session.record_touched(path)
+            if child_session.checkpoints:
+                self.session.checkpoints.extend(child_session.checkpoints)
+                if self.session.checkpoint_store is None:
+                    self.session.checkpoint_store = child_session.checkpoint_store
+
+        report = last_text.strip() or last_state.strip() or "(no final answer)"
+        if stop_note:
+            report += f"\n\n[task stopped: {stop_note}; partial report]"
+        content = (
+            f"[task result]\n{report}\n\n"
+            f"[task: {steps} step(s), {child_session.total_tokens:,} token(s)]"
+        )
+        if len(content) > TASK_RESULT_MAX_CHARS:
+            content = content[:TASK_RESULT_MAX_CHARS] + "\n... [truncated]"
+        return ToolResult(content=content)
 
     def _post_edit_diagnostics(self, args: dict[str, Any]) -> str:
         """Return ``LSP:`` lines for an edited file, or an empty string.

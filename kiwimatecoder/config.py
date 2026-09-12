@@ -130,6 +130,11 @@ def _empty_config() -> dict[str, Any]:
             "max_file_bytes": 262144,
             "embeddings": {"provider": "", "model": "", "batch_size": 32},
         },
+        "subagents": {
+            "enabled": True,
+            "max_steps": 20,
+            "model": "",
+        },
     }
 
 
@@ -1291,6 +1296,76 @@ def set_budget(
     cfg["budget"] = current
     save_config(cfg)
     return get_budget(cfg)
+
+
+SUBAGENT_MAX_STEPS_MIN = 1
+SUBAGENT_MAX_STEPS_MAX = 100
+SUBAGENT_MAX_STEPS_DEFAULT = 20
+
+
+def get_subagents(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized subagent settings, always fully populated.
+
+    Malformed stored values fall back to the defaults so a hand-edited config
+    can never break the task tool; ``validate_config`` reports exactly what
+    would be ignored.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("subagents") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    enabled = stored.get("enabled")
+    if not isinstance(enabled, bool):
+        enabled = True
+    try:
+        max_steps = int(stored.get("max_steps", SUBAGENT_MAX_STEPS_DEFAULT))
+    except (TypeError, ValueError):
+        max_steps = SUBAGENT_MAX_STEPS_DEFAULT
+    if not SUBAGENT_MAX_STEPS_MIN <= max_steps <= SUBAGENT_MAX_STEPS_MAX:
+        max_steps = SUBAGENT_MAX_STEPS_DEFAULT
+    model = stored.get("model")
+    return {
+        "enabled": enabled,
+        "max_steps": max_steps,
+        "model": model.strip() if isinstance(model, str) else "",
+    }
+
+
+def set_subagents(
+    enabled: bool | None = None,
+    max_steps: int | str | None = None,
+    model: str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update subagent settings; omitted arguments keep their current value.
+
+    Raises ``ValueError`` for a non-boolean ``enabled``, an out-of-range
+    ``max_steps`` (1-100), or a non-string ``model`` so callers validate eagerly.
+    """
+    cfg = cfg or load_config()
+    current = get_subagents(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("subagents enabled must be true or false.")
+        current["enabled"] = enabled
+    if max_steps is not None:
+        try:
+            steps = int(max_steps)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("subagents max_steps must be an integer.") from exc
+        if not SUBAGENT_MAX_STEPS_MIN <= steps <= SUBAGENT_MAX_STEPS_MAX:
+            raise ValueError(
+                f"subagents max_steps must be between {SUBAGENT_MAX_STEPS_MIN} "
+                f"and {SUBAGENT_MAX_STEPS_MAX}."
+            )
+        current["max_steps"] = steps
+    if model is not None:
+        if not isinstance(model, str):
+            raise ValueError("subagents model must be a string.")
+        current["model"] = model.strip()
+    cfg["subagents"] = current
+    save_config(cfg)
+    return get_subagents(cfg)
 
 
 def get_compact_at_tokens(cfg: dict[str, Any] | None = None) -> int:
@@ -2673,6 +2748,28 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
 
     if "prompt_cache" in cfg and not isinstance(cfg["prompt_cache"], bool):
         add("error", "prompt_cache", "'prompt_cache' must be true or false.")
+
+    subagents = cfg.get("subagents")
+    if subagents is not None:
+        if not isinstance(subagents, dict):
+            add("error", "subagents", "'subagents' must be an object.")
+        else:
+            if "enabled" in subagents and not isinstance(subagents["enabled"], bool):
+                add("error", "subagents.enabled", "'enabled' must be true or false.")
+            if "max_steps" in subagents:
+                try:
+                    steps = int(subagents["max_steps"])
+                except (TypeError, ValueError):
+                    steps = -1
+                if not SUBAGENT_MAX_STEPS_MIN <= steps <= SUBAGENT_MAX_STEPS_MAX:
+                    add(
+                        "error",
+                        "subagents.max_steps",
+                        f"Must be between {SUBAGENT_MAX_STEPS_MIN} and "
+                        f"{SUBAGENT_MAX_STEPS_MAX}.",
+                    )
+            if "model" in subagents and not isinstance(subagents["model"], str):
+                add("error", "subagents.model", "'model' must be a string.")
 
     profiles = cfg.get("profiles")
     if not isinstance(profiles, dict):

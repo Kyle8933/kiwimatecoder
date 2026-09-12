@@ -45,6 +45,7 @@ from kiwimatecoder.config import (
     get_provider_config,
     get_sampling,
     get_selected_provider_id,
+    get_subagents,
     get_system_prompt,
     get_trusted_workspace,
     get_ui,
@@ -77,6 +78,7 @@ from kiwimatecoder.config import (
     set_sampling,
     set_selected_model,
     set_selected_provider,
+    set_subagents,
     set_system_prompt,
     set_trusted_workspace,
     set_ui,
@@ -714,6 +716,91 @@ def lsp_after_edits(
     label = "on" if settings["diagnostics_after_edits"] else "off"
     console.print(
         f"[green]{_check()} LSP diagnostics after edits {label}.[/green]"
+    )
+
+
+# --- canonical `config subagents ...` ---------------------------------------
+
+subagents_app = typer.Typer(help="Subagent (task tool) settings.")
+config_app.add_typer(subagents_app, name="subagents")
+
+
+def _subagents_line() -> str:
+    settings = get_subagents()
+    state = "on" if settings["enabled"] else "off"
+    model = settings["model"] or "(session model)"
+    return (
+        f"Subagents: [cyan]{state}[/cyan] "
+        f"(max steps {settings['max_steps']}, model {model})"
+    )
+
+
+@subagents_app.command("show")
+def subagents_show() -> None:
+    """Show whether subagents are enabled and their step/model limits."""
+    console.print(_subagents_line())
+
+
+@subagents_app.command("enable")
+def subagents_enable(
+    state: Annotated[str, typer.Argument(help="'on' or 'off'")] = "on",
+) -> None:
+    """Enable or disable the task tool."""
+    token = state.strip().lower()
+    if token in {"on", "true", "enable", "enabled"}:
+        enabled = True
+    elif token in {"off", "false", "disable", "disabled"}:
+        enabled = False
+    else:
+        console.print("[red]Expected 'on' or 'off'.[/red]")
+        raise typer.Exit(1)
+    set_subagents(enabled=enabled)
+    console.print(
+        f"[green]{_check()} Subagents {'on' if enabled else 'off'}.[/green]"
+    )
+
+
+@subagents_app.command("max-steps")
+def subagents_max_steps(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Step limit 1-100 (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Set the maximum tool batches a subagent may run."""
+    if value is None:
+        console.print(
+            f"Subagent max steps: [cyan]{get_subagents()['max_steps']}[/cyan]"
+        )
+        return
+    try:
+        settings = set_subagents(max_steps=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Subagent max steps:[/green] {settings['max_steps']}"
+    )
+
+
+@subagents_app.command("model")
+def subagents_model(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Model override (omit to show; 'clear' to reset)"),
+    ] = None,
+) -> None:
+    """Set the model subagents use (empty means the session model)."""
+    if value is None:
+        current = get_subagents()["model"] or "(session model)"
+        console.print(f"Subagent model: [cyan]{current}[/cyan]")
+        return
+    if value.strip().lower() in {"clear", "none", "off"}:
+        value = ""
+    settings = set_subagents(model=value)
+    console.print(
+        f"[green]{_check()} Subagent model:[/green] "
+        f"{settings['model'] or '(session model)'}"
     )
 
 
@@ -1422,6 +1509,7 @@ def config_show() -> None:
         ", ".join(f"{key}={value}" for key, value in sampling.items())
         or "provider defaults"
     )
+    subagents = get_subagents(cfg)
     console.print(
         f"Output style: [cyan]{get_output_style(cfg)}[/cyan] "
         + f"(custom prompt: {'set' if get_system_prompt(cfg) else 'none'})\n"
@@ -1438,6 +1526,9 @@ def config_show() -> None:
         )
         + "\nPrompt caching: "
         + f"[cyan]{'on' if get_prompt_cache(cfg) else 'off'}[/cyan]"
+        + "\nSubagents: "
+        + f"[cyan]{'on' if subagents['enabled'] else 'off'}[/cyan] "
+        + f"(max steps {subagents['max_steps']})"
     )
     ui_config = get_ui(cfg)
     console.print(

@@ -6,6 +6,7 @@ from html import escape
 import platform
 from typing import Any
 
+from kiwimatecoder import config
 from kiwimatecoder.instructions import instructions_section
 from kiwimatecoder.memory import memory_section
 from kiwimatecoder.permissions import PermissionMode
@@ -167,6 +168,15 @@ def build_system_prompt(session: Session) -> dict[str, Any]:
     )
     todos = _todos_section(session)
     memory = memory_section(session.workspace_root)
+    subagents = config.get_subagents()
+    delegation = ""
+    if subagents["enabled"] and not session.subagent:
+        delegation = (
+            "\n\nSubagents: use the task tool to delegate focused, self-contained "
+            "investigations; each subagent has its own context and returns a final "
+            "report. Subagents cannot ask the user questions, so put every needed "
+            "decision in the prompt."
+        )
     content = f"""You are KiwiMateCoder, an expert agentic coding assistant that works \
 directly in the user's project from the command line.
 
@@ -183,7 +193,7 @@ to gather context before answering, and to carry out the user's requests. For \
 search, use mode='grep' for exact strings and mode='semantic' for conceptual \
 questions ("where is authentication handled?"). Keep \
 multi-step work visible with update_todos, and use ask_user when a decision \
-genuinely needs the user's input.
+genuinely needs the user's input.{delegation}
 
 {_MODE_GUIDANCE[session.mode]}{todos}
 
