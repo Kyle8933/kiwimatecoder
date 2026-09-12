@@ -22,6 +22,8 @@ from kiwimatecoder.tools.forge import preview as _forge_write_preview
 from kiwimatecoder.tools.git import git_tool, git_write_tool
 from kiwimatecoder.tools.git import preview as _git_write_preview
 from kiwimatecoder.tools.list_dir import list_dir_tool
+from kiwimatecoder.tools.memory import preview as _remember_preview
+from kiwimatecoder.tools.memory import recall_tool, remember_tool
 from kiwimatecoder.tools.read_file import read_file_tool
 from kiwimatecoder.tools.registry import (
     BUILTIN_SOURCE,
@@ -57,6 +59,8 @@ _ALL_TOOLS: list[FunctionTool] = [
     git_write_tool,
     forge_tool,
     forge_write_tool,
+    remember_tool,
+    recall_tool,
 ]
 
 TOOLS = ToolRegistry()
@@ -70,6 +74,7 @@ _PREVIEWS: dict[str, Callable[[dict[str, Any], Any], str]] = {
     "run_bash": _bash_preview,
     "git_write": _git_write_preview,
     "forge_write": _forge_write_preview,
+    "remember": _remember_preview,
 }
 
 

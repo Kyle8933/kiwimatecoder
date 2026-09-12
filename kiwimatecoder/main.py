@@ -33,6 +33,7 @@ from kiwimatecoder.config import (
     get_default_mode,
     get_key,
     get_mcp_servers,
+    get_memory,
     get_model_catalog,
     get_model_filter,
     get_output_style,
@@ -65,6 +66,7 @@ from kiwimatecoder.config import (
     set_default_mode,
     set_key,
     set_mcp_server,
+    set_memory,
     set_model_filter,
     set_output_style,
     set_prompt_cache,
@@ -843,6 +845,73 @@ def web_allow_local(
     elif token in {"off", "false", "disable", "disabled"}:
         set_web(allow_local=False)
         console.print(f"[green]{_check()} Allow local addresses off.[/green]")
+    else:
+        console.print("[red]Expected 'on' or 'off'.[/red]")
+        raise typer.Exit(1)
+
+
+# --- canonical `config memory ...` ------------------------------------------
+
+memory_app = typer.Typer(help="Persistent project and user memory settings.")
+config_app.add_typer(memory_app, name="memory")
+
+
+def _print_memory(settings: dict[str, object]) -> None:
+    console.print(
+        f"Memory: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
+        f"Max bytes in the prompt: [cyan]{settings['max_bytes']}[/cyan]"
+    )
+
+
+@memory_app.command("show")
+def memory_show() -> None:
+    """Show whether memory is enabled and the prompt byte budget."""
+    _print_memory(get_memory())
+
+
+@memory_app.command("max-bytes")
+def memory_max_bytes(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Prompt byte budget (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Set the maximum memory bytes included in the system prompt."""
+    if value is None:
+        console.print(
+            f"Max memory bytes: [cyan]{get_memory()['max_bytes']}[/cyan]"
+        )
+        return
+    try:
+        settings = set_memory(max_bytes=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Max memory bytes:[/green] {settings['max_bytes']}"
+    )
+
+
+@memory_app.command("enable")
+def memory_enable(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Enable or disable persistent memory in the system prompt."""
+    if state is None:
+        console.print(
+            f"Memory: [cyan]{'on' if get_memory()['enabled'] else 'off'}[/cyan]"
+        )
+        return
+    token = state.strip().lower()
+    if token in {"on", "true", "enable", "enabled"}:
+        set_memory(enabled=True)
+        console.print(f"[green]{_check()} Memory on.[/green]")
+    elif token in {"off", "false", "disable", "disabled"}:
+        set_memory(enabled=False)
+        console.print(f"[green]{_check()} Memory off.[/green]")
     else:
         console.print("[red]Expected 'on' or 'off'.[/red]")
         raise typer.Exit(1)

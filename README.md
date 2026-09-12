@@ -133,6 +133,7 @@ paths outside the workspace root; writes stay sandboxed.
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
+| `/memory [list\|add\|add-user\|clear]` | Show or edit persistent project and user memory. |
 | `/config` | Show or change providers, keys, models, filters, permissions, command rules, sampling, styles, themes, output modes, accessibility, verify, and budgets. |
 | `/mcp [list\|reload]` | List configured MCP servers, their status, and registered tools; `reload` reconnects every server. |
 | `/cost` | Show token usage, context gauge, and estimated USD cost for this session (per-model pricing). |
@@ -197,6 +198,8 @@ The assistant has these capabilities, all scoped to the workspace:
   sessions only).
 - `web_fetch`, `web_search` — read a page or search the web; read-only, and
   local/private addresses are blocked by default (see below).
+- `remember`, `recall` — persist and read durable facts across sessions (see
+  below).
 - `git`, `git_write` — inspect status/diff/log and stage, unstage, commit, or
   create a branch (see below).
 - `forge`, `forge_write` — list/view or create pull requests/merge requests
@@ -396,6 +399,36 @@ Drop an `AGENTS.md` (or `CLAUDE.md`, `.kiwimatecoder/AGENTS.md`,
 `.kiwimatecoder/instructions.md`) at the workspace root and its contents are
 loaded into the system prompt on every turn — build commands, style rules,
 testing conventions. Files are capped at 32KB each and 48KB total.
+
+## Memory
+
+The agent can remember durable facts about you and your projects across
+sessions. Memory is plain Markdown, one `- fact` bullet per line, in two
+scopes:
+
+- **Project** — `<workspace>/.kiwimatecoder/memory.md`; travels with the
+  repository and applies only there.
+- **User** — `~/.kiwimatecoder/memory.md`; shared across every workspace.
+
+The model writes with the approval-gated `remember` tool (`scope=project` or
+`scope=user`) and reads with the read-only `recall` tool. Active facts are
+loaded into the system prompt on every turn, capped at 16KB by default so a
+pathological file cannot crowd out the conversation.
+
+Manage memory directly with `/memory`:
+
+```text
+/memory                       # show both files and their facts
+/memory add The build uses uv, not pip
+/memory add-user I prefer concise answers
+/memory clear project
+/memory clear user
+```
+
+Settings live under `kiwimatecoder config memory show|max-bytes <n>|enable on|off`.
+Never store secrets or API keys in memory — the prompt section says so
+explicitly, and the `remember` preview runs the same secret redaction as audit
+output.
 
 ## Custom commands and prompt templates
 

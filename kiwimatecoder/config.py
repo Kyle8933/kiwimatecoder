@@ -110,6 +110,10 @@ def _empty_config() -> dict[str, Any]:
             "search_provider": "duckduckgo",
             "search_api_key": "",
         },
+        "memory": {
+            "enabled": True,
+            "max_bytes": 16384,
+        },
     }
 
 
@@ -236,6 +240,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("context_window", 128000)
     cfg.setdefault("ui", {})
     cfg.setdefault("web", {})
+    cfg.setdefault("memory", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
     # stored empty list, a non-list, or a list of junk is seeded the same way.
@@ -1537,6 +1542,66 @@ def set_web(
 
 
 # ---------------------------------------------------------------------------
+# Persistent memory
+# ---------------------------------------------------------------------------
+
+MEMORY_DEFAULTS: dict[str, Any] = {"enabled": True, "max_bytes": 16384}
+MEMORY_MAX_BYTES_MIN = 1024
+MEMORY_MAX_BYTES_MAX = 1024 * 1024
+
+
+def get_memory(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized persistent-memory settings, always fully populated."""
+    cfg = cfg or load_config()
+    stored = cfg.get("memory") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(MEMORY_DEFAULTS)
+    enabled = stored.get("enabled")
+    if isinstance(enabled, bool):
+        effective["enabled"] = enabled
+    try:
+        max_bytes = int(stored.get("max_bytes", MEMORY_DEFAULTS["max_bytes"]))
+    except (TypeError, ValueError):
+        max_bytes = int(MEMORY_DEFAULTS["max_bytes"])
+    if MEMORY_MAX_BYTES_MIN <= max_bytes <= MEMORY_MAX_BYTES_MAX:
+        effective["max_bytes"] = max_bytes
+    return effective
+
+
+def set_memory(
+    enabled: bool | None = None,
+    max_bytes: int | str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update persistent-memory settings; omitted arguments are unchanged.
+
+    Raises ``ValueError`` for a non-boolean ``enabled`` or a ``max_bytes``
+    outside 1 KB - 1 MB.
+    """
+    cfg = cfg or load_config()
+    current = get_memory(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("memory enabled must be true or false.")
+        current["enabled"] = enabled
+    if max_bytes is not None:
+        try:
+            value = int(max_bytes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("memory max_bytes must be an integer.") from exc
+        if not MEMORY_MAX_BYTES_MIN <= value <= MEMORY_MAX_BYTES_MAX:
+            raise ValueError(
+                f"memory max_bytes must be between {MEMORY_MAX_BYTES_MIN} "
+                f"and {MEMORY_MAX_BYTES_MAX}."
+            )
+        current["max_bytes"] = value
+    cfg["memory"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
 # UI preferences (color, theme, output mode, ASCII)
 # ---------------------------------------------------------------------------
 
@@ -2325,6 +2390,26 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                 )
             if "search_api_key" in web and not isinstance(web["search_api_key"], str):
                 add("error", "web.search_api_key", "'search_api_key' must be a string.")
+
+    memory = cfg.get("memory")
+    if memory is not None:
+        if not isinstance(memory, dict):
+            add("error", "memory", "'memory' must be an object.")
+        else:
+            if "enabled" in memory and not isinstance(memory["enabled"], bool):
+                add("error", "memory.enabled", "'enabled' must be true or false.")
+            if "max_bytes" in memory:
+                try:
+                    value = int(memory["max_bytes"])
+                except (TypeError, ValueError):
+                    value = -1
+                if not MEMORY_MAX_BYTES_MIN <= value <= MEMORY_MAX_BYTES_MAX:
+                    add(
+                        "error",
+                        "memory.max_bytes",
+                        "Must be between "
+                        f"{MEMORY_MAX_BYTES_MIN} and {MEMORY_MAX_BYTES_MAX}.",
+                    )
 
     prompt = cfg.get("system_prompt")
     if prompt is not None and not isinstance(prompt, str):

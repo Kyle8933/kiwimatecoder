@@ -16,6 +16,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from kiwimatecoder import tools
+from kiwimatecoder import memory as memory_module
 from kiwimatecoder.catalog import ModelCatalog, summarize_ids
 from kiwimatecoder.config import (
     add_command_rule,
@@ -31,6 +32,7 @@ from kiwimatecoder.config import (
     get_command_rules,
     get_default_mode,
     get_mcp_servers,
+    get_memory,
     get_model_catalog,
     get_model_filter,
     get_profile,
@@ -2341,6 +2343,74 @@ def _todos(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
+_MEMORY_USAGE = "/memory [list|add <text>|add-user <text>|clear project|user]"
+
+
+def _memory(arg: str, session: Session, console: Console) -> str:
+    parts = arg.strip().split(maxsplit=1)
+    action = parts[0].lower() if parts else "list"
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if action in {"list", "show", "ls"}:
+        settings = get_memory()
+        state = "on" if settings["enabled"] else "off"
+        console.print(
+            f"Memory: [cyan]{state}[/cyan] "
+            f"(prompt budget {settings['max_bytes']} bytes)"
+        )
+        for scope in memory_module.SCOPES:
+            path = memory_module.memory_path(scope, session.workspace_root)
+            text = memory_module.read_memory(
+                scope, session.workspace_root, settings["max_bytes"]
+            )
+            console.print(f"\n[bold]{scope}[/bold] [dim]{path}[/dim]")
+            if text:
+                console.print(text, markup=False, highlight=False)
+            else:
+                console.print("[dim](empty)[/dim]")
+        return CommandResult.CONTINUE
+
+    if action in {"add", "remember"}:
+        if not rest:
+            console.print("[yellow]Usage: /memory add <text>[/yellow]")
+            return CommandResult.CONTINUE
+        return _memory_append("project", rest, session, console)
+
+    if action in {"add-user", "user-add", "add_user"}:
+        if not rest:
+            console.print("[yellow]Usage: /memory add-user <text>[/yellow]")
+            return CommandResult.CONTINUE
+        return _memory_append("user", rest, session, console)
+
+    if action in {"clear", "remove", "reset"}:
+        scope = rest.lower() or "project"
+        if scope not in memory_module.SCOPES:
+            console.print(
+                f"[red]Unknown memory scope '{scope}'. Choose: project, user.[/red]"
+            )
+            return CommandResult.CONTINUE
+        if memory_module.clear_memory(scope, session.workspace_root):
+            console.print(f"[green]Cleared {scope} memory.[/green]")
+        else:
+            console.print(f"[dim]No {scope} memory to clear.[/dim]")
+        return CommandResult.CONTINUE
+
+    console.print(f"[yellow]Usage: {_MEMORY_USAGE}[/yellow]")
+    return CommandResult.CONTINUE
+
+
+def _memory_append(
+    scope: str, text: str, session: Session, console: Console
+) -> str:
+    try:
+        path = memory_module.append_memory(scope, session.workspace_root, text)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return CommandResult.CONTINUE
+    console.print(f"[green]Saved to {scope} memory:[/green] {path}")
+    return CommandResult.CONTINUE
+
+
 def _compact(arg: str, session: Session, console: Console) -> str:
     target: int | None = None
     token = arg.strip()
@@ -2396,6 +2466,7 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "rewind": _undo,
     "checkpoints": _checkpoints,
     "todos": _todos,
+    "memory": _memory,
     "compact": _compact,
     "templates": _templates,
     "mcp": _mcp,
@@ -2459,6 +2530,10 @@ _HELP_GROUPS = [
             ("/undo [count]", "Restore files changed by recent tool actions."),
             ("/checkpoints", "List captured file checkpoints."),
             ("/todos", "Show the agent's task list."),
+            (
+                "/memory [list|add|add-user|clear]",
+                "Show or edit persistent project and user memory.",
+            ),
             ("/compact [budget]", "Trim older history to fit a token budget."),
             ("/templates", "List custom prompt templates."),
         ],
@@ -2541,6 +2616,7 @@ _COMMAND_DESCRIPTIONS = {
     "rewind": "Alias for /undo.",
     "checkpoints": "List captured file checkpoints.",
     "todos": "Show the agent's task list.",
+    "memory": "Show or edit persistent project and user memory.",
     "compact": "Trim older history to fit a token budget.",
     "templates": "List custom prompt templates.",
     "mcp": "List MCP servers and tools, or reconnect and re-register them.",
@@ -2563,6 +2639,13 @@ _MODE_DESCRIPTIONS = {
     "ask": "Approve writes and shell commands.",
     "auto-accept": "Run writes and commands without prompting.",
     "plan": "Read-only planning mode.",
+}
+
+_MEMORY_ACTION_DESCRIPTIONS = {
+    "list": "Show project and user memory.",
+    "add": "Append a fact to project memory.",
+    "add-user": "Append a fact to user memory.",
+    "clear": "Delete project or user memory.",
 }
 
 _CONFIG_ACTION_DESCRIPTIONS = {
@@ -2675,6 +2758,8 @@ def slash_argument_completions(
         choices = _CONTEXT_ACTION_DESCRIPTIONS
     elif command == "mode":
         choices = _MODE_DESCRIPTIONS
+    elif command == "memory":
+        choices = _MEMORY_ACTION_DESCRIPTIONS
     elif command == "model" and session is not None:
         # Completion runs on every keystroke, so this reads the cached catalog
         # only — refreshing from the provider happens in /model itself.

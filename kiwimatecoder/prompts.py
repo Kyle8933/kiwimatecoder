@@ -7,6 +7,7 @@ import platform
 from typing import Any
 
 from kiwimatecoder.instructions import instructions_section
+from kiwimatecoder.memory import memory_section
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.session import Session
 from kiwimatecoder.skills import skills_section
@@ -165,6 +166,7 @@ def build_system_prompt(session: Session) -> dict[str, Any]:
         else ""
     )
     todos = _todos_section(session)
+    memory = memory_section(session.workspace_root)
     content = f"""You are KiwiMateCoder, an expert agentic coding assistant that works \
 directly in the user's project from the command line.
 
@@ -173,7 +175,7 @@ Environment:
 - Operating system: {platform.system()} ({platform.release()})
 - Provider/model: {provider_line}
 - Permission mode: {session.mode.value}
-{trust_line}{context}{instructions}{skills}
+{trust_line}{context}{instructions}{skills}{memory}
 
 Tools: you can read files, list directories, search the codebase, write and \
 edit files, and run shell commands — all scoped to the workspace root. Use them \

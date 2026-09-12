@@ -420,6 +420,12 @@ class Agent:
         if name in ("git", "git_write", "forge", "forge_write"):
             action = str(args.get("action", "") or "")
             return f"{name} [dim]{action}[/dim]"
+        if name == "remember":
+            return "memory [dim]remember[/dim]"
+        if name == "recall":
+            query = str(args.get("query", "") or "")
+            short = query if len(query) <= 40 else f"{query[:37]}..."
+            return f"memory [dim]recall {short}[/dim]" if short else "memory [dim]recall[/dim]"
         return name
 
     # Only purely read-only tools are safe to run concurrently: they do not

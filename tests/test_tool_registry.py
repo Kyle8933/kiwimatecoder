@@ -24,6 +24,8 @@ BUILTIN_NAMES = [
     "git_write",
     "forge",
     "forge_write",
+    "remember",
+    "recall",
 ]
 
 
