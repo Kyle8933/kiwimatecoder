@@ -26,6 +26,7 @@ from kiwimatecoder.config import (
     describe_key,
     get_active_provider_ids,
     get_always_allowed_tools,
+    get_browser,
     get_budget,
     get_command_rules,
     get_compact_at_tokens,
@@ -66,6 +67,7 @@ from kiwimatecoder.config import (
     resolve_default_model,
     save_profile,
     set_budget,
+    set_browser,
     set_default_mode,
     set_index,
     set_key,
@@ -802,6 +804,93 @@ def subagents_model(
         f"[green]{_check()} Subagent model:[/green] "
         f"{settings['model'] or '(session model)'}"
     )
+
+
+# --- canonical `config browser ...` -----------------------------------------
+
+browser_app = typer.Typer(help="Optional Playwright browser automation settings.")
+config_app.add_typer(browser_app, name="browser")
+
+
+def _print_browser(settings: dict[str, Any]) -> None:
+    console.print(
+        f"Browser automation: "
+        f"[cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
+        f"Headless: [cyan]{'on' if settings['headless'] else 'off'}[/cyan]\n"
+        f"Timeout: [cyan]{settings['timeout_ms']}ms[/cyan]"
+    )
+
+
+@browser_app.command("show")
+def browser_show() -> None:
+    """Show browser automation settings."""
+    _print_browser(get_browser())
+
+
+@browser_app.command("enable")
+def browser_enable(
+    state: Annotated[str, typer.Argument(help="'on' or 'off'")] = "on",
+) -> None:
+    """Enable or disable the browser tool."""
+    token = state.strip().lower()
+    if token in {"on", "true", "enable", "enabled"}:
+        enabled = True
+    elif token in {"off", "false", "disable", "disabled"}:
+        enabled = False
+    else:
+        console.print("[red]Expected 'on' or 'off'.[/red]")
+        raise typer.Exit(1)
+    set_browser(enabled=enabled)
+    console.print(
+        f"[green]{_check()} Browser automation "
+        f"{'on' if enabled else 'off'}.[/green]"
+    )
+
+
+@browser_app.command("headless")
+def browser_headless(
+    state: Annotated[
+        str | None,
+        typer.Argument(help="'on' or 'off' (omit to show the current value)"),
+    ] = None,
+) -> None:
+    """Run Chromium headless (on) or with a visible window (off)."""
+    if state is None:
+        current = "on" if get_browser()["headless"] else "off"
+        console.print(f"Browser headless: [cyan]{current}[/cyan]")
+        return
+    token = state.strip().lower()
+    if token in {"on", "true", "enable", "enabled"}:
+        enabled = True
+    elif token in {"off", "false", "disable", "disabled"}:
+        enabled = False
+    else:
+        console.print("[red]Expected 'on' or 'off'.[/red]")
+        raise typer.Exit(1)
+    settings = set_browser(headless=enabled)
+    console.print(
+        f"[green]{_check()} Browser headless:[/green] "
+        f"{'on' if settings['headless'] else 'off'}"
+    )
+
+
+@browser_app.command("timeout")
+def browser_timeout(
+    value: Annotated[
+        str | None,
+        typer.Argument(help="Timeout in ms 1000-120000 (omit to show)"),
+    ] = None,
+) -> None:
+    """Set the default action timeout in milliseconds."""
+    if value is None:
+        console.print(f"Browser timeout: [cyan]{get_browser()['timeout_ms']}ms[/cyan]")
+        return
+    try:
+        settings = set_browser(timeout_ms=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]{_check()} Browser timeout:[/green] {settings['timeout_ms']}ms")
 
 
 @config_app.command("trusted-workspace")

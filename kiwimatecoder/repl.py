@@ -54,7 +54,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from kiwimatecoder import __version__, events, hooks, images, lsp, mcp, plugins, ui
+from kiwimatecoder import __version__, browser, events, hooks, images, lsp, mcp, plugins, ui
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
@@ -932,6 +932,7 @@ async def _run_interactive(
         if current_lsp is not None:
             current_lsp.shutdown()
         lsp.set_manager(None)
+        browser.reset_driver()
         _autosave(session)
 
 

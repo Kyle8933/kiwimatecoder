@@ -35,6 +35,7 @@ BUILTIN_NAMES = [
     "lsp_diagnostics",
     "lsp_definition",
     "lsp_references",
+    "browser",
 ]
 
 

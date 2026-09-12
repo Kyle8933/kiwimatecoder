@@ -177,6 +177,9 @@ Config examples:
 /config budget tokens 500000
 /config budget cost 5.00
 /config trust on
+/config browser enable on
+/config browser headless off
+/config browser timeout 20000
 /config provider remove local
 ```
 
@@ -203,6 +206,9 @@ The assistant has these capabilities, all scoped to the workspace:
   sessions only).
 - `web_fetch`, `web_search` — read a page or search the web; read-only, and
   local/private addresses are blocked by default (see below).
+- `browser` — drive an optional headless Chromium page (screenshot, click,
+  type, evaluate) when Playwright is installed and browser automation is
+  enabled (approval-gated; see below).
 - `remember`, `recall` — persist and read durable facts across sessions (see
   below).
 - `git`, `git_write` — inspect status/diff/log and stage, unstage, commit, or
@@ -236,6 +242,49 @@ the model to cite the URLs it relies on.
 - DuckDuckGo parses the public HTML page, so result extraction is best-effort
   and may need updating if that page's markup changes; `web_fetch` is
   unaffected.
+
+## Browser automation
+
+The `browser` tool drives a headless Chromium page through Playwright when you
+opt in. Playwright is not installed by default, and the tool stays hidden until
+browser automation is enabled:
+
+```bash
+pip install 'kiwimatecoder[browser]'
+playwright install chromium
+kiwimatecoder config browser enable on
+```
+
+Without the extra, the tool returns a clear install hint instead of failing;
+the base install keeps the same dependency set.
+
+- The tool is approval-gated because a page can submit forms or trigger
+  downloads. In `ask` mode the preview shows `browser <action> <url|selector>`
+  (scripts are redacted and capped). It is not advertised while disabled, and
+  plan mode only advertises read-only tools.
+- `open` accepts only `http(s)` URLs and refuses `localhost`, loopback/private
+  IPs, and `*.local` hosts unless `/config web allow-local on` is set. It
+  reports the final URL after redirects and the page title.
+- `text` returns visible page text capped at ~30,000 characters with a
+  truncation note. `click`/`type` take a CSS selector, and `evaluate` runs
+  JavaScript and returns a capped JSON-ish result.
+- `screenshot` saves a PNG to
+  `<workspace>/.kiwimatecoder/screenshots/<timestamp>.png` and attaches it to
+  the next request, so a vision-capable model sees it exactly like a
+  `view_image` attachment. The `vision` per-turn count and size limits apply.
+- One page is shared by successive tool calls in a session; `close` (and
+  leaving the REPL) shuts Chromium down. `timeout_ms` can override the
+  configured action timeout per call.
+- Settings live under `/config browser [show|enable on|off|headless on|off|timeout <ms>]`
+  in the REPL, or `kiwimatecoder config browser ...` from the shell (defaults:
+  off, headless on, 15,000 ms; timeout range 1s–120s). Changing a setting
+  closes the live page so the next call starts with the new values.
+
+```text
+Open https://example.com/docs and summarize the visible text.
+Screenshot the pricing page and tell me what stands out.
+Fill the search box with "playwright" and click Search.
+```
 
 ## Git and forge tools
 

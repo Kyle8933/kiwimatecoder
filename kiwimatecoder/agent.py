@@ -323,9 +323,10 @@ class Agent:
         In plan mode only read-only tools are advertised (the gate blocks the
         rest as a second line of defense). Subagents never see ``task`` (no
         nested subagents) or ``ask_user`` (no interactive user), and ``task``
-        is hidden for everyone while subagents are disabled.
+        is hidden for everyone while subagents are disabled. ``browser`` is
+        hidden until browser automation is enabled in config.
         """
-        from kiwimatecoder.config import get_subagents
+        from kiwimatecoder.config import get_browser, get_subagents
 
         schemas = tools.tool_schemas(
             read_only=self.session.mode is PermissionMode.PLAN
@@ -335,6 +336,8 @@ class Agent:
             excluded.update({"task", "ask_user"})
         if not get_subagents()["enabled"]:
             excluded.add("task")
+        if not get_browser()["enabled"]:
+            excluded.add("browser")
         if excluded:
             schemas = [
                 schema
@@ -537,6 +540,18 @@ class Agent:
             description = str(args.get("description", "") or "")
             short = description if len(description) <= 50 else f"{description[:47]}..."
             return f"task [dim]{short}[/dim]"
+        if name == "browser":
+            action = str(args.get("action", "") or "")
+            target = str(
+                args.get("url")
+                or args.get("selector")
+                or args.get("script")
+                or args.get("text")
+                or ""
+            )
+            short = target if len(target) <= 60 else f"{target[:57]}..."
+            detail = f"{action} {short}".strip()
+            return f"browser [dim]{detail}[/dim]"
         return name
 
     # Only purely read-only tools are safe to run concurrently: they do not

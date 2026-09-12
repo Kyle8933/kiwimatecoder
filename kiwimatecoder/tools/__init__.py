@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiwimatecoder.tools.ask import ask_user_tool
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
+from kiwimatecoder.tools.browser import browser_tool
+from kiwimatecoder.tools.browser import preview as _browser_preview
 from kiwimatecoder.tools.edit_file import edit_file_tool
 from kiwimatecoder.tools.edit_file import preview as _edit_preview
 from kiwimatecoder.tools.forge import forge_tool, forge_write_tool
@@ -85,6 +87,7 @@ _ALL_TOOLS: list[FunctionTool] = [
     lsp_diagnostics_tool,
     lsp_definition_tool,
     lsp_references_tool,
+    browser_tool,
 ]
 
 TOOLS = ToolRegistry()
@@ -101,6 +104,7 @@ _PREVIEWS: dict[str, Callable[[dict[str, Any], Any], str]] = {
     "remember": _remember_preview,
     "write_clipboard": _clipboard_write_preview,
     "http_request": _http_request_preview,
+    "browser": _browser_preview,
 }
 
 

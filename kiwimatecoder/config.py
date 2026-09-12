@@ -135,6 +135,11 @@ def _empty_config() -> dict[str, Any]:
             "max_steps": 20,
             "model": "",
         },
+        "browser": {
+            "enabled": False,
+            "headless": True,
+            "timeout_ms": 15000,
+        },
     }
 
 
@@ -1366,6 +1371,83 @@ def set_subagents(
     cfg["subagents"] = current
     save_config(cfg)
     return get_subagents(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Optional browser automation (Playwright)
+# ---------------------------------------------------------------------------
+
+BROWSER_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "headless": True,
+    "timeout_ms": 15000,
+}
+BROWSER_TIMEOUT_MIN = 1_000
+BROWSER_TIMEOUT_MAX = 120_000
+
+
+def get_browser(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized browser-automation settings, always fully populated.
+
+    Malformed stored values fall back to :data:`BROWSER_DEFAULTS` so a
+    hand-edited config can never crash the tool; ``validate_config`` reports
+    exactly what would be ignored.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("browser") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(BROWSER_DEFAULTS)
+    enabled = stored.get("enabled")
+    if isinstance(enabled, bool):
+        effective["enabled"] = enabled
+    headless = stored.get("headless")
+    if isinstance(headless, bool):
+        effective["headless"] = headless
+    effective["timeout_ms"] = _bounded_int(
+        stored.get("timeout_ms"),
+        int(BROWSER_DEFAULTS["timeout_ms"]),
+        BROWSER_TIMEOUT_MIN,
+        BROWSER_TIMEOUT_MAX,
+    )
+    return effective
+
+
+def set_browser(
+    enabled: bool | None = None,
+    headless: bool | None = None,
+    timeout_ms: int | str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update browser settings; omitted arguments keep their current value.
+
+    Raises ``ValueError`` for a non-boolean flag or a timeout outside
+    1-120 seconds so callers can validate eagerly.
+    """
+    cfg = cfg or load_config()
+    current = get_browser(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("browser enabled must be true or false.")
+        current["enabled"] = enabled
+    if headless is not None:
+        if not isinstance(headless, bool):
+            raise ValueError("browser headless must be true or false.")
+        current["headless"] = headless
+    if timeout_ms is not None:
+        try:
+            value = int(timeout_ms)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("browser timeout_ms must be an integer.") from exc
+        if not BROWSER_TIMEOUT_MIN <= value <= BROWSER_TIMEOUT_MAX:
+            raise ValueError(
+                "browser timeout_ms must be between "
+                f"{BROWSER_TIMEOUT_MIN} and {BROWSER_TIMEOUT_MAX}."
+            )
+        current["timeout_ms"] = value
+    cfg["browser"] = current
+    save_config(cfg)
+    return get_browser(cfg)
 
 
 def get_compact_at_tokens(cfg: dict[str, Any] | None = None) -> int:
@@ -2770,6 +2852,28 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                     )
             if "model" in subagents and not isinstance(subagents["model"], str):
                 add("error", "subagents.model", "'model' must be a string.")
+
+    browser = cfg.get("browser")
+    if browser is not None:
+        if not isinstance(browser, dict):
+            add("error", "browser", "'browser' must be an object.")
+        else:
+            if "enabled" in browser and not isinstance(browser["enabled"], bool):
+                add("error", "browser.enabled", "'enabled' must be true or false.")
+            if "headless" in browser and not isinstance(browser["headless"], bool):
+                add("error", "browser.headless", "'headless' must be true or false.")
+            if "timeout_ms" in browser:
+                try:
+                    timeout_ms = int(browser["timeout_ms"])
+                except (TypeError, ValueError):
+                    timeout_ms = -1
+                if not BROWSER_TIMEOUT_MIN <= timeout_ms <= BROWSER_TIMEOUT_MAX:
+                    add(
+                        "error",
+                        "browser.timeout_ms",
+                        "Must be between "
+                        f"{BROWSER_TIMEOUT_MIN} and {BROWSER_TIMEOUT_MAX}.",
+                    )
 
     profiles = cfg.get("profiles")
     if not isinstance(profiles, dict):

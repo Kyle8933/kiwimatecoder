@@ -29,6 +29,7 @@ from kiwimatecoder.config import (
     describe_key,
     get_always_allowed_tools,
     get_budget,
+    get_browser,
     get_command_rules,
     get_default_mode,
     get_lsp,
@@ -59,6 +60,7 @@ from kiwimatecoder.config import (
     search_model_catalog,
     set_active_providers,
     set_budget,
+    set_browser,
     set_default_mode,
     set_key,
     set_lsp,
@@ -1010,6 +1012,10 @@ def _config_help(console: Console) -> None:
             "Configure the subagent task tool and its step limit.",
         ),
         (
+            "/config browser [show|enable on|off|headless on|off|timeout <ms>]",
+            "Configure optional Playwright browser automation.",
+        ),
+        (
             "/config sampling [show|set key=value ...|reset]",
             "Get or set temperature, top_p, max_tokens, reasoning_effort.",
         ),
@@ -1704,6 +1710,77 @@ def _config_subagents(action_parts: list[str], console: Console) -> None:
     )
 
 
+def _reset_browser_driver() -> None:
+    """Drop the live Playwright page so the next call picks up new settings."""
+    try:
+        from kiwimatecoder import browser
+
+        browser.reset_driver()
+    except Exception:  # a stopped browser must never break config commands
+        pass
+
+
+def _config_browser(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "ls", "status"}:
+        settings = get_browser()
+        console.print(
+            f"Browser automation: "
+            f"[cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
+            f"Headless: [cyan]{'on' if settings['headless'] else 'off'}[/cyan]\n"
+            f"Timeout: [cyan]{settings['timeout_ms']}ms[/cyan]"
+        )
+        return
+
+    if action in {"enable", "enabled", "on", "off"}:
+        token = action if action in {"on", "off"} else (rest[0].lower() if rest else "")
+        if token not in {"on", "off"}:
+            console.print("[yellow]Usage: /config browser enable <on|off>[/yellow]")
+            return
+        settings = set_browser(enabled=token == "on")
+        _reset_browser_driver()
+        console.print(
+            f"[green]Browser automation "
+            f"{'on' if settings['enabled'] else 'off'}.[/green]"
+        )
+        return
+
+    if action == "headless":
+        token = rest[0].lower() if rest else ""
+        if token not in {"on", "off"}:
+            console.print("[yellow]Usage: /config browser headless <on|off>[/yellow]")
+            return
+        settings = set_browser(headless=token == "on")
+        _reset_browser_driver()
+        console.print(
+            f"[green]Browser headless:[/green] "
+            f"{'on' if settings['headless'] else 'off'}"
+        )
+        return
+
+    if action in {"timeout", "time-out"}:
+        if not rest:
+            console.print(
+                f"Browser timeout: [cyan]{get_browser()['timeout_ms']}ms[/cyan]"
+            )
+            return
+        try:
+            settings = set_browser(timeout_ms=rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        _reset_browser_driver()
+        console.print(f"[green]Browser timeout:[/green] {settings['timeout_ms']}ms")
+        return
+
+    console.print(
+        "[yellow]Usage: /config browser "
+        "[show|enable on|off|headless on|off|timeout <ms>][/yellow]"
+    )
+
+
 def _config_commands(  # noqa: C901 - small parser, mirrors the other config sections
     action_parts: list[str], session: Session, console: Console
 ) -> None:
@@ -2220,6 +2297,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_budget(rest, session, console)
     elif section in {"subagents", "subagent"}:
         _config_subagents(rest, console)
+    elif section == "browser":
+        _config_browser(rest, console)
     elif section == "sampling":
         _config_sampling(rest, console)
     elif section == "web":
@@ -2277,6 +2356,7 @@ def _config_interact(
             CommandOption("commands", "Manage shell command allow/deny rules"),
             CommandOption("trust", "Allow reads outside the workspace root"),
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
+            CommandOption("browser", "Optional Playwright browser automation"),
             CommandOption("web", "Web fetch/search limits and local access"),
             CommandOption("vision", "Image attachment size and count limits"),
             CommandOption("style", "Show or set the output style"),
@@ -2319,6 +2399,7 @@ def _config_interact(
         "help",
         "permissions",
         "sampling",
+        "browser",
         "web",
         "vision",
         "style",
@@ -2950,6 +3031,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "verify": "Set the command run automatically after edits.",
     "budget": "Set or clear token/cost budget limits.",
     "subagents": "Configure the subagent task tool and its step limit.",
+    "browser": "Configure optional Playwright browser automation.",
     "sampling": "Show, set, or reset sampling parameters.",
     "web": "Set web fetch/search limits and local-address access.",
     "vision": "Set image attachment size and count limits.",
