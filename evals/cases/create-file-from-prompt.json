@@ -1,0 +1,12 @@
+{
+  "name": "create-file-from-prompt",
+  "description": "Writes a requested file with exact content.",
+  "prompt": "Create a file named hello.txt whose contents are exactly 'hello from the eval' (without the surrounding quotes). Then reply with a short confirmation.",
+  "expect": {
+    "tools_called": ["write_file"],
+    "files": {
+      "hello.txt": ["hello from the eval"]
+    },
+    "success": true
+  }
+}

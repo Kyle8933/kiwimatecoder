@@ -146,7 +146,7 @@ Goal: breadth of integrations and long-tail quality.
 
 - [x] 5.1 Media generation (wire up `media.py` stub) (L; depends 2.3)
 - [x] 5.2 Telemetry/OTel + debug logging + opt-in crash reports (M; depends 2.1)
-- [ ] 5.3 Evals/benchmark harness for prompt/tool regressions (L; depends 4.1)
+- [x] 5.3 Evals/benchmark harness for prompt/tool regressions (L; depends 4.1)
 - [ ] 5.4 Team sharing: shared policies, session links, SSO (XL; depends 4.9)
 - [ ] 5.5 i18n of CLI strings (L; depends 2.8)
 - [ ] 5.6 Vim/Emacs keybindings, notifications, image paste, @-mentions (M; depends 2.8)
@@ -163,6 +163,13 @@ under the workspace at `.kiwimatecoder/media/`. Video generation is deferred.
 logging, and opt-in crash bundles; `KIWIMATECODER_DEBUG=1` forces the `debug`
 level for one run. There is **no OTLP exporter and no telemetry dependency** —
 shipping to an observability backend is reserved for a follow-up.
+
+**5.3 follow-up:** the harness is deterministic — a case checks final text
+substrings, tool names, resulting files, and the run's success flag (add via
+`evals/cases/*.json`, run with `kiwimatecoder eval list|run`). Model-graded
+scoring, cost/latency thresholds, and automatic runs against a live provider
+in CI are deliberately deferred; tests use a mocked SDK and never touch the
+network.
 
 ## Critical paths
 

@@ -1515,6 +1515,52 @@ profile/MCP/plugin entries, invalid regexes, unknown hook events, bad network
 (proxy/CA/offline) values, bad ACP permission timeouts, and bad default mode,
 output style, UI (theme/color/ASCII/output mode), or workspace-flag values.
 
+## Evals
+
+`kiwimatecoder eval` runs declarative regression cases against any configured
+provider. A case is a small JSON file with a prompt, optional starting files,
+and deterministic expectations about the run:
+
+```json
+{
+  "name": "create-file-from-prompt",
+  "description": "Writes a requested file with exact content.",
+  "prompt": "Create hello.txt whose contents are exactly 'hello from the eval'.",
+  "files": {"notes.txt": "Starting workspace file."},
+  "expect": {
+    "text_contains": ["hello"],
+    "text_not_contains": ["error"],
+    "tools_called": ["write_file"],
+    "tools_not_called": ["run_bash"],
+    "files": {"hello.txt": ["hello from the eval"]},
+    "success": true
+  }
+}
+```
+
+List and run the committed cases:
+
+```bash
+kiwimatecoder eval list
+kiwimatecoder eval run --provider openrouter --model anthropic/claude-sonnet-5
+kiwimatecoder eval run --filter create --json --report eval-report.json
+```
+
+Every field in `expect` is optional: `text_contains`/`text_not_contains` check
+the final assistant text, `tools_called`/`tools_not_called` check the tools the
+run used, `files` maps workspace paths to substrings that must appear in the
+file after the run, and `success` checks the run's own success flag. A run
+error is always a failure unless the case explicitly expects `success: false`.
+
+Cases live in `evals/cases/*.json` and are discovered sorted by `name`. Copy
+one as a starting point, or point `--dir` at another directory. The command
+exits `0` when every case passes, `1` when any case fails, and `2` on invalid
+input (bad directory, malformed JSON, unknown provider). Eval runs call a real
+model, so they need a configured provider key (`kiwimatecoder setup`); each
+case runs in a throwaway temp workspace and nothing is recorded beyond the
+report you ask for. Expectations are deterministic — there is no model-graded
+scoring yet.
+
 ## Development
 
 ```bash

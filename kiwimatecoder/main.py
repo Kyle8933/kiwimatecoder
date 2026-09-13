@@ -206,6 +206,11 @@ sync_app = typer.Typer(
 )
 app.add_typer(sync_app, name="sync")
 
+eval_app = typer.Typer(
+    help="Run the eval harness: deterministic prompt/tool regression checks."
+)
+app.add_typer(eval_app, name="eval")
+
 
 # --- canonical `config key ...` ---------------------------------------------
 
@@ -3476,6 +3481,109 @@ def sync_disable_cmd() -> None:
         f"[green]{_check()} Session sync disabled.[/green] "
         "The shared folder was not modified."
     )
+
+
+@eval_app.command("list")
+def eval_list_cmd(
+    cases_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--dir",
+            help="Directory of *.json eval cases (default: evals/cases).",
+        ),
+    ] = None,
+) -> None:
+    """List the discovered eval cases without running them."""
+    from kiwimatecoder.evals import cases as eval_cases
+
+    try:
+        discovered = eval_cases.discover_cases(cases_dir)
+    except eval_cases.CaseError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+    if not discovered:
+        console.print("[yellow]No eval cases found.[/yellow]")
+        return
+    table = Table(title="Eval cases")
+    table.add_column("Case", style="cyan", no_wrap=True)
+    table.add_column("Description")
+    for case in discovered:
+        table.add_row(escape(case.name), escape(case.description))
+    console.print(table)
+
+
+def _eval_failures_mention_credentials(report: Any) -> bool:
+    """Best-effort detection of provider/key failures for extra CLI guidance."""
+    hints = ("key", "unauthorized", "authentication", "credential")
+    for result in report.results:
+        for reason in result.reasons:
+            lowered = reason.lower()
+            if any(hint in lowered for hint in hints):
+                return True
+    return False
+
+
+@eval_app.command("run")
+def eval_run_cmd(
+    cases_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--dir",
+            help="Directory of *.json eval cases (default: evals/cases).",
+        ),
+    ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option("--provider", help="Provider id override for every case."),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Model id override for every case."),
+    ] = None,
+    filter: Annotated[
+        str | None,
+        typer.Option("--filter", help="Only run cases whose name contains this text."),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print the report as JSON."),
+    ] = False,
+    report_path: Annotated[
+        Path | None,
+        typer.Option("--report", help="Write the JSON report to this path."),
+    ] = None,
+) -> None:
+    """Run eval cases: exit 0 when all pass, 1 on failure, 2 on invalid input."""
+    from kiwimatecoder.evals import render, runner
+
+    if provider is not None:
+        try:
+            get_provider_config(provider)
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2)
+    try:
+        report = runner.run_suite(
+            cases_dir,
+            provider=provider,
+            model=model,
+            filter=filter,
+            report_path=report_path,
+        )
+    except (runner.CaseError, OSError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+    if json_output:
+        console.print_json(render.report_to_json(report))
+    else:
+        render.print_report(report, console)
+    if not report.success and _eval_failures_mention_credentials(report):
+        console.print(
+            "[yellow]Some failures look provider-related. Configure a key with "
+            "[cyan]kiwimatecoder setup[/cyan] or the provider's environment "
+            "variable, then rerun.[/yellow]"
+        )
+    raise typer.Exit(0 if report.success else 1)
 
 
 @app.command("update")

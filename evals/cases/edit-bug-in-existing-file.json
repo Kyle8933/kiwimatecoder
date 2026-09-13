@@ -1,0 +1,14 @@
+{
+  "name": "edit-bug-in-existing-file",
+  "description": "Fixes an off-by-operator bug in a provided file.",
+  "prompt": "Fix the bug in mathx.py so that add(2, 3) returns 5. Do not change the function signature.",
+  "files": {
+    "mathx.py": "def add(a, b):\n    return a - b\n"
+  },
+  "expect": {
+    "files": {
+      "mathx.py": ["return a + b"]
+    },
+    "success": true
+  }
+}

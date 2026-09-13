@@ -1839,6 +1839,54 @@ kiwimatecoder sync disable [OPTIONS]
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.
+.SS \fBeval\fP
+Run the eval harness: deterministic...
+.PP
+.nf
+kiwimatecoder eval [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBeval list\fP
+List the discovered eval cases without...
+.PP
+.nf
+kiwimatecoder eval list [OPTIONS]
+.fi
+.TP
+\fB\-\-dir\fP \fIPATH\fP
+Directory of *.json eval cases (default: evals/cases).
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBeval run\fP
+Run eval cases: exit 0 when all pass, 1 on...
+.PP
+.nf
+kiwimatecoder eval run [OPTIONS]
+.fi
+.TP
+\fB\-\-dir\fP \fIPATH\fP
+Directory of *.json eval cases (default: evals/cases).
+.TP
+\fB\-\-provider\fP \fITEXT\fP
+Provider id override for every case.
+.TP
+\fB\-\-model\fP \fITEXT\fP
+Model id override for every case.
+.TP
+\fB\-\-filter\fP \fITEXT\fP
+Only run cases whose name contains this text.
+.TP
+\fB\-\-json\fP
+Print the report as JSON.
+.TP
+\fB\-\-report\fP \fIPATH\fP
+Write the JSON report to this path.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
 .SH FILES
 .TP
 \fB~/.kiwimatecoder/config.json\fP

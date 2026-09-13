@@ -1,0 +1,14 @@
+{
+  "name": "read-and-summarize",
+  "description": "Reads a small file and mentions a fact from it.",
+  "prompt": "Read notes.txt and reply with one sentence that includes the project codename.",
+  "files": {
+    "notes.txt": "Project codename: KIWI-42\nOwner: platform team\n"
+  },
+  "expect": {
+    "text_contains": ["KIWI-42"],
+    "text_not_contains": ["I cannot"],
+    "tools_called": ["read_file"],
+    "success": true
+  }
+}
