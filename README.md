@@ -531,6 +531,31 @@ native Anthropic providers are supported. Limits live under
 4 images per turn); oversized or invalid images produce a clear message instead
 of a failed request.
 
+### Image generation
+
+Generate images with an OpenAI-compatible image API and attach them to the
+conversation. Generation is **opt-in** and approval-gated because it costs
+money:
+
+```text
+/config media enable on
+/config media provider openai
+/config media model gpt-image-1
+/config media size 1024x1024
+/image a red fox reading a book
+```
+
+`/image <prompt>` saves a PNG under `.kiwimatecoder/media/` and queues it for
+the next request. The same generation is available to the model as the
+`generate_image` tool: it asks for approval first, with a preview showing the
+provider, model, size, and prompt. Responses are accepted as
+`data[0].b64_json` or `data[0].url` (URL downloads are capped at 20 MB and
+honor offline mode and the local-address guard). Provider auth, API versioning
+(Azure-style `?api-version=`), proxy, and custom CA settings all come from the
+normal config. Configure it from the shell with
+`config media show|enable on|off|model <id>|provider <id>|size <WxH>`.
+Video generation is a follow-up.
+
 ## Notebooks, PDFs, and docx
 
 `read_file` extracts structured documents to text automatically, so the model

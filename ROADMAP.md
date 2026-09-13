@@ -144,7 +144,7 @@ never synced.
 
 Goal: breadth of integrations and long-tail quality.
 
-- [ ] 5.1 Media generation (wire up `media.py` stub) (L; depends 2.3)
+- [x] 5.1 Media generation (wire up `media.py` stub) (L; depends 2.3)
 - [ ] 5.2 Telemetry/OTel + debug logging + opt-in crash reports (M; depends 2.1)
 - [ ] 5.3 Evals/benchmark harness for prompt/tool regressions (L; depends 4.1)
 - [ ] 5.4 Team sharing: shared policies, session links, SSO (XL; depends 4.9)
@@ -152,6 +152,11 @@ Goal: breadth of integrations and long-tail quality.
 - [ ] 5.6 Vim/Emacs keybindings, notifications, image paste, @-mentions (M; depends 2.8)
 - [ ] 5.7 Packaging: Homebrew/curl/Docker, version pin/rollback, SBOM, Windows CI (M–L)
 - [ ] 5.8 Full accessibility audit (M; depends 2.8)
+
+**5.1 follow-up:** image generation ships through OpenAI-compatible
+`/images/generations` endpoints (b64 or URL responses), the approval-gated
+`generate_image` tool, and `/image <prompt>`; files are written atomically
+under the workspace at `.kiwimatecoder/media/`. Video generation is deferred.
 
 ## Critical paths
 

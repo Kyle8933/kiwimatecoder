@@ -23,7 +23,8 @@ from kiwimatecoder.tools.forge import forge_tool, forge_write_tool
 from kiwimatecoder.tools.forge import preview as _forge_write_preview
 from kiwimatecoder.tools.git import git_tool, git_write_tool
 from kiwimatecoder.tools.git import preview as _git_write_preview
-from kiwimatecoder.tools.image import view_image_tool
+from kiwimatecoder.tools.image import generate_image_tool, view_image_tool
+from kiwimatecoder.tools.image import generate_image_preview as _media_preview
 from kiwimatecoder.tools.io import (
     http_get_tool,
     http_request_tool,
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
 _ALL_TOOLS: list[FunctionTool] = [
     read_file_tool,
     view_image_tool,
+    generate_image_tool,
     list_dir_tool,
     search_tool,
     load_skill_tool,
@@ -112,6 +114,7 @@ _PREVIEWS: dict[str, Callable[[dict[str, Any], Any], str]] = {
     "write_clipboard": _clipboard_write_preview,
     "http_request": _http_request_preview,
     "browser": _browser_preview,
+    "generate_image": _media_preview,
 }
 
 

@@ -1,14 +1,21 @@
-"""view_image tool: attach an image from the workspace to the conversation."""
+"""Image tools: attach an image to the conversation, or generate one.
+
+``view_image`` attaches an existing workspace file (read-only). The
+``generate_image`` tool calls the configured media provider, which costs money,
+so it is approval-gated (``runs=True``) and refuses with enable guidance while
+media generation is turned off.
+"""
 
 from __future__ import annotations
 
 import base64
 from typing import Any
 
-from kiwimatecoder import config, images
+from kiwimatecoder import config, images, media
+from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
-from kiwimatecoder.tools.paths import PathError, resolve_for_read
+from kiwimatecoder.tools.paths import PathError, display_path, resolve_for_read
 
 
 def _view_image(args: dict[str, Any], session: Session) -> ToolResult:
@@ -63,4 +70,85 @@ view_image_tool = FunctionTool(
         "required": ["path"],
     },
     func=_view_image,
+)
+
+
+def _generate_image(args: dict[str, Any], session: Session) -> ToolResult:
+    if not config.get_media()["enabled"]:
+        return ToolResult.error(
+            "Image generation is disabled. Enable it with "
+            "`/config media enable on` (or `config media enable on`)."
+        )
+    prompt = str(args.get("prompt") or "").strip()
+    if not prompt:
+        return ToolResult.error("'prompt' is required")
+    size = args.get("size")
+    model = args.get("model")
+    try:
+        result = media.generate_image(
+            prompt,
+            session=session,
+            size=str(size).strip() if size else None,
+            model=str(model).strip() if model else None,
+        )
+    except media.MediaError as exc:
+        return ToolResult.error(str(exc))
+    note = media.attach_result(result, session)
+    location = display_path(result.path, session.workspace_root)
+    content = (
+        f"Generated image saved to {location} ({result.bytes:,} bytes, "
+        f"model {result.model})"
+    )
+    if note:
+        content += f". {note}"
+    return ToolResult(content=content)
+
+
+def generate_image_preview(args: dict[str, Any], session: Session) -> str:
+    """Render the approval preview: provider, model, size, and prompt."""
+    del session
+    settings = config.get_media()
+    prompt = redact(str(args.get("prompt") or "")).strip()
+    if len(prompt) > 300:
+        prompt = prompt[:297] + "..."
+    model = str(args.get("model") or settings["model"]).strip()
+    size = str(args.get("size") or settings["size"]).strip()
+    return (
+        f"Provider: {settings['provider']}\n"
+        f"Model: {model}\n"
+        f"Size: {size}\n"
+        f"Output: {settings['output_dir']}\n"
+        f"Prompt: {prompt or '(missing)'}\n\n"
+        "This calls a paid image API."
+    )
+
+
+generate_image_tool = FunctionTool(
+    name="generate_image",
+    description=(
+        "Generate an image from a text prompt through the configured media "
+        "provider and attach it to the conversation. Costs money and requires "
+        "media generation to be enabled (`/config media enable on`). Use it "
+        "for mockups, icons, diagrams, and illustrations."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "A detailed description of the image to generate.",
+            },
+            "size": {
+                "type": "string",
+                "description": "Image size as WxH (default: configured size).",
+            },
+            "model": {
+                "type": "string",
+                "description": "Image model override (default: configured model).",
+            },
+        },
+        "required": ["prompt"],
+    },
+    func=_generate_image,
+    runs=True,
 )

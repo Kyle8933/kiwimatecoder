@@ -529,6 +529,10 @@ class Agent:
         if name == "view_image":
             target = args.get("path", ".")
             return f"image [dim]{target}[/dim]"
+        if name == "generate_image":
+            prompt = str(args.get("prompt", "") or "")
+            short = prompt if len(prompt) <= 50 else f"{prompt[:47]}..."
+            return f"image-gen [dim]{short}[/dim]"
         if name == "search":
             pat = args.get("pattern", "")
             mode = args.get("mode", "grep")

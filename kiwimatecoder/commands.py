@@ -17,6 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from kiwimatecoder import tools
+from kiwimatecoder import media as media_module
 from kiwimatecoder import memory as memory_module
 from kiwimatecoder.catalog import ModelCatalog, summarize_ids
 from kiwimatecoder.config import (
@@ -37,6 +38,7 @@ from kiwimatecoder.config import (
     get_lsp,
     get_mcp_servers,
     get_memory,
+    get_media,
     get_model_catalog,
     get_model_filter,
     get_network,
@@ -71,6 +73,7 @@ from kiwimatecoder.config import (
     set_default_mode,
     set_key,
     set_lsp,
+    set_media,
     set_model_filter,
     set_network,
     set_output_style,
@@ -1065,6 +1068,11 @@ def _config_help(console: Console) -> None:
             "Set image attachment size and per-turn count limits.",
         ),
         (
+            "/config media [show|enable on|off|model <id>|provider <id>|"
+            "size <WxH>]",
+            "Configure opt-in image generation (/image and generate_image).",
+        ),
+        (
             "/config style [set <default|concise|explanatory|code>]",
             "Show or set the output style.",
         ),
@@ -1142,6 +1150,7 @@ def _config_show(session: Session, console: Console) -> None:
         f"(host [cyan]{escape(_remote_summary(remote_config))}[/cyan], "
         f"devcontainer [cyan]{escape(remote_config['devcontainer'])}[/cyan])"
     )
+    console.print(_media_status_line(get_media()))
     project_path = project_config_path()
     if project_path is not None:
         console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
@@ -2414,6 +2423,78 @@ def _config_vision(action_parts: list[str], console: Console) -> None:
     )
 
 
+def _media_status_line(settings: dict[str, Any]) -> str:
+    return (
+        f"Media: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan] "
+        f"(provider [cyan]{settings['provider']}[/cyan], "
+        f"model [cyan]{settings['model']}[/cyan], "
+        f"size [cyan]{settings['size']}[/cyan], "
+        f"output [cyan]{settings['output_dir']}[/cyan])"
+    )
+
+
+def _config_media(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "ls", "status"}:
+        console.print(_media_status_line(get_media()))
+        return
+
+    if action in {"enable", "on", "off", "disable"}:
+        if action in {"on", "off", "disable"}:
+            token = action
+        elif rest:
+            token = rest[0].lower()
+        else:
+            console.print("[yellow]Usage: /config media enable <on|off>[/yellow]")
+            return
+        if token in {"on", "true", "yes", "enable", "enabled"}:
+            enabled = True
+        elif token in {"off", "false", "no", "disable", "disabled"}:
+            enabled = False
+        else:
+            console.print("[yellow]Usage: /config media enable <on|off>[/yellow]")
+            return
+        try:
+            set_media(enabled=enabled)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            f"[green]Media generation {'enabled' if enabled else 'disabled'}.[/green]"
+        )
+        if enabled:
+            console.print(
+                "[dim]`/image <prompt>` and the generate_image tool are now "
+                "available (image API calls cost money).[/dim]"
+            )
+        return
+
+    if action in {"model", "provider", "size"}:
+        if not rest:
+            hint = "<WxH>" if action == "size" else "<id>"
+            console.print(f"[yellow]Usage: /config media {action} {hint}[/yellow]")
+            return
+        try:
+            if action == "model":
+                set_media(model=" ".join(rest))
+            elif action == "provider":
+                set_media(provider=rest[0])
+            else:
+                set_media(size=rest[0])
+        except (ValueError, KeyError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(_media_status_line(get_media()))
+        return
+
+    console.print(
+        "[yellow]Usage: /config media "
+        "[show|enable on|off|model <id>|provider <id>|size <WxH>][/yellow]"
+    )
+
+
 _UI_USAGE = (
     "/config ui [show|color <auto|always|never>|"
     "output <normal|compact|verbose>|ascii <on|off>|"
@@ -2720,6 +2801,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_network(rest, console)
     elif section == "vision":
         _config_vision(rest, console)
+    elif section == "media":
+        _config_media(rest, console)
     elif section == "ui":
         _config_ui(rest, console)
     elif section == "style":
@@ -2778,6 +2861,7 @@ def _config_interact(
             CommandOption("web", "Web fetch/search limits and local access"),
             CommandOption("network", "Proxy, custom CA bundle, and offline mode"),
             CommandOption("vision", "Image attachment size and count limits"),
+            CommandOption("media", "Opt-in image generation (provider/model/size)"),
             CommandOption("style", "Show or set the output style"),
             CommandOption("ui", "Theme, color, output mode, and ASCII mode"),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
@@ -2825,6 +2909,7 @@ def _config_interact(
         "web",
         "network",
         "vision",
+        "media",
         "style",
         "ui",
         "prompt",
@@ -3370,11 +3455,48 @@ def _shorten(text: str, limit: int) -> str:
     return cleaned if len(cleaned) <= limit else f"{cleaned[: limit - 3]}..."
 
 
+def _image(arg: str, session: Session, console: Console) -> str:
+    """Generate an image from a prompt and attach it to the next message."""
+    settings = get_media()
+    if not settings["enabled"]:
+        console.print(
+            "[yellow]Image generation is disabled.[/yellow] Enable it with "
+            "/config media enable on (or config media enable on)."
+        )
+        return CommandResult.CONTINUE
+    prompt = arg.strip()
+    if not prompt:
+        console.print("[yellow]Usage: /image <prompt>[/yellow]")
+        return CommandResult.CONTINUE
+    console.print(
+        f"[dim]Generating {settings['size']} image with "
+        f"{settings['provider']}/{settings['model']}…[/dim]"
+    )
+    try:
+        result = media_module.generate_image(prompt, session=session)
+    except media_module.MediaError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return CommandResult.CONTINUE
+    console.print(
+        f"[green]Saved[/green] [cyan]{result.path}[/cyan] "
+        f"({result.bytes:,} bytes)"
+    )
+    if result.revised_prompt:
+        console.print(f"[dim]Revised prompt: {escape(result.revised_prompt)}[/dim]")
+    note = media_module.attach_result(result, session)
+    if note:
+        console.print(f"[yellow]{note}[/yellow]")
+    else:
+        console.print("[dim]The image will be attached to your next message.[/dim]")
+    return CommandResult.CONTINUE
+
+
 _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "help": _help,
     "exit": _exit,
     "quit": _exit,
     "clear": _clear,
+    "image": _image,
     "model": _model,
     "provider": _provider,
     "mode": _mode,
@@ -3516,6 +3638,11 @@ _HELP_GROUPS = [
                 "/context [list|add|remove|clear]",
                 "Manage pinned files included with each turn.",
             ),
+            (
+                "/image <prompt>",
+                "Generate an image with the configured media provider and "
+                "attach it to your next message.",
+            ),
         ],
     ),
     (
@@ -3546,6 +3673,7 @@ _COMMAND_DESCRIPTIONS = {
     "exit": "Leave the session.",
     "quit": "Leave the session.",
     "clear": "Clear the conversation history.",
+    "image": "Generate an image from a prompt and attach it.",
     "model": "Choose a model, set one by name, refresh the list, or search.",
     "provider": "Choose a failover roster (checklist), or replace it with one provider by id.",
     "mode": "Choose or directly set the permission mode.",
@@ -3635,6 +3763,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "web": "Set web fetch/search limits and local-address access.",
     "network": "Set proxy, CA bundle, and offline mode.",
     "vision": "Set image attachment size and count limits.",
+    "media": "Configure image generation provider, model, size, and output.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",

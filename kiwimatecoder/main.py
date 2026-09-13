@@ -39,6 +39,7 @@ from kiwimatecoder.config import (
     get_key,
     get_lsp,
     get_mcp_servers,
+    get_media,
     get_memory,
     get_model_catalog,
     get_model_filter,
@@ -81,6 +82,7 @@ from kiwimatecoder.config import (
     set_key,
     set_lsp,
     set_mcp_server,
+    set_media,
     set_memory,
     set_model_filter,
     set_network,
@@ -138,6 +140,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config sandbox show[/cyan]        OS-level command sandbox")
     console.print("  [cyan]config remote show[/cyan]         SSH/devcontainer command execution")
     console.print("  [cyan]config acp show[/cyan]            ACP editor-integration timeout")
+    console.print("  [cyan]config media show[/cyan]          Opt-in image generation")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
 
@@ -183,6 +186,9 @@ config_app.add_typer(mode_app, name="mode")
 
 models_app = typer.Typer(help="Manage model visibility and the model catalog.")
 config_app.add_typer(models_app, name="models")
+
+media_app = typer.Typer(help="Configure opt-in image generation.")
+config_app.add_typer(media_app, name="media")
 
 jobs_app = typer.Typer(help="Manage background and scheduled agent jobs.")
 app.add_typer(jobs_app, name="jobs")
@@ -2262,6 +2268,15 @@ def config_show() -> None:
         + f"(host [cyan]{escape(_remote_address(remote_config))}[/cyan], "
         + f"devcontainer [cyan]{escape(remote_config['devcontainer'])}[/cyan])"
     )
+    media_config = get_media(cfg)
+    console.print(
+        "Media: "
+        + f"[cyan]{'on' if media_config['enabled'] else 'off'}[/cyan] "
+        + f"(provider [cyan]{media_config['provider']}[/cyan], "
+        + f"model [cyan]{media_config['model']}[/cyan], "
+        + f"size [cyan]{media_config['size']}[/cyan], "
+        + f"output [cyan]{media_config['output_dir']}[/cyan])"
+    )
     project_path = project_config_path()
     if project_path is not None:
         console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
@@ -2308,6 +2323,90 @@ def _set_filter(provider: str | None, mode: str, models: list[str]) -> None:
     console.print(
         f"[green]{_check()} Now {verb} these models for {pid}:[/green] "
         + ", ".join(models)
+    )
+
+
+# --- `config media ...` -----------------------------------------------------
+
+
+def _print_media(settings: dict[str, Any]) -> None:
+    console.print(
+        f"Media: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
+        f"Provider: [cyan]{settings['provider']}[/cyan]\n"
+        f"Model: [cyan]{settings['model']}[/cyan]\n"
+        f"Size: [cyan]{settings['size']}[/cyan]\n"
+        f"Output dir: [cyan]{settings['output_dir']}[/cyan]"
+    )
+
+
+@media_app.command("show")
+def media_show() -> None:
+    """Show image-generation settings."""
+    _print_media(get_media())
+
+
+@media_app.command("enable")
+def media_enable(
+    mode: Annotated[str, typer.Argument(help="on or off")] = "on",
+) -> None:
+    """Enable or disable image generation (on|off)."""
+    token = mode.strip().lower()
+    if token in {"on", "true", "yes", "enable", "enabled"}:
+        enabled = True
+    elif token in {"off", "false", "no", "disable", "disabled"}:
+        enabled = False
+    else:
+        console.print("[red]Usage: config media enable <on|off>[/red]")
+        raise typer.Exit(1)
+    try:
+        settings = set_media(enabled=enabled)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Image generation "
+        f"{'enabled' if settings['enabled'] else 'disabled'}.[/green]"
+    )
+
+
+@media_app.command("model")
+def media_model(model: Annotated[str, typer.Argument(help="Image model id")]) -> None:
+    """Set the model used for image generation."""
+    try:
+        set_media(model=model)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Media model set to[/green] [cyan]{model}[/cyan]."
+    )
+
+
+@media_app.command("provider")
+def media_provider(
+    provider: Annotated[str, typer.Argument(help="Provider id")],
+) -> None:
+    """Set the provider used for image generation."""
+    try:
+        set_media(provider=provider)
+    except (ValueError, KeyError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Media provider set to[/green] [cyan]{provider}[/cyan]."
+    )
+
+
+@media_app.command("size")
+def media_size(size: Annotated[str, typer.Argument(help="Image size as WxH")]) -> None:
+    """Set the requested image size (WxH)."""
+    try:
+        set_media(size=size)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Media size set to[/green] [cyan]{size}[/cyan]."
     )
 
 

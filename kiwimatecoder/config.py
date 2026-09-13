@@ -125,6 +125,13 @@ def _empty_config() -> dict[str, Any]:
             "max_image_bytes": 5000000,
             "max_images_per_turn": 4,
         },
+        "media": {
+            "enabled": False,
+            "provider": "openai",
+            "model": "gpt-image-1",
+            "size": "1024x1024",
+            "output_dir": ".kiwimatecoder/media",
+        },
         "lsp": {
             "enabled": False,
             "timeout": 10.0,
@@ -304,6 +311,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("network", {})
     cfg.setdefault("memory", {})
     cfg.setdefault("vision", {})
+    cfg.setdefault("media", {})
     cfg.setdefault("lsp", {})
     cfg.setdefault("index", {})
     cfg.setdefault("shell", {})
@@ -2430,6 +2438,112 @@ def set_vision(
 
 
 # ---------------------------------------------------------------------------
+# Media generation (images; video generation is a follow-up)
+# ---------------------------------------------------------------------------
+
+MEDIA_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "provider": "openai",
+    "model": "gpt-image-1",
+    "size": "1024x1024",
+    "output_dir": ".kiwimatecoder/media",
+}
+MEDIA_SIZE_RE = re.compile(r"^\d+x\d+$")
+
+
+def _valid_media_output_dir(value: object) -> str | None:
+    """Return a relative output dir that stays inside the workspace, or None."""
+    text = str(value or "").strip()
+    if not text or "~" in text:
+        return None
+    path = Path(text)
+    if path.is_absolute():
+        return None
+    if any(part == ".." for part in path.parts):
+        return None
+    return text
+
+
+def get_media(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized media-generation settings, always fully populated.
+
+    Malformed stored values fall back to :data:`MEDIA_DEFAULTS` so a
+    hand-edited config can never crash image generation; ``validate_config``
+    reports exactly what would be ignored.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("media") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(MEDIA_DEFAULTS)
+    enabled = stored.get("enabled")
+    if isinstance(enabled, bool):
+        effective["enabled"] = enabled
+    provider = str(stored.get("provider") or "").strip()
+    if provider:
+        effective["provider"] = provider
+    model = str(stored.get("model") or "").strip()
+    if model:
+        effective["model"] = model
+    size = str(stored.get("size") or "").strip()
+    if MEDIA_SIZE_RE.match(size):
+        effective["size"] = size
+    output_dir = _valid_media_output_dir(stored.get("output_dir"))
+    if output_dir is not None:
+        effective["output_dir"] = output_dir
+    return effective
+
+
+def set_media(
+    enabled: bool | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    size: str | None = None,
+    output_dir: str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update media-generation settings; omitted arguments keep their value.
+
+    Validation is eager: ``provider`` must be a known provider id, ``size``
+    must look like ``WxH`` (digits), and ``output_dir`` must be a relative path
+    that cannot escape the workspace. Raises ``ValueError`` otherwise.
+    """
+    cfg = cfg or load_config()
+    current = get_media(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("media enabled must be true or false.")
+        current["enabled"] = enabled
+    if provider is not None:
+        provider_id = str(provider).strip()
+        try:
+            get_provider_config(provider_id, cfg)
+        except KeyError as exc:
+            raise ValueError(str(exc)) from exc
+        current["provider"] = provider_id
+    if model is not None:
+        cleaned_model = str(model).strip()
+        if not cleaned_model:
+            raise ValueError("media model must be a non-empty string.")
+        current["model"] = cleaned_model
+    if size is not None:
+        cleaned_size = str(size).strip()
+        if not MEDIA_SIZE_RE.match(cleaned_size):
+            raise ValueError("media size must look like WxH, e.g. 1024x1024.")
+        current["size"] = cleaned_size
+    if output_dir is not None:
+        cleaned_dir = _valid_media_output_dir(output_dir)
+        if cleaned_dir is None:
+            raise ValueError(
+                "media output_dir must be a relative path inside the workspace."
+            )
+        current["output_dir"] = cleaned_dir
+    cfg["media"] = current
+    save_config(cfg)
+    return get_media(cfg)
+
+
+# ---------------------------------------------------------------------------
 # Language server (LSP) diagnostics
 # ---------------------------------------------------------------------------
 
@@ -3798,6 +3912,43 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                         "Must be between "
                         f"{VISION_MAX_IMAGES_MIN} and {VISION_MAX_IMAGES_MAX}.",
                     )
+
+    media = cfg.get("media")
+    if media is not None:
+        if not isinstance(media, dict):
+            add("error", "media", "'media' must be an object.")
+        else:
+            if "enabled" in media and not isinstance(media["enabled"], bool):
+                add("error", "media.enabled", "'enabled' must be true or false.")
+            provider = media.get("provider")
+            if provider is not None:
+                if not isinstance(provider, str) or not provider.strip():
+                    add("error", "media.provider", "'provider' must be a provider id.")
+                else:
+                    try:
+                        get_provider_config(provider.strip(), cfg)
+                    except KeyError:
+                        add("error", "media.provider", f"Unknown provider '{provider}'.")
+            if "model" in media and (
+                not isinstance(media["model"], str) or not media["model"].strip()
+            ):
+                add("error", "media.model", "'model' must be a non-empty string.")
+            size = media.get("size")
+            if size is not None and (
+                not isinstance(size, str) or not MEDIA_SIZE_RE.match(size.strip())
+            ):
+                add(
+                    "error",
+                    "media.size",
+                    "'size' must look like WxH, e.g. 1024x1024.",
+                )
+            output_dir = media.get("output_dir")
+            if output_dir is not None and _valid_media_output_dir(output_dir) is None:
+                add(
+                    "error",
+                    "media.output_dir",
+                    "'output_dir' must be a relative path inside the workspace.",
+                )
 
     lsp = cfg.get("lsp")
     if lsp is not None:
