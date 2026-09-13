@@ -21,11 +21,16 @@ UI_DEFAULTS: dict[str, Any] = {
     "ascii": False,
     "theme": "default",
     "locale": DEFAULT_LOCALE,
+    "keybindings": "emacs",
+    "notify": "off",
+    "notify_after_seconds": 20,
 }
 
 COLOR_MODES = ("auto", "always", "never")
 OUTPUT_MODES = ("normal", "compact", "verbose")
 THEMES = ("default", "ocean", "magenta", "mono")
+KEYBINDINGS = ("emacs", "vim")
+NOTIFY_MODES = ("off", "bell", "desktop")
 
 UNICODE_GLYPHS: dict[str, str] = {
     "check": "✓",
@@ -114,3 +119,8 @@ def theme_accent(cfg: dict[str, Any] | None = None) -> str:
     to the stored config.
     """
     return _THEME_ACCENTS.get(_ui_config(cfg)["theme"], "green")
+
+
+def vi_mode_enabled(cfg: dict[str, Any] | None = None) -> bool:
+    """Whether the prompt should start in Vim mode (``ui.keybindings``)."""
+    return _ui_config(cfg)["keybindings"] == "vim"

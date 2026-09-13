@@ -753,11 +753,25 @@ def test_config_ui_roundtrip():
     assert result.exit_code == 0
     assert config.get_ui()["theme"] == "ocean"
 
+    result = runner.invoke(main.app, ["config", "ui", "keybindings", "vim"])
+    assert result.exit_code == 0
+    assert config.get_ui()["keybindings"] == "vim"
+
+    result = runner.invoke(main.app, ["config", "ui", "notify", "bell"])
+    assert result.exit_code == 0
+    assert config.get_ui()["notify"] == "bell"
+
+    result = runner.invoke(main.app, ["config", "ui", "notify-after", "5"])
+    assert result.exit_code == 0
+    assert config.get_ui()["notify_after_seconds"] == 5
+
     result = runner.invoke(main.app, ["config", "ui", "show"])
     assert result.exit_code == 0
     assert "ocean" in result.output
     assert "never" in result.output
     assert "compact" in result.output
+    assert "vim" in result.output
+    assert "bell" in result.output
 
 
 def test_config_ui_ascii_off_roundtrip():
@@ -778,6 +792,10 @@ def test_config_ui_rejects_invalid_values():
         ["config", "ui", "output", "loud"],
         ["config", "ui", "ascii", "maybe"],
         ["config", "ui", "theme", "neon"],
+        ["config", "ui", "locale", "kl"],
+        ["config", "ui", "keybindings", "nano"],
+        ["config", "ui", "notify", "loud"],
+        ["config", "ui", "notify-after", "soon"],
     ):
         result = runner.invoke(main.app, args)
         assert result.exit_code == 1, args

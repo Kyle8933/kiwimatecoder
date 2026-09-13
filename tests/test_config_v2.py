@@ -435,6 +435,10 @@ def test_validate_flags_bad_ui_values():
         "output_mode": "loud",
         "ascii": "yes",
         "theme": "neon",
+        "locale": "kl",
+        "keybindings": "nano",
+        "notify": "loud",
+        "notify_after_seconds": -3,
     }
 
     issues = config.validate_config(cfg)
@@ -445,6 +449,10 @@ def test_validate_flags_bad_ui_values():
         "ui.output_mode",
         "ui.ascii",
         "ui.theme",
+        "ui.locale",
+        "ui.keybindings",
+        "ui.notify",
+        "ui.notify_after_seconds",
     } <= error_keys
 
 

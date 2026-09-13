@@ -153,6 +153,9 @@ def test_set_ui_roundtrip():
         "ascii": True,
         "theme": "ocean",
         "locale": "de",
+        "keybindings": "emacs",
+        "notify": "off",
+        "notify_after_seconds": 20,
     }
     assert config.get_ui() == updated
     assert config.load_config()["ui"] == updated
@@ -196,3 +199,54 @@ def test_get_ui_tolerates_corrupt_section():
     config.save_config(cfg)
 
     assert config.get_ui() == ui.UI_DEFAULTS
+
+
+# ---------------------------------------------------------------------------
+# Keybindings, notifications, and locale
+# ---------------------------------------------------------------------------
+
+
+def test_set_ui_keybindings_and_notify_roundtrip():
+    updated = config.set_ui(
+        keybindings="vim", notify="bell", notify_after_seconds=5
+    )
+
+    assert updated["keybindings"] == "vim"
+    assert updated["notify"] == "bell"
+    assert updated["notify_after_seconds"] == 5
+    assert config.get_ui()["keybindings"] == "vim"
+
+
+def test_set_ui_rejects_invalid_keybindings_and_notify():
+    with pytest.raises(ValueError):
+        config.set_ui(keybindings="nano")
+    with pytest.raises(ValueError):
+        config.set_ui(notify="loud")
+    with pytest.raises(ValueError):
+        config.set_ui(notify_after_seconds=-1)
+    with pytest.raises(ValueError):
+        config.set_ui(notify_after_seconds="soon")
+
+    assert config.get_ui() == ui.UI_DEFAULTS
+
+
+def test_get_ui_falls_back_on_bad_keybindings_and_notify():
+    cfg = config.load_config()
+    cfg["ui"] = {
+        "keybindings": "nano",
+        "notify": "loud",
+        "notify_after_seconds": -5,
+    }
+    config.save_config(cfg)
+
+    effective = config.get_ui()
+    assert effective["keybindings"] == "emacs"
+    assert effective["notify"] == "off"
+    assert effective["notify_after_seconds"] == 20
+
+
+def test_vi_mode_selection_helper():
+    assert ui.vi_mode_enabled() is False
+    assert ui.vi_mode_enabled({"ui": {"keybindings": "vim"}}) is True
+    assert ui.vi_mode_enabled({"ui": {"keybindings": "emacs"}}) is False
+    assert ui.vi_mode_enabled({"ui": {"keybindings": "nano"}}) is False

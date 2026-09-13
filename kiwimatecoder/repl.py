@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 
 try:  # pragma: no cover - platform dependent
     # Importing readline makes blocking ``input()`` (approvals, ask-user)
@@ -54,7 +56,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from kiwimatecoder import __version__, browser, events, hooks, images, lsp, mcp, plugins, ui
+from kiwimatecoder import __version__, browser, events, hooks, images, lsp, mcp, notify, plugins, ui
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandResult,
@@ -73,13 +75,62 @@ from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
 from kiwimatecoder.shell import close_shell
 from kiwimatecoder.templates import find_template, render_template
-from kiwimatecoder.tools.paths import PathError, resolve_in_workspace
+from kiwimatecoder.tools.paths import (
+    PathError,
+    display_path,
+    get_workspace_ignore,
+    resolve_in_workspace,
+)
 
 console = Console()
 
+_AT_MENTION_LIMIT = 25
+_AT_MENTION_SCAN_LIMIT = 5000
+
+
+def _workspace_file_candidates(
+    workspace_root: Path, prefix: str = "", limit: int = _AT_MENTION_LIMIT
+) -> list[str]:
+    """Return ``@``-prefixed workspace file paths starting with ``prefix``.
+
+    The walk skips gitignored files and the usual build/cache directories
+    (via :func:`get_workspace_ignore`) and stops once ``limit`` matches are
+    found or ``_AT_MENTION_SCAN_LIMIT`` entries have been examined.
+    """
+    root = Path(workspace_root).resolve()
+    ignore = get_workspace_ignore(root)
+    wanted = prefix.replace("\\", "/").lstrip("./")
+    matches: list[str] = []
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if not ignore.is_ignored(Path(dirpath) / name, is_dir=True)
+        )
+        for name in sorted(filenames):
+            full = Path(dirpath) / name
+            scanned += 1
+            if ignore.is_ignored(full):
+                continue
+            try:
+                rel = full.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if wanted and not rel.startswith(wanted):
+                if scanned >= _AT_MENTION_SCAN_LIMIT:
+                    return matches
+                continue
+            matches.append("@" + rel)
+            if len(matches) >= limit:
+                return matches
+        if scanned >= _AT_MENTION_SCAN_LIMIT:
+            break
+    return matches
+
 
 class SlashCommandCompleter(Completer):
-    """Prompt-toolkit completer for KiwiMate slash commands."""
+    """Prompt-toolkit completer for KiwiMate slash commands and @file mentions."""
 
     session: Session | None
 
@@ -90,9 +141,14 @@ class SlashCommandCompleter(Completer):
         self, document: Document, complete_event: CompleteEvent
     ) -> Iterable[Completion]:
         text = document.text_before_cursor
-        if "\n" in text or not text.startswith("/"):
+        if "\n" in text:
             return
+        if text.startswith("/"):
+            yield from self._slash_completions(text)
+            return
+        yield from self._file_completions(text)
 
+    def _slash_completions(self, text: str) -> Iterable[Completion]:
         body = text[1:]
         if " " not in body:
             for command, description in slash_command_completions(body):
@@ -115,6 +171,23 @@ class SlashCommandCompleter(Completer):
                 start_position=-len(arg_text),
                 display=value,
                 display_meta=description,
+            )
+
+    def _file_completions(self, text: str) -> Iterable[Completion]:
+        if self.session is None or not text or text[-1].isspace():
+            return
+        token = text.split()[-1]
+        if not token.startswith("@"):
+            return
+        prefix = token[1:]
+        for candidate in _workspace_file_candidates(
+            self.session.workspace_root, prefix
+        ):
+            yield Completion(
+                candidate,
+                start_position=-len(token),
+                display=candidate,
+                display_meta="file",
             )
 
 
@@ -620,6 +693,100 @@ def _extract_image_mentions(text: str, workspace_root: Path) -> tuple[str, list[
     return " ".join(kept), found
 
 
+MAX_MENTION_FILES = 5
+MAX_MENTION_FILE_BYTES = 64 * 1024
+
+
+def _is_text_file(path: Path) -> bool:
+    """Whether ``path`` looks like readable text (no NUL byte in the first KB)."""
+    try:
+        with path.open("rb") as handle:
+            sample = handle.read(1024)
+    except OSError:
+        return False
+    return b"\x00" not in sample
+
+
+def _extract_file_mentions(
+    text: str, workspace_root: Path
+) -> tuple[str, list[str]]:
+    """Pull ``@path`` text-file mentions out of a line of user input.
+
+    A token is a file mention when it starts with ``@``, resolves to an
+    existing non-image, non-binary file inside the workspace. Mentions are
+    removed from the returned text; everything else, including paths that are
+    missing, outside the workspace, images, or binary files, is left untouched.
+    """
+    kept: list[str] = []
+    found: list[str] = []
+    for token in text.split():
+        if not token.startswith("@") or len(token) < 2:
+            kept.append(token)
+            continue
+        try:
+            resolved = resolve_in_workspace(token[1:], workspace_root)
+        except PathError:
+            kept.append(token)
+            continue
+        if (
+            resolved.is_file()
+            and images.detect_media_type(resolved) is None
+            and _is_text_file(resolved)
+        ):
+            found.append(str(resolved))
+        else:
+            kept.append(token)
+    return " ".join(kept), found
+
+
+def _render_mentioned_file(path: Path, workspace_root: Path) -> str | None:
+    """Return a numbered, byte-bounded block for one mentioned file."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            clipped = handle.read(MAX_MENTION_FILE_BYTES)
+    except OSError:
+        return None
+    text = clipped.decode("utf-8", "replace")
+    numbered = "\n".join(
+        f"{index}\t{line}" for index, line in enumerate(text.splitlines(), 1)
+    )
+    header = display_path(path, workspace_root)
+    if size > len(clipped):
+        numbered += (
+            f'\n<truncated original_bytes="{size}" shown_bytes="{len(clipped)}" />'
+        )
+    return f"--- {header} ---\n{numbered or '[empty file]'}"
+
+
+def _attach_file_mentions(line: str, session: Session) -> str:
+    """Prepend a ``[mentioned files]`` block for ``@path`` text mentions.
+
+    Files are read as UTF-8 (bounded to :data:`MAX_MENTION_FILE_BYTES` each)
+    and at most :data:`MAX_MENTION_FILES` are included per turn. This is user
+    context, so it is deliberately not redacted.
+    """
+    cleaned, paths = _extract_file_mentions(line, session.workspace_root)
+    if not paths:
+        return line
+    if len(paths) > MAX_MENTION_FILES:
+        console.print(
+            f"[yellow]File mention limit ({MAX_MENTION_FILES} per turn) reached; "
+            f"{len(paths) - MAX_MENTION_FILES} file(s) were not included.[/yellow]"
+        )
+    blocks: list[str] = []
+    for path in paths[:MAX_MENTION_FILES]:
+        block = _render_mentioned_file(Path(path), session.workspace_root)
+        if block is not None:
+            blocks.append(block)
+    if not blocks:
+        return cleaned
+    context = "[mentioned files]\n" + "\n\n".join(blocks)
+    if cleaned.strip():
+        return context + "\n\n" + cleaned
+    return context
+
+
 def _attach_images(line: str, session: Session) -> str:
     """Stash ``@path`` images from ``line`` for the next turn.
 
@@ -734,6 +901,19 @@ async def _steering_input(pt_session: PromptSession[str]) -> tuple[str, str]:
         return "", "eof"
 
 
+def _notify_turn_finished(elapsed: float) -> None:
+    """Send a turn-finished notification when configured and slow enough."""
+    settings = get_ui()
+    threshold = float(settings["notify_after_seconds"])
+    if not notify.should_notify(elapsed, threshold):
+        return
+    notify.notify(
+        "KiwiMateCoder",
+        t("prompt.turn_finished", seconds=int(elapsed)),
+        mode=settings["notify"],
+    )
+
+
 async def _run_turn_with_steering(
     agent: Agent,
     pt_session: PromptSession[str],
@@ -744,6 +924,7 @@ async def _run_turn_with_steering(
 
     Returns True when the REPL should exit (Ctrl-D during the turn).
     """
+    started_at = time.monotonic()
     turn_task: asyncio.Task[None] = asyncio.create_task(agent.run_turn(line))
     interrupted = False
     exit_requested = False
@@ -786,6 +967,7 @@ async def _run_turn_with_steering(
         if not interrupted and not exit_requested:
             # Surface unexpected agent errors from the completed turn.
             await turn_task
+            _notify_turn_finished(time.monotonic() - started_at)
     except (KeyboardInterrupt, asyncio.CancelledError):
         await _cancel_task(turn_task)
         interrupted = True
@@ -872,6 +1054,7 @@ async def _run_interactive(
         complete_while_typing=True,
         complete_style=CompleteStyle.MULTI_COLUMN,
         key_bindings=kb,
+        vi_mode=ui.vi_mode_enabled(),
     )
 
     multiline_buffer: list[str] = []
@@ -923,7 +1106,9 @@ async def _run_interactive(
                 resolved = _resolve_slash_line(line, session)
                 if resolved is not None:
                     # A custom template runs as a normal agent turn.
-                    turn_line = _attach_images(resolved[1], session)
+                    turn_line = _attach_file_mentions(
+                        _attach_images(resolved[1], session), session
+                    )
                     if await _run_turn_with_steering(
                         agent, pt_session, session, turn_line
                     ):
@@ -933,7 +1118,7 @@ async def _run_interactive(
                     break
                 continue
 
-            line = _attach_images(line, session)
+            line = _attach_file_mentions(_attach_images(line, session), session)
             if not line.strip():
                 continue
             if await _run_turn_with_steering(agent, pt_session, session, line):

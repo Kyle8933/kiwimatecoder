@@ -136,7 +136,9 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config model set <id>[/cyan]       Set the default model")
     console.print("  [cyan]config mode set <ask|auto-accept|plan>[/cyan]  Set default mode")
     console.print("  [cyan]config models show[/cyan]         List the models offered")
-    console.print("  [cyan]config ui show[/cyan]             Theme, color, output, ASCII, locale")
+    console.print(
+        "  [cyan]config ui show[/cyan]             Theme, color, output, ASCII, locale, keys, notify"
+    )
     console.print("  [cyan]config web show[/cyan]            Web fetch/search limits")
     console.print("  [cyan]config network show[/cyan]        Proxy, CA bundle, offline mode")
     console.print("  [cyan]config index show[/cyan]          Codebase index status")
@@ -173,7 +175,10 @@ def _print_ui(current: dict[str, Any]) -> None:
         f"Color: [cyan]{current['color']}[/cyan]\n"
         f"Output mode: [cyan]{current['output_mode']}[/cyan]\n"
         f"ASCII: [cyan]{'on' if current['ascii'] else 'off'}[/cyan]\n"
-        f"Locale: [cyan]{current['locale']}[/cyan]"
+        f"Locale: [cyan]{current['locale']}[/cyan]\n"
+        f"Keybindings: [cyan]{current['keybindings']}[/cyan]\n"
+        f"Notify: [cyan]{current['notify']}[/cyan] "
+        f"(after [cyan]{current['notify_after_seconds']}s[/cyan])"
     )
 
 
@@ -2105,6 +2110,54 @@ def ui_locale(
     )
 
 
+@ui_app.command("keybindings")
+def ui_keybindings(
+    value: Annotated[str, typer.Argument(help="emacs or vim")],
+) -> None:
+    """Use Emacs (default) or Vim editing keys in the prompt."""
+    try:
+        current = set_ui(keybindings=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Keybindings set to "
+        f"[cyan]{current['keybindings']}[/cyan].[/green]"
+    )
+
+
+@ui_app.command("notify")
+def ui_notify(
+    value: Annotated[str, typer.Argument(help="off, bell, or desktop")],
+) -> None:
+    """Notify when a turn finishes: off, terminal bell, or desktop."""
+    try:
+        current = set_ui(notify=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Notify mode set to "
+        f"[cyan]{current['notify']}[/cyan].[/green]"
+    )
+
+
+@ui_app.command("notify-after")
+def ui_notify_after(
+    seconds: Annotated[str, typer.Argument(help="Only notify after this many seconds")],
+) -> None:
+    """Only notify for turns that take at least this many seconds (0 = always)."""
+    try:
+        current = set_ui(notify_after_seconds=seconds)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Notify threshold set to "
+        f"[cyan]{current['notify_after_seconds']}s[/cyan].[/green]"
+    )
+
+
 # --- canonical `config profile ...` -----------------------------------------
 
 profile_app = typer.Typer(help="Save, apply, or remove named configuration profiles.")
@@ -2286,7 +2339,9 @@ def config_show() -> None:
         + f"[cyan]{ui_config['color']}[/cyan] color, "
         + f"[cyan]{ui_config['output_mode']}[/cyan] output, "
         + f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan], "
-        + f"locale [cyan]{ui_config['locale']}[/cyan]"
+        + f"locale [cyan]{ui_config['locale']}[/cyan], "
+        + f"keys [cyan]{ui_config['keybindings']}[/cyan], "
+        + f"notify [cyan]{ui_config['notify']}[/cyan]"
     )
     network_config = get_network(cfg)
     console.print(

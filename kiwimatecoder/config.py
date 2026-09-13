@@ -2955,7 +2955,14 @@ def get_ui(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     never crash the REPL.
     """
     from kiwimatecoder.i18n import normalize_locale
-    from kiwimatecoder.ui import COLOR_MODES, OUTPUT_MODES, THEMES, UI_DEFAULTS
+    from kiwimatecoder.ui import (
+        COLOR_MODES,
+        KEYBINDINGS,
+        NOTIFY_MODES,
+        OUTPUT_MODES,
+        THEMES,
+        UI_DEFAULTS,
+    )
 
     cfg = cfg or load_config()
     stored = cfg.get("ui") or {}
@@ -2977,6 +2984,18 @@ def get_ui(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     locale = normalize_locale(stored.get("locale"))
     if locale is not None:
         effective["locale"] = locale
+    keybindings = str(stored.get("keybindings") or "").strip().lower()
+    if keybindings in KEYBINDINGS:
+        effective["keybindings"] = keybindings
+    notify_mode = str(stored.get("notify") or "").strip().lower()
+    if notify_mode in NOTIFY_MODES:
+        effective["notify"] = notify_mode
+    effective["notify_after_seconds"] = _bounded_int(
+        stored.get("notify_after_seconds"),
+        int(UI_DEFAULTS["notify_after_seconds"]),
+        0,
+        86_400,
+    )
     return effective
 
 
@@ -2986,10 +3005,19 @@ def set_ui(
     ascii: bool | None = None,
     theme: str | None = None,
     locale: str | None = None,
+    keybindings: str | None = None,
+    notify: str | None = None,
+    notify_after_seconds: int | str | None = None,
 ) -> dict[str, Any]:
     """Update UI preferences and persist them; omitted values are unchanged."""
     from kiwimatecoder.i18n import LOCALES, normalize_locale
-    from kiwimatecoder.ui import COLOR_MODES, OUTPUT_MODES, THEMES
+    from kiwimatecoder.ui import (
+        COLOR_MODES,
+        KEYBINDINGS,
+        NOTIFY_MODES,
+        OUTPUT_MODES,
+        THEMES,
+    )
 
     cfg = load_config()
     current = get_ui(cfg)
@@ -3024,6 +3052,29 @@ def set_ui(
                 f"Unknown locale '{locale}'. Choose: {', '.join(LOCALES)}."
             )
         current["locale"] = cleaned_locale
+    if keybindings is not None:
+        cleaned_keys = str(keybindings).strip().lower()
+        if cleaned_keys not in KEYBINDINGS:
+            raise ValueError(
+                f"Unknown keybindings '{keybindings}'. "
+                f"Choose: {', '.join(KEYBINDINGS)}."
+            )
+        current["keybindings"] = cleaned_keys
+    if notify is not None:
+        cleaned_notify = str(notify).strip().lower()
+        if cleaned_notify not in NOTIFY_MODES:
+            raise ValueError(
+                f"Unknown notify mode '{notify}'. Choose: {', '.join(NOTIFY_MODES)}."
+            )
+        current["notify"] = cleaned_notify
+    if notify_after_seconds is not None:
+        try:
+            seconds = int(notify_after_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("UI notify_after_seconds must be an integer.") from exc
+        if seconds < 0:
+            raise ValueError("UI notify_after_seconds must be zero or more seconds.")
+        current["notify_after_seconds"] = seconds
     cfg["ui"] = current
     save_config(cfg)
     return current
@@ -3919,7 +3970,13 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
         add("error", "ui", "'ui' must be an object.")
     else:
         from kiwimatecoder.i18n import normalize_locale
-        from kiwimatecoder.ui import COLOR_MODES, OUTPUT_MODES, THEMES
+        from kiwimatecoder.ui import (
+            COLOR_MODES,
+            KEYBINDINGS,
+            NOTIFY_MODES,
+            OUTPUT_MODES,
+            THEMES,
+        )
 
         color = ui.get("color")
         if color is not None and str(color).strip().lower() not in COLOR_MODES:
@@ -3938,6 +3995,26 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
         locale = ui.get("locale")
         if locale is not None and normalize_locale(locale) is None:
             add("error", "ui.locale", f"Unknown locale '{locale}'.")
+        keybindings = ui.get("keybindings")
+        if (
+            keybindings is not None
+            and str(keybindings).strip().lower() not in KEYBINDINGS
+        ):
+            add("error", "ui.keybindings", f"Unknown keybindings '{keybindings}'.")
+        notify_mode = ui.get("notify")
+        if notify_mode is not None and str(notify_mode).strip().lower() not in NOTIFY_MODES:
+            add("error", "ui.notify", f"Unknown notify mode '{notify_mode}'.")
+        if "notify_after_seconds" in ui:
+            try:
+                notify_seconds = int(ui["notify_after_seconds"])
+            except (TypeError, ValueError):
+                notify_seconds = -1
+            if notify_seconds < 0:
+                add(
+                    "error",
+                    "ui.notify_after_seconds",
+                    "Must be zero or more seconds.",
+                )
 
     web = cfg.get("web")
     if web is not None:

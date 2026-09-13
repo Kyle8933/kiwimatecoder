@@ -1,5 +1,6 @@
 import base64
 import difflib
+import io
 from pathlib import Path
 
 from prompt_toolkit.completion import CompleteEvent
@@ -18,18 +19,24 @@ from kiwimatecoder.commands import (
 from kiwimatecoder.hunks import parse_hunk_selection
 from kiwimatecoder.permissions import ApprovalResult
 from kiwimatecoder.repl import (
+    MAX_MENTION_FILE_BYTES,
+    MAX_MENTION_FILES,
     SlashCommandCompleter,
+    _attach_file_mentions,
     _attach_images,
     _banner,
     _build_history,
+    _extract_file_mentions,
     _extract_image_mentions,
     _make_confirm,
+    _notify_turn_finished,
     _process_deferred_commands,
     _prompt_text,
     _resolve_slash_line,
     _route_steering_line,
     _select_command_option,
     _select_command_options,
+    _workspace_file_candidates,
     checkbox_choice,
 )
 
@@ -542,3 +549,207 @@ def test_attach_images_respects_per_turn_limit(session, monkeypatch):
     _attach_images("@a.png @b.png", session)
 
     assert len(session.pending_images) == 1
+
+
+# ---------------------------------------------------------------------------
+# @path text-file mentions
+# ---------------------------------------------------------------------------
+
+
+def test_extract_file_mentions_removes_workspace_text_file(session):
+    notes = session.workspace_root / "notes.txt"
+    notes.write_text("hello\n")
+
+    cleaned, found = _extract_file_mentions(
+        "read @notes.txt please", session.workspace_root
+    )
+
+    assert cleaned == "read please"
+    assert found == [str(notes.resolve())]
+
+
+def test_extract_file_mentions_keeps_missing_file(session):
+    cleaned, found = _extract_file_mentions(
+        "@ghost.txt hello", session.workspace_root
+    )
+
+    assert cleaned == "@ghost.txt hello"
+    assert found == []
+
+
+def test_extract_file_mentions_keeps_outside_workspace(session, tmp_path):
+    outside = tmp_path.parent / "outside-notes.txt"
+    outside.write_text("secret")
+
+    cleaned, found = _extract_file_mentions(
+        f"@{outside} ok", session.workspace_root
+    )
+
+    assert cleaned == f"@{outside} ok"
+    assert found == []
+
+
+def test_extract_file_mentions_keeps_binary_file(session):
+    (session.workspace_root / "blob.bin").write_bytes(b"\x00\x01\x02binary")
+
+    cleaned, found = _extract_file_mentions("@blob.bin hi", session.workspace_root)
+
+    assert cleaned == "@blob.bin hi"
+    assert found == []
+
+
+def test_extract_file_mentions_keeps_images_for_the_image_path(session):
+    (session.workspace_root / "shot.png").write_bytes(PNG_1PX)
+
+    cleaned, found = _extract_file_mentions("@shot.png hi", session.workspace_root)
+
+    assert cleaned == "@shot.png hi"
+    assert found == []
+
+
+def test_extract_file_mentions_multiple_files(session):
+    (session.workspace_root / "a.txt").write_text("a")
+    (session.workspace_root / "b.md").write_text("b")
+
+    cleaned, found = _extract_file_mentions("@a.txt and @b.md", session.workspace_root)
+
+    assert cleaned == "and"
+    assert len(found) == 2
+
+
+def test_attach_file_mentions_prepends_numbered_context(session):
+    (session.workspace_root / "notes.txt").write_text("alpha\nbeta\n")
+
+    line = _attach_file_mentions("summarize @notes.txt", session)
+
+    assert line.startswith("[mentioned files]\n")
+    assert "--- notes.txt ---" in line
+    assert "1\talpha" in line
+    assert "2\tbeta" in line
+    assert line.endswith("summarize")
+
+
+def test_attach_file_mentions_caps_the_number_of_files(session):
+    mentions = " ".join(
+        f"@f{index}.txt" for index in range(MAX_MENTION_FILES + 2)
+    )
+    for index in range(MAX_MENTION_FILES + 2):
+        (session.workspace_root / f"f{index}.txt").write_text("x")
+
+    line = _attach_file_mentions(f"check {mentions}", session)
+
+    assert line.count("--- ") == MAX_MENTION_FILES
+
+
+def test_attach_file_mentions_bounds_file_bytes(session):
+    (session.workspace_root / "big.txt").write_text("x" * (MAX_MENTION_FILE_BYTES + 50))
+
+    line = _attach_file_mentions("read @big.txt", session)
+
+    assert "<truncated" in line
+    assert f'shown_bytes="{MAX_MENTION_FILE_BYTES}"' in line
+
+
+def test_attach_file_mentions_leaves_plain_lines_alone(session):
+    assert _attach_file_mentions("just text", session) == "just text"
+
+
+# ---------------------------------------------------------------------------
+# @ completion
+# ---------------------------------------------------------------------------
+
+
+def _at_completions(session, text: str) -> list[str]:
+    completer = SlashCommandCompleter(session)
+    return [
+        completion.text
+        for completion in completer.get_completions(Document(text), CompleteEvent())
+    ]
+
+
+def test_at_completer_lists_workspace_files(session):
+    (session.workspace_root / "readme.md").write_text("x")
+    (session.workspace_root / "notes.txt").write_text("x")
+    src = session.workspace_root / "src"
+    src.mkdir()
+    (src / "main.py").write_text("x")
+
+    assert _at_completions(session, "look at @re") == ["@readme.md"]
+
+
+def test_at_completer_lists_nested_paths(session):
+    src = session.workspace_root / "src"
+    src.mkdir()
+    (src / "main.py").write_text("x")
+
+    assert _at_completions(session, "@src/ma") == ["@src/main.py"]
+
+
+def test_at_completer_respects_gitignore(session):
+    (session.workspace_root / ".gitignore").write_text("secret.txt\n")
+    (session.workspace_root / "secret.txt").write_text("x")
+
+    assert _at_completions(session, "@sec") == []
+
+
+def test_at_completer_without_session_returns_nothing():
+    completer = SlashCommandCompleter(None)
+
+    assert (
+        list(completer.get_completions(Document("@re"), CompleteEvent())) == []
+    )
+
+
+def test_workspace_file_candidates_cap(session):
+    for index in range(10):
+        (session.workspace_root / f"f{index}.txt").write_text("x")
+
+    assert len(_workspace_file_candidates(session.workspace_root, "", limit=3)) == 3
+
+
+# ---------------------------------------------------------------------------
+# Turn-finished notifications
+# ---------------------------------------------------------------------------
+
+
+def test_notify_turn_finished_respects_threshold_and_mode(monkeypatch):
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.get_ui",
+        lambda: {"notify": "bell", "notify_after_seconds": 5},
+    )
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.notify.notify",
+        lambda title, body, mode: calls.append((title, body, mode)),
+    )
+
+    _notify_turn_finished(10)
+    _notify_turn_finished(1)
+
+    assert calls == [("KiwiMateCoder", "Turn finished in 10s", "bell")]
+
+
+def test_notify_turn_finished_off_mode_writes_nothing(monkeypatch):
+    stream = io.StringIO()
+    monkeypatch.setattr("kiwimatecoder.notify._stderr", lambda: stream)
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.get_ui",
+        lambda: {"notify": "off", "notify_after_seconds": 0},
+    )
+
+    _notify_turn_finished(99)
+
+    assert stream.getvalue() == ""
+
+
+def test_notify_turn_finished_bell_mode_rings(monkeypatch):
+    stream = io.StringIO()
+    monkeypatch.setattr("kiwimatecoder.notify._stderr", lambda: stream)
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.get_ui",
+        lambda: {"notify": "bell", "notify_after_seconds": 0},
+    )
+
+    _notify_turn_finished(3)
+
+    assert stream.getvalue() == "\a"

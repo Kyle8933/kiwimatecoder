@@ -1098,8 +1098,10 @@ def _config_help(console: Console) -> None:
         (
             "/config ui [show|color <auto|always|never>|"
             "output <normal|compact|verbose>|ascii <on|off>|"
-            "theme <default|ocean|magenta|mono>|locale <en|de|es>]",
-            "Set theme, color, output verbosity, ASCII mode, and locale.",
+            "theme <default|ocean|magenta|mono>|locale <en|de|es>|"
+            "keybindings <emacs|vim>|notify <off|bell|desktop>|notify-after <s>]",
+            "Set theme, color, output verbosity, ASCII mode, locale, "
+            "keybindings, and notifications.",
         ),
         (
             "/config cache [on|off]",
@@ -1146,7 +1148,9 @@ def _config_show(session: Session, console: Console) -> None:
         f"[cyan]{ui_config['color']}[/cyan] color, "
         f"[cyan]{ui_config['output_mode']}[/cyan] output, "
         f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan], "
-        f"locale [cyan]{ui_config['locale']}[/cyan]"
+        f"locale [cyan]{ui_config['locale']}[/cyan], "
+        f"keys [cyan]{ui_config['keybindings']}[/cyan], "
+        f"notify [cyan]{ui_config['notify']}[/cyan]"
     )
     network_config = get_network()
     console.print(
@@ -2596,7 +2600,8 @@ def _config_telemetry(action_parts: list[str], console: Console) -> None:
 _UI_USAGE = (
     "/config ui [show|color <auto|always|never>|"
     "output <normal|compact|verbose>|ascii <on|off>|"
-    "theme <default|ocean|magenta|mono>|locale <en|de|es>]"
+    "theme <default|ocean|magenta|mono>|locale <en|de|es>|"
+    "keybindings <emacs|vim>|notify <off|bell|desktop>|notify-after <s>]"
 )
 
 
@@ -2612,11 +2617,23 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
             f"color=[cyan]{current['color']}[/cyan], "
             f"output=[cyan]{current['output_mode']}[/cyan], "
             f"ascii=[cyan]{'on' if current['ascii'] else 'off'}[/cyan], "
-            f"locale=[cyan]{current['locale']}[/cyan]"
+            f"locale=[cyan]{current['locale']}[/cyan], "
+            f"keybindings=[cyan]{current['keybindings']}[/cyan], "
+            f"notify=[cyan]{current['notify']}[/cyan], "
+            f"notify-after=[cyan]{current['notify_after_seconds']}s[/cyan]"
         )
         return
 
-    if action in {"color", "output", "ascii", "theme", "locale"}:
+    if action in {
+        "color",
+        "output",
+        "ascii",
+        "theme",
+        "locale",
+        "keybindings",
+        "notify",
+        "notify-after",
+    }:
         if not rest:
             console.print(f"[yellow]Usage: /config ui {action} <value>[/yellow]")
             return
@@ -2633,6 +2650,12 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
                 from kiwimatecoder.i18n import set_locale
 
                 set_locale(value)
+            elif action == "keybindings":
+                set_ui(keybindings=value)
+            elif action == "notify":
+                set_ui(notify=value)
+            elif action == "notify-after":
+                set_ui(notify_after_seconds=value)
             else:
                 token = value.strip().lower()
                 if token in {"on", "true", "yes", "enable", "enabled"}:
@@ -2652,11 +2675,14 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
             f"color=[cyan]{current['color']}[/cyan], "
             f"output=[cyan]{current['output_mode']}[/cyan], "
             f"ascii=[cyan]{'on' if current['ascii'] else 'off'}[/cyan], "
-            f"locale=[cyan]{current['locale']}[/cyan]"
+            f"locale=[cyan]{current['locale']}[/cyan], "
+            f"keybindings=[cyan]{current['keybindings']}[/cyan], "
+            f"notify=[cyan]{current['notify']}[/cyan], "
+            f"notify-after=[cyan]{current['notify_after_seconds']}s[/cyan]"
         )
         console.print(
-            "[dim]Restart the session for color, theme, ascii, and output "
-            "mode changes to apply.[/dim]"
+            "[dim]Restart the session for color, theme, ascii, output mode, "
+            "and keybinding changes to apply.[/dim]"
         )
         return
 
@@ -2971,7 +2997,10 @@ def _config_interact(
             CommandOption("media", "Opt-in image generation (provider/model/size)"),
             CommandOption("telemetry", "Opt-in local telemetry and crash reports"),
             CommandOption("style", "Show or set the output style"),
-            CommandOption("ui", "Theme, color, output mode, ASCII mode, and locale"),
+            CommandOption(
+                "ui",
+                "Theme, color, output, ASCII, locale, keybindings, and notifications",
+            ),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
             CommandOption("profile", "Save or apply configuration profiles"),
             CommandOption("cache", "Toggle Anthropic prompt caching"),
@@ -3878,7 +3907,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",
     "profiles": "Save, apply, or remove named configuration presets.",
-    "ui": "Set theme, color, output verbosity, ASCII mode, and locale.",
+    "ui": "Set theme, color, output verbosity, ASCII mode, locale, keybindings, and notifications.",
     "cache": "Toggle prompt caching for native Anthropic providers.",
 }
 

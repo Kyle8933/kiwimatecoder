@@ -149,7 +149,7 @@ Goal: breadth of integrations and long-tail quality.
 - [x] 5.3 Evals/benchmark harness for prompt/tool regressions (L; depends 4.1)
 - [ ] 5.4 Team sharing: shared policies, session links, SSO (XL; depends 4.9)
 - [x] 5.5 i18n of CLI strings (L; depends 2.8)
-- [ ] 5.6 Vim/Emacs keybindings, notifications, image paste, @-mentions (M; depends 2.8)
+- [x] 5.6 Vim/Emacs keybindings, notifications, image paste, @-mentions (M; depends 2.8)
 - [x] 5.7 Packaging: Homebrew/curl/Docker, version pin/rollback, SBOM, Windows CI (M–L)
 - [ ] 5.8 Full accessibility audit (M; depends 2.8)
 
@@ -177,6 +177,13 @@ catalogs covering the banner hint, prompt and approval labels, common errors,
 `KIWIMATECODER_LANG`, then English) selects the language. Migration is
 incremental: strings are wired through `t()` as they are touched, and missing
 keys fall back to English and then the key itself.
+
+**5.6 follow-up:** `ui.keybindings` selects Emacs (default) or Vim prompt
+editing; `ui.notify` selects bell/desktop notifications after
+`ui.notify_after_seconds`. `@`-mentions complete workspace paths (gitignore
+aware) and attach bounded text-file context; image paste stays the existing
+terminal path-insertion plus `@image.png` extraction — there is no OS
+clipboard image-bytes path.
 
 **5.7 follow-up:** `kiwimatecoder update --ref <branch|tag|sha>` pins or rolls
 back packaged and source installs; `scripts/install.sh` covers curl installs

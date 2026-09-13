@@ -37,6 +37,7 @@ _EN: dict[str, str] = {
     "prompt.goodbye": "Goodbye!",
     "prompt.interrupted": "Interrupted.",
     "prompt.command_queued": "Command queued; it will run after this turn.",
+    "prompt.turn_finished": "Turn finished in {seconds}s",
     # Approvals
     "approval.allow": "Allow?",
     "approval.denied": "Denied.",
@@ -97,6 +98,7 @@ _DE: dict[str, str] = {
     "prompt.goodbye": "Auf Wiedersehen!",
     "prompt.interrupted": "Abgebrochen.",
     "prompt.command_queued": "Befehl in Warteschlange; er läuft nach diesem Zug.",
+    "prompt.turn_finished": "Zug nach {seconds}s beendet",
     "approval.allow": "Erlauben?",
     "approval.denied": "Abgelehnt.",
     "approval.approve": "Genehmigen: {summary}",
@@ -158,6 +160,7 @@ _ES: dict[str, str] = {
     "prompt.goodbye": "¡Adiós!",
     "prompt.interrupted": "Interrumpido.",
     "prompt.command_queued": "Comando en cola; se ejecutará después de este turno.",
+    "prompt.turn_finished": "Turno terminado en {seconds}s",
     "approval.allow": "¿Permitir?",
     "approval.denied": "Denegado.",
     "approval.approve": "Aprobar: {summary}",

@@ -1327,7 +1327,10 @@ under the `ui` key in `~/.kiwimatecoder/config.json`:
     "color": "auto",
     "output_mode": "normal",
     "ascii": false,
-    "locale": "en"
+    "locale": "en",
+    "keybindings": "emacs",
+    "notify": "off",
+    "notify_after_seconds": 20
   }
 }
 ```
@@ -1364,6 +1367,31 @@ The migration is incremental: untranslated strings stay in English, and a
 locale that is missing a key falls back to English and then to the key itself.
 `/config ui locale <en|de|es>` switches the language for the current session
 immediately.
+
+### Keybindings and notifications
+
+The prompt is Emacs-style by default; switch to Vim mode with
+`config ui keybindings vim` (or `/config ui keybindings vim`). Vim mode keeps
+the same completion and Alt+Enter bindings and adds modal editing.
+
+`ui.notify` can ring the terminal bell (`bell`) or send a desktop notification
+(`desktop`: OSC 9 when stderr is a TTY, otherwise `osascript` on macOS or
+`notify-send` on Linux) when a turn takes at least `ui.notify_after_seconds`
+seconds (default 20; `0` notifies after every turn):
+
+```bash
+kiwimatecoder config ui notify bell
+kiwimatecoder config ui notify-after 30
+```
+
+### `@`-mentions
+
+Typing `@` offers workspace file-path completions (gitignored files are
+skipped). A sent line containing `@path/to/file` attaches that text file as a
+`[mentioned files]` context block ahead of the message — at most 5 files per
+turn, 64 KB each, with truncation markers. Image paths (`@shot.png`) use the
+image-attachment path instead, so pasting or dragging an image into the
+terminal works as before.
 
 ## Model routing
 

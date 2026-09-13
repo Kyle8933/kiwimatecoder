@@ -1165,6 +1165,15 @@ def test_config_ui_updates_settings(session):
     dispatch("/config ui theme ocean", session, console)
     assert config.get_ui()["theme"] == "ocean"
 
+    dispatch("/config ui keybindings vim", session, console)
+    assert config.get_ui()["keybindings"] == "vim"
+
+    dispatch("/config ui notify bell", session, console)
+    assert config.get_ui()["notify"] == "bell"
+
+    dispatch("/config ui notify-after 5", session, console)
+    assert config.get_ui()["notify_after_seconds"] == 5
+
     output = _output(console)
     assert "ocean" in output
     assert "Restart the session" in output
@@ -1177,6 +1186,9 @@ def test_config_ui_rejects_invalid_values(session):
     dispatch("/config ui output loud", session, console)
     dispatch("/config ui ascii maybe", session, console)
     dispatch("/config ui theme neon", session, console)
+    dispatch("/config ui keybindings nano", session, console)
+    dispatch("/config ui notify loud", session, console)
+    dispatch("/config ui notify-after soon", session, console)
 
     assert config.get_ui() == ui.UI_DEFAULTS
 
