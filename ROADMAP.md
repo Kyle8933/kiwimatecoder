@@ -151,7 +151,7 @@ Goal: breadth of integrations and long-tail quality.
 - [x] 5.5 i18n of CLI strings (L; depends 2.8)
 - [x] 5.6 Vim/Emacs keybindings, notifications, image paste, @-mentions (M; depends 2.8)
 - [x] 5.7 Packaging: Homebrew/curl/Docker, version pin/rollback, SBOM, Windows CI (M–L)
-- [ ] 5.8 Full accessibility audit (M; depends 2.8)
+- [x] 5.8 Full accessibility audit (M; depends 2.8)
 
 **5.1 follow-up:** image generation ships through OpenAI-compatible
 `/images/generations` endpoints (b64 or URL responses), the approval-gated
@@ -184,6 +184,13 @@ editing; `ui.notify` selects bell/desktop notifications after
 aware) and attach bounded text-file context; image paste stays the existing
 terminal path-insertion plus `@image.png` extraction — there is no OS
 clipboard image-bytes path.
+
+**5.8 follow-up:** `docs/accessibility.md` audits the CLI/TUI honestly (color,
+ASCII, output modes, spinner control, keyboard navigation, bounded output,
+partial i18n) and lists what is missing (screen-reader semantics, full i18n,
+reduced motion, contrast tuning, AT testing). Shipped: `ui.spinner
+auto|on|off`, the global `--plain` process override (ASCII, no color, compact,
+no spinner, never persisted), and validation for every new `ui` key.
 
 **5.7 follow-up:** `kiwimatecoder update --ref <branch|tag|sha>` pins or rolls
 back packaged and source installs; `scripts/install.sh` covers curl installs

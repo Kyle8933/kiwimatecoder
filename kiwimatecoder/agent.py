@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -68,6 +69,16 @@ class TaskConsole(Console):
         return self._parent.status(f"{self._tag} {status}", **kwargs)
 
 
+class _NoopStatus:
+    """Status stand-in that does nothing when spinners are disabled."""
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+
 @dataclass
 class _PreparedCall:
     """A tool call that passed parsing, approval, hooks, and checkpointing."""
@@ -98,6 +109,7 @@ class Agent:
         event_handler: EventCallback | None = None,
         max_turns: int | None = None,
         render_text: bool = True,
+        spinner: str = "auto",
     ) -> None:
         self.session = session
         self.console = console
@@ -109,6 +121,8 @@ class Agent:
         self.event_handler = event_handler
         self.max_turns = max_turns
         self.render_text = render_text
+        self.spinner = spinner if spinner in ui.SPINNER_MODES else "auto"
+        self.spinner_enabled = self.spinner != "off"
 
     def _emit(self, name: str, **payload: Any) -> None:
         """Forward one render event, never letting a bad subscriber break a run."""
@@ -456,7 +470,11 @@ class Agent:
         text_parts: list[str] = []
         assembler = ToolCallAssembler()
         printed_any = False
-        status = self.console.status("[dim]Thinking…[/dim]")
+        status: Any = (
+            self.console.status("[dim]Thinking…[/dim]")
+            if self.spinner_enabled
+            else _NoopStatus()
+        )
         status.start()
         thinking = True
 
@@ -805,7 +823,11 @@ class Agent:
 
         t0 = time.perf_counter()
         try:
-            with self.console.status(f"{prepared.summary}…"):
+            with (
+                self.console.status(f"{prepared.summary}…")
+                if self.spinner_enabled
+                else nullcontext()
+            ):
                 result = prepared.tool.execute(prepared.args, self.session)
         except Exception as exc:
             result = ToolResult.error(f"Tool crashed: {exc!r}")
@@ -829,7 +851,11 @@ class Agent:
 
         t0 = time.perf_counter()
         try:
-            with self.console.status(f"{prepared.summary}…"):
+            with (
+                self.console.status(f"{prepared.summary}…")
+                if self.spinner_enabled
+                else nullcontext()
+            ):
                 result = await self._run_task(prepared.args)
         except Exception as exc:
             result = ToolResult.error(f"Tool crashed: {exc!r}")
@@ -959,6 +985,7 @@ class Agent:
             bus=self.bus,
             ascii_mode=self.ascii_mode,
             output_mode=self.output_mode,
+            spinner=self.spinner,
         )
 
         child_session.messages.append({"role": "user", "content": prompt})

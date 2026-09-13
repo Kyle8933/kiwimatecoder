@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from rich.console import Console
 
-from kiwimatecoder import config
+from kiwimatecoder import config, ui
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.permissions import ConfirmFn, PermissionMode
 from kiwimatecoder.pricing import estimate_cost
@@ -198,7 +198,7 @@ async def run_agent_once(
         if on_event is not None:
             on_event(name, payload)
 
-    ui_config = config.get_ui()
+    ui_config = ui.ui_config()
     agent = Agent(
         session,
         console,
@@ -208,6 +208,7 @@ async def run_agent_once(
         event_handler=collect,
         max_turns=max_turns,
         render_text=render_text,
+        spinner=ui_config["spinner"],
     )
 
     try:

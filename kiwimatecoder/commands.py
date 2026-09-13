@@ -1099,9 +1099,10 @@ def _config_help(console: Console) -> None:
             "/config ui [show|color <auto|always|never>|"
             "output <normal|compact|verbose>|ascii <on|off>|"
             "theme <default|ocean|magenta|mono>|locale <en|de|es>|"
-            "keybindings <emacs|vim>|notify <off|bell|desktop>|notify-after <s>]",
+            "keybindings <emacs|vim>|notify <off|bell|desktop>|notify-after <s>|"
+            "spinner <auto|on|off>]",
             "Set theme, color, output verbosity, ASCII mode, locale, "
-            "keybindings, and notifications.",
+            "keybindings, notifications, and spinners.",
         ),
         (
             "/config cache [on|off]",
@@ -1150,7 +1151,8 @@ def _config_show(session: Session, console: Console) -> None:
         f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan], "
         f"locale [cyan]{ui_config['locale']}[/cyan], "
         f"keys [cyan]{ui_config['keybindings']}[/cyan], "
-        f"notify [cyan]{ui_config['notify']}[/cyan]"
+        f"notify [cyan]{ui_config['notify']}[/cyan], "
+        f"spinner [cyan]{ui_config['spinner']}[/cyan]"
     )
     network_config = get_network()
     console.print(
@@ -2601,7 +2603,8 @@ _UI_USAGE = (
     "/config ui [show|color <auto|always|never>|"
     "output <normal|compact|verbose>|ascii <on|off>|"
     "theme <default|ocean|magenta|mono>|locale <en|de|es>|"
-    "keybindings <emacs|vim>|notify <off|bell|desktop>|notify-after <s>]"
+    "keybindings <emacs|vim>|notify <off|bell|desktop>|notify-after <s>|"
+    "spinner <auto|on|off>]"
 )
 
 
@@ -2620,7 +2623,8 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
             f"locale=[cyan]{current['locale']}[/cyan], "
             f"keybindings=[cyan]{current['keybindings']}[/cyan], "
             f"notify=[cyan]{current['notify']}[/cyan], "
-            f"notify-after=[cyan]{current['notify_after_seconds']}s[/cyan]"
+            f"notify-after=[cyan]{current['notify_after_seconds']}s[/cyan], "
+            f"spinner=[cyan]{current['spinner']}[/cyan]"
         )
         return
 
@@ -2633,6 +2637,7 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
         "keybindings",
         "notify",
         "notify-after",
+        "spinner",
     }:
         if not rest:
             console.print(f"[yellow]Usage: /config ui {action} <value>[/yellow]")
@@ -2656,6 +2661,8 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
                 set_ui(notify=value)
             elif action == "notify-after":
                 set_ui(notify_after_seconds=value)
+            elif action == "spinner":
+                set_ui(spinner=value)
             else:
                 token = value.strip().lower()
                 if token in {"on", "true", "yes", "enable", "enabled"}:
@@ -2678,11 +2685,12 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
             f"locale=[cyan]{current['locale']}[/cyan], "
             f"keybindings=[cyan]{current['keybindings']}[/cyan], "
             f"notify=[cyan]{current['notify']}[/cyan], "
-            f"notify-after=[cyan]{current['notify_after_seconds']}s[/cyan]"
+            f"notify-after=[cyan]{current['notify_after_seconds']}s[/cyan], "
+            f"spinner=[cyan]{current['spinner']}[/cyan]"
         )
         console.print(
             "[dim]Restart the session for color, theme, ascii, output mode, "
-            "and keybinding changes to apply.[/dim]"
+            "spinner, and keybinding changes to apply.[/dim]"
         )
         return
 
@@ -2999,7 +3007,7 @@ def _config_interact(
             CommandOption("style", "Show or set the output style"),
             CommandOption(
                 "ui",
-                "Theme, color, output, ASCII, locale, keybindings, and notifications",
+                "Theme, color, output, ASCII, locale, keys, notify, and spinners",
             ),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
             CommandOption("profile", "Save or apply configuration profiles"),
@@ -3907,7 +3915,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",
     "profiles": "Save, apply, or remove named configuration presets.",
-    "ui": "Set theme, color, output verbosity, ASCII mode, locale, keybindings, and notifications.",
+    "ui": "Set theme, color, output verbosity, ASCII mode, locale, keys, notifications, and spinners.",
     "cache": "Toggle prompt caching for native Anthropic providers.",
 }
 

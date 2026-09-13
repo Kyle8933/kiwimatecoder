@@ -765,6 +765,10 @@ def test_config_ui_roundtrip():
     assert result.exit_code == 0
     assert config.get_ui()["notify_after_seconds"] == 5
 
+    result = runner.invoke(main.app, ["config", "ui", "spinner", "off"])
+    assert result.exit_code == 0
+    assert config.get_ui()["spinner"] == "off"
+
     result = runner.invoke(main.app, ["config", "ui", "show"])
     assert result.exit_code == 0
     assert "ocean" in result.output
@@ -772,6 +776,7 @@ def test_config_ui_roundtrip():
     assert "compact" in result.output
     assert "vim" in result.output
     assert "bell" in result.output
+    assert "off" in result.output
 
 
 def test_config_ui_ascii_off_roundtrip():
@@ -796,6 +801,7 @@ def test_config_ui_rejects_invalid_values():
         ["config", "ui", "keybindings", "nano"],
         ["config", "ui", "notify", "loud"],
         ["config", "ui", "notify-after", "soon"],
+        ["config", "ui", "spinner", "sometimes"],
     ):
         result = runner.invoke(main.app, args)
         assert result.exit_code == 1, args

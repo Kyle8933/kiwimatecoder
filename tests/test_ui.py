@@ -156,6 +156,7 @@ def test_set_ui_roundtrip():
         "keybindings": "emacs",
         "notify": "off",
         "notify_after_seconds": 20,
+        "spinner": "auto",
     }
     assert config.get_ui() == updated
     assert config.load_config()["ui"] == updated
@@ -250,3 +251,36 @@ def test_vi_mode_selection_helper():
     assert ui.vi_mode_enabled({"ui": {"keybindings": "vim"}}) is True
     assert ui.vi_mode_enabled({"ui": {"keybindings": "emacs"}}) is False
     assert ui.vi_mode_enabled({"ui": {"keybindings": "nano"}}) is False
+
+
+def test_spinner_config_and_helper():
+    assert ui.spinner_enabled() is True
+    assert ui.spinner_enabled({"ui": {"spinner": "auto"}}) is True
+    assert ui.spinner_enabled({"ui": {"spinner": "on"}}) is True
+    assert ui.spinner_enabled({"ui": {"spinner": "off"}}) is False
+
+    updated = config.set_ui(spinner="off")
+    assert updated["spinner"] == "off"
+    assert config.get_ui()["spinner"] == "off"
+
+    with pytest.raises(ValueError):
+        config.set_ui(spinner="sometimes")
+
+    cfg = config.load_config()
+    cfg["ui"] = {"spinner": "sometimes"}
+    config.save_config(cfg)
+    assert config.get_ui()["spinner"] == "auto"
+
+
+def test_apply_plain_mode_runtime_overrides():
+    ui.apply_plain_mode(True)
+    try:
+        assert ui.runtime_overrides()["ascii"] is True
+        assert ui.glyph("check") == "[ok]"
+        assert ui.resolve_color() is False
+        assert ui.spinner_enabled() is False
+    finally:
+        ui.apply_plain_mode(False)
+
+    assert ui.runtime_overrides() == {}
+    assert ui.glyph("check") == "✓"

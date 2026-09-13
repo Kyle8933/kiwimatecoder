@@ -1174,6 +1174,9 @@ def test_config_ui_updates_settings(session):
     dispatch("/config ui notify-after 5", session, console)
     assert config.get_ui()["notify_after_seconds"] == 5
 
+    dispatch("/config ui spinner off", session, console)
+    assert config.get_ui()["spinner"] == "off"
+
     output = _output(console)
     assert "ocean" in output
     assert "Restart the session" in output
@@ -1189,6 +1192,7 @@ def test_config_ui_rejects_invalid_values(session):
     dispatch("/config ui keybindings nano", session, console)
     dispatch("/config ui notify loud", session, console)
     dispatch("/config ui notify-after soon", session, console)
+    dispatch("/config ui spinner sometimes", session, console)
 
     assert config.get_ui() == ui.UI_DEFAULTS
 

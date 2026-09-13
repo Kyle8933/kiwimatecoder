@@ -14,7 +14,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from kiwimatecoder import __version__, i18n
+from kiwimatecoder import __version__, i18n, ui
 from kiwimatecoder.ai import stream_response
 from kiwimatecoder.catalog import probe, summarize_ids
 from kiwimatecoder.config import (
@@ -178,7 +178,8 @@ def _print_ui(current: dict[str, Any]) -> None:
         f"Locale: [cyan]{current['locale']}[/cyan]\n"
         f"Keybindings: [cyan]{current['keybindings']}[/cyan]\n"
         f"Notify: [cyan]{current['notify']}[/cyan] "
-        f"(after [cyan]{current['notify_after_seconds']}s[/cyan])"
+        f"(after [cyan]{current['notify_after_seconds']}s[/cyan])\n"
+        f"Spinner: [cyan]{current['spinner']}[/cyan]"
     )
 
 
@@ -2158,6 +2159,22 @@ def ui_notify_after(
     )
 
 
+@ui_app.command("spinner")
+def ui_spinner(
+    value: Annotated[str, typer.Argument(help="auto, on, or off")],
+) -> None:
+    """Control animated status spinners: auto, on, or off."""
+    try:
+        current = set_ui(spinner=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Spinner set to "
+        f"[cyan]{current['spinner']}[/cyan].[/green]"
+    )
+
+
 # --- canonical `config profile ...` -----------------------------------------
 
 profile_app = typer.Typer(help="Save, apply, or remove named configuration profiles.")
@@ -2341,7 +2358,8 @@ def config_show() -> None:
         + f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan], "
         + f"locale [cyan]{ui_config['locale']}[/cyan], "
         + f"keys [cyan]{ui_config['keybindings']}[/cyan], "
-        + f"notify [cyan]{ui_config['notify']}[/cyan]"
+        + f"notify [cyan]{ui_config['notify']}[/cyan], "
+        + f"spinner [cyan]{ui_config['spinner']}[/cyan]"
     )
     network_config = get_network(cfg)
     console.print(
@@ -2856,8 +2874,22 @@ def main(
             help="Suppress tool/progress lines on stderr in headless text mode.",
         ),
     ] = False,
+    plain: Annotated[
+        bool,
+        typer.Option(
+            "--plain",
+            help=(
+                "Plain output for this run: ASCII glyphs, no color, compact "
+                "tool log, and no spinner (not persisted)."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Launch the interactive session when run with no subcommand."""
+    # Process-wide plain mode (not persisted) applies before anything renders.
+    ui.apply_plain_mode(plain)
+    global console
+    console = ui.make_console()
     # Locale applies to every run path, including management subcommands.
     i18n.apply_config_locale()
 

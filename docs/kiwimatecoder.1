@@ -53,6 +53,9 @@ Workspace root for this run (default: current directory).
 \fB\-\-quiet\fP, \fB\-q\fP
 Suppress tool/progress lines on stderr in headless text mode.
 .TP
+\fB\-\-plain\fP
+Plain output for this run: ASCII glyphs, no color, compact tool log, and no spinner (not persisted).
+.TP
 \fB\-\-install\-completion\fP
 Install completion for the current shell.
 .TP
@@ -1616,6 +1619,18 @@ kiwimatecoder config ui notify-after [OPTIONS] SECONDS
 .fi
 .TP
 \fBSECONDS\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig ui spinner\fP
+Control animated status spinners: auto,...
+.PP
+.nf
+kiwimatecoder config ui spinner [OPTIONS] VALUE
+.fi
+.TP
+\fBVALUE\fP
 Positional argument.
 .TP
 \fB\-\-help\fP

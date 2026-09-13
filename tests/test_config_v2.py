@@ -439,6 +439,7 @@ def test_validate_flags_bad_ui_values():
         "keybindings": "nano",
         "notify": "loud",
         "notify_after_seconds": -3,
+        "spinner": "sometimes",
     }
 
     issues = config.validate_config(cfg)
@@ -453,6 +454,7 @@ def test_validate_flags_bad_ui_values():
         "ui.keybindings",
         "ui.notify",
         "ui.notify_after_seconds",
+        "ui.spinner",
     } <= error_keys
 
 

@@ -2960,6 +2960,7 @@ def get_ui(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         KEYBINDINGS,
         NOTIFY_MODES,
         OUTPUT_MODES,
+        SPINNER_MODES,
         THEMES,
         UI_DEFAULTS,
     )
@@ -2996,6 +2997,9 @@ def get_ui(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         0,
         86_400,
     )
+    spinner = str(stored.get("spinner") or "").strip().lower()
+    if spinner in SPINNER_MODES:
+        effective["spinner"] = spinner
     return effective
 
 
@@ -3008,6 +3012,7 @@ def set_ui(
     keybindings: str | None = None,
     notify: str | None = None,
     notify_after_seconds: int | str | None = None,
+    spinner: str | None = None,
 ) -> dict[str, Any]:
     """Update UI preferences and persist them; omitted values are unchanged."""
     from kiwimatecoder.i18n import LOCALES, normalize_locale
@@ -3016,6 +3021,7 @@ def set_ui(
         KEYBINDINGS,
         NOTIFY_MODES,
         OUTPUT_MODES,
+        SPINNER_MODES,
         THEMES,
     )
 
@@ -3075,6 +3081,13 @@ def set_ui(
         if seconds < 0:
             raise ValueError("UI notify_after_seconds must be zero or more seconds.")
         current["notify_after_seconds"] = seconds
+    if spinner is not None:
+        cleaned_spinner = str(spinner).strip().lower()
+        if cleaned_spinner not in SPINNER_MODES:
+            raise ValueError(
+                f"Unknown spinner mode '{spinner}'. Choose: {', '.join(SPINNER_MODES)}."
+            )
+        current["spinner"] = cleaned_spinner
     cfg["ui"] = current
     save_config(cfg)
     return current
@@ -3975,6 +3988,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             KEYBINDINGS,
             NOTIFY_MODES,
             OUTPUT_MODES,
+            SPINNER_MODES,
             THEMES,
         )
 
@@ -4015,6 +4029,9 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                     "ui.notify_after_seconds",
                     "Must be zero or more seconds.",
                 )
+        spinner = ui.get("spinner")
+        if spinner is not None and str(spinner).strip().lower() not in SPINNER_MODES:
+            add("error", "ui.spinner", f"Unknown spinner mode '{spinner}'.")
 
     web = cfg.get("web")
     if web is not None:

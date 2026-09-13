@@ -1315,6 +1315,7 @@ kiwimatecoder config ui color never        # auto | always | never
 kiwimatecoder config ui theme ocean        # default | ocean | magenta | mono
 kiwimatecoder config ui output compact     # normal | compact | verbose
 kiwimatecoder config ui ascii on           # on | off
+kiwimatecoder config ui spinner off        # auto | on | off
 ```
 
 The same settings are available in-session with `/config ui ...`. Values live
@@ -1330,7 +1331,8 @@ under the `ui` key in `~/.kiwimatecoder/config.json`:
     "locale": "en",
     "keybindings": "emacs",
     "notify": "off",
-    "notify_after_seconds": 20
+    "notify_after_seconds": 20,
+    "spinner": "auto"
   }
 }
 ```
@@ -1350,6 +1352,19 @@ ASCII mode replaces the check, cross, blocked, folder, and bullet glyphs with
 plain text (`[ok]`, `[fail]`, `[blocked]`, no folder prefix, `-`) and the CLI
 confirmations follow suit. Color, theme, ASCII, and output-mode changes apply
 to the next session.
+
+Animated status spinners can be disabled for screen readers, tmux capture, or
+quiet terminals with `config ui spinner off` (or `/config ui spinner off`).
+For a fully plain single run, the global `--plain` flag forces ASCII glyphs, no
+color, compact tool output, and no spinner without persisting anything:
+
+```bash
+kiwimatecoder --plain
+kiwimatecoder --plain -p "Summarize this repository"
+```
+
+The full audit — what works today, what does not, and the concrete follow-ups
+— is in [docs/accessibility.md](docs/accessibility.md).
 
 ### Language and locale
 

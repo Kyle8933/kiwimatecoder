@@ -1031,7 +1031,7 @@ async def _run_interactive(
     _run_lifecycle_hooks(bus, events.SESSION_START, session)
     confirm = _make_confirm(session)
     session.ask_user = _make_ask_user(console)
-    ui_config = get_ui()
+    ui_config = ui.ui_config()
     agent = Agent(
         session,
         console,
@@ -1039,6 +1039,7 @@ async def _run_interactive(
         bus=bus,
         ascii_mode=ui_config["ascii"],
         output_mode=ui_config["output_mode"],
+        spinner=ui_config["spinner"],
     )
 
     kb = KeyBindings()

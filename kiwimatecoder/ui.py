@@ -24,6 +24,7 @@ UI_DEFAULTS: dict[str, Any] = {
     "keybindings": "emacs",
     "notify": "off",
     "notify_after_seconds": 20,
+    "spinner": "auto",
 }
 
 COLOR_MODES = ("auto", "always", "never")
@@ -31,6 +32,35 @@ OUTPUT_MODES = ("normal", "compact", "verbose")
 THEMES = ("default", "ocean", "magenta", "mono")
 KEYBINDINGS = ("emacs", "vim")
 NOTIFY_MODES = ("off", "bell", "desktop")
+SPINNER_MODES = ("auto", "on", "off")
+
+# Process-wide overrides used by the global ``--plain`` flag. They are applied
+# by the UI readers below but never written back to the config file.
+_RUNTIME_OVERRIDES: dict[str, Any] = {}
+
+
+def apply_plain_mode(enabled: bool) -> None:
+    """Force (or clear) plain output for this process; nothing is persisted.
+
+    Plain mode is ASCII glyphs, no color, compact tool output, and no animated
+    spinner. It is applied on top of whatever ``ui`` config resolves to.
+    """
+    global _RUNTIME_OVERRIDES
+    _RUNTIME_OVERRIDES = (
+        {
+            "ascii": True,
+            "color": "never",
+            "output_mode": "compact",
+            "spinner": "off",
+        }
+        if enabled
+        else {}
+    )
+
+
+def runtime_overrides() -> dict[str, Any]:
+    """Return a copy of the active process-wide UI overrides."""
+    return dict(_RUNTIME_OVERRIDES)
 
 UNICODE_GLYPHS: dict[str, str] = {
     "check": "✓",
@@ -57,12 +87,24 @@ _THEME_ACCENTS: dict[str, str] = {
 
 
 def _ui_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
-    """Normalize ``cfg`` (a config dict or nothing) into a UI settings dict."""
+    """Normalize ``cfg`` (a config dict or nothing) into a UI settings dict.
+
+    Process-wide ``--plain`` overrides are merged on top so every reader in
+    this module sees the effective settings.
+    """
     from kiwimatecoder.config import get_ui
 
     if not isinstance(cfg, dict):
         cfg = None
-    return get_ui(cfg)
+    effective = get_ui(cfg)
+    if _RUNTIME_OVERRIDES:
+        effective = {**effective, **_RUNTIME_OVERRIDES}
+    return effective
+
+
+def ui_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return the effective UI settings (config plus process overrides)."""
+    return _ui_config(cfg)
 
 
 def resolve_color(cfg: dict[str, Any] | None = None) -> bool:
@@ -124,3 +166,8 @@ def theme_accent(cfg: dict[str, Any] | None = None) -> str:
 def vi_mode_enabled(cfg: dict[str, Any] | None = None) -> bool:
     """Whether the prompt should start in Vim mode (``ui.keybindings``)."""
     return _ui_config(cfg)["keybindings"] == "vim"
+
+
+def spinner_enabled(cfg: dict[str, Any] | None = None) -> bool:
+    """Whether animated status spinners may run (``ui.spinner`` != ``off``)."""
+    return _ui_config(cfg)["spinner"] != "off"
