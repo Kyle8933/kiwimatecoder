@@ -78,4 +78,8 @@ Run every hook manually with `pre-commit run --all-files` (add
 ## Repository CI
 
 `.github/workflows/ci.yml` runs the full suite on Ubuntu and macOS across Python
-3.10–3.12, plus `ruff check kiwimatecoder tests` and `mypy kiwimatecoder`.
+3.10–3.12, plus `ruff check kiwimatecoder tests` and `mypy kiwimatecoder`. An
+`sbom` job generates a CycloneDX SBOM (`scripts/generate_sbom.py`) and uploads
+it as an artifact, and a `windows-latest` job runs the tests non-blocking
+(`continue-on-error: true`) while POSIX-only features are still unsupported on
+Windows.

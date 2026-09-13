@@ -15,6 +15,35 @@ For a regular (non-editable) install:
 ```bash
 pip install .
 ```
+
+### Installation options
+
+**Install script** (no clone needed; installs from GitHub):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kyle8933/kiwimatecoder/main/scripts/install.sh | sh
+```
+
+The script checks for Python >= 3.10, prefers `pipx` when available (falling
+back to `pip install --user`), verifies `kiwimatecoder --version`, and prints
+PATH guidance when the console script is not yet visible. Append `-s <ref>` to
+install a tag, branch, or commit, or set `KIWIMATECODER_REF`.
+
+**Docker:**
+
+```bash
+docker build -t kiwimatecoder .
+docker run --rm -it -v "$PWD:/workspace" -e OPENROUTER_API_KEY kiwimatecoder
+```
+
+The image is `python:3.12-slim`, installs the package, and runs as the
+non-root `kiwimate` user with `/workspace` as the working directory.
+
+**Homebrew:** `packaging/homebrew/kiwimatecoder.rb` is a virtualenv formula
+template pinned to a git tag. It is not published to a tap yet; fill in the
+tag revision and generate the `resource` blocks as described in the file, then
+install with `brew install --build-from-source ./packaging/homebrew/kiwimatecoder.rb`.
+
 ## Quick start
 
 Add an API key for at least one provider, then launch the interactive session:
@@ -932,6 +961,34 @@ When KiwiMateCoder is running from a Git checkout, the updater first fetches
 KiwiMateCoder is not published to PyPI, so for packaged (non-Git) installs the
 fallback runs
 `pip install --upgrade --force-reinstall git+https://github.com/Kyle8933/kiwimatecoder.git`.
+
+### Updating and pinning versions
+
+Pin a branch, tag, or commit with `--ref`:
+
+```bash
+kiwimatecoder update --ref v0.1.0    # tag
+kiwimatecoder update --ref main      # branch
+kiwimatecoder update --ref 1a2b3c4   # commit
+```
+
+In a Git checkout the updater fetches `origin` and then puts the checkout on
+the ref: the current branch is fast-forwarded with `git pull --ff-only` (local
+commits are never merged unexpectedly), while every other ref is a plain
+`git checkout` followed by `pip install --upgrade -e <path>`. The command
+prints the old and new commit SHAs. For packaged installs it reinstalls
+`git+https://github.com/Kyle8933/kiwimatecoder.git@<ref>`.
+
+To roll back, pin an older tag or commit the same way; `kiwimatecoder --version`
+shows the installed version. Generate a software bill of materials for the
+installed environment with:
+
+```bash
+python scripts/generate_sbom.py --output sbom.json
+```
+
+It is stdlib-only, emits CycloneDX-shaped JSON with the package and direct
+dependency versions, and is uploaded as a CI artifact by the `sbom` job.
 
 
 ## Project instructions

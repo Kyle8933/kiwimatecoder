@@ -18,7 +18,7 @@ def isolate_config(tmp_path, monkeypatch):
 def test_update_flag_invokes_updater(monkeypatch):
     calls = []
 
-    def fake_update(console):
+    def fake_update(console, ref=None):
         calls.append(console)
         return 0
 
@@ -33,7 +33,7 @@ def test_update_flag_invokes_updater(monkeypatch):
 def test_update_long_flag_invokes_updater(monkeypatch):
     calls = []
 
-    def fake_update(console):
+    def fake_update(console, ref=None):
         calls.append(console)
         return 0
 
@@ -48,7 +48,7 @@ def test_update_long_flag_invokes_updater(monkeypatch):
 def test_update_command_invokes_updater(monkeypatch):
     calls = []
 
-    def fake_update(console):
+    def fake_update(console, ref=None):
         calls.append(console)
         return 0
 
@@ -58,6 +58,21 @@ def test_update_command_invokes_updater(monkeypatch):
 
     assert result.exit_code == 0
     assert len(calls) == 1
+
+
+def test_update_command_passes_ref(monkeypatch):
+    refs = []
+
+    def fake_update(console, ref=None):
+        refs.append(ref)
+        return 0
+
+    monkeypatch.setattr(main, "run_update", fake_update)
+
+    result = CliRunner().invoke(main.app, ["update", "--ref", "v0.2.0"])
+
+    assert result.exit_code == 0
+    assert refs == ["v0.2.0"]
 
 
 def test_version_flag_prints_version():

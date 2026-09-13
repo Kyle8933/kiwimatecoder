@@ -13,15 +13,18 @@ PACKAGE_NAME = "kiwimatecoder"
 GITHUB_REPO_URL = "https://github.com/Kyle8933/kiwimatecoder.git"
 
 
-def build_update_command() -> list[str]:
+def build_update_command(ref: str | None = None) -> list[str]:
     """Return the fallback update command for packaged (non-Git) installs.
 
     KiwiMateCoder is not published to PyPI, so the fallback installs from the
     GitHub repository instead of a PyPI package name. ``--force-reinstall`` is
     required because the package version string is often unchanged between
     commits, so ``--upgrade`` alone can be a no-op ("Requirement already
-    satisfied").
+    satisfied"). ``ref`` pins a branch, tag, or commit SHA.
     """
+    target = f"git+{GITHUB_REPO_URL}"
+    if ref:
+        target = f"{target}@{ref}"
     return [
         sys.executable,
         "-m",
@@ -29,13 +32,27 @@ def build_update_command() -> list[str]:
         "install",
         "--upgrade",
         "--force-reinstall",
-        f"git+{GITHUB_REPO_URL}",
+        target,
     ]
 
 
 def build_git_pull_command(source_root: Path) -> list[str]:
     """Return the command used to fetch source updates for a Git checkout."""
     return ["git", "-C", str(source_root), "pull", "--ff-only"]
+
+
+def build_git_checkout_command(
+    source_root: Path, ref: str, *, current_branch: str | None = None
+) -> list[str]:
+    """Return the command that puts a Git checkout on ``ref``.
+
+    When ``ref`` is the branch already checked out, a fast-forward pull is
+    used so local commits are never merged unexpectedly; every other ref
+    (tag, SHA, or other branch) is a plain ``git checkout``.
+    """
+    if current_branch is not None and ref == current_branch:
+        return build_git_pull_command(source_root)
+    return ["git", "-C", str(source_root), "checkout", ref]
 
 
 def build_source_install_command(source_root: Path) -> list[str]:
@@ -137,10 +154,18 @@ def _run(command: list[str], console: Console) -> int:
     return completed.returncode
 
 
-def run_update(console: Console | None = None) -> int:
-    """Update KiwiMateCoder in the current Python environment."""
+def run_update(console: Console | None = None, ref: str | None = None) -> int:
+    """Update KiwiMateCoder in the current Python environment.
+
+    ``ref`` pins a branch, tag, or commit SHA for the update. In a Git
+    checkout the current branch is fast-forwarded when it matches, and any
+    other ref is a plain ``git checkout`` followed by a reinstall; packaged
+    installs target ``git+<repo>@<ref>``.
+    """
     console = console or Console()
     console.print("[cyan]Updating KiwiMateCoder...[/cyan]")
+    if ref:
+        console.print(f"[dim]Target ref: {ref}[/dim]")
 
     source_root = find_source_root()
     if source_root is not None and _has_git_remote(source_root):
@@ -149,54 +174,94 @@ def run_update(console: Console | None = None) -> int:
         old_sha = _get_short_sha(source_root)
         _fetch(source_root, console)
         branch = _get_branch(source_root)
-        behind = _commits_behind(source_root, branch)
 
-        if behind == 0:
-            console.print(
-                "[green]Already on the latest version "
-                + f"(commit {old_sha or 'unknown'}).[/green]"
+        if ref is not None:
+            if branch is not None and ref == branch and _commits_behind(source_root, branch) == 0:
+                console.print(
+                    "[green]Already on "
+                    + f"{ref} (commit {old_sha or 'unknown'}).[/green]"
+                )
+                return 0
+            checkout = build_git_checkout_command(
+                source_root, ref, current_branch=branch
             )
-            return 0
+            console.print(
+                f"[cyan]Checking out {ref} from {old_sha or 'unknown'}…[/cyan]"
+            )
+            checkout_code = _run(checkout, console)
+            if checkout_code != 0:
+                console.print(
+                    f"[red]Update failed while checking out {ref}.[/red] "
+                    + "[yellow]Commit/stash local changes or verify the ref "
+                    + "exists (try `git fetch --tags origin`), then try "
+                    + "again.[/yellow]"
+                )
+                return checkout_code
 
-        if old_sha and behind and branch:
+            new_sha = _get_short_sha(source_root)
+            if new_sha == old_sha:
+                console.print(
+                    "[green]Already on "
+                    + f"{ref} (commit {old_sha or 'unknown'}).[/green]"
+                )
+                return 0
             console.print(
-                f"[cyan]Updating from {old_sha} "
-                + f"({behind} commit(s) behind origin/{branch})…[/cyan]"
+                f"[dim]Updated {old_sha or 'unknown'} → "
+                + f"{new_sha or ref} (ref {ref}).[/dim]"
             )
+            code = _run(build_source_install_command(source_root), console)
         else:
-            console.print(
-                f"[cyan]Updating KiwiMateCoder from {old_sha or 'unknown'}…[/cyan]"
-            )
+            behind = _commits_behind(source_root, branch)
 
-        pull_code = _run(build_git_pull_command(source_root), console)
-        if pull_code != 0:
-            console.print(
-                "[red]Update failed while pulling from Git.[/red] "
-                + "[yellow]Commit/stash local changes or resolve Git errors, "
-                + "then try again.[/yellow]"
-            )
-            return pull_code
+            if behind == 0:
+                console.print(
+                    "[green]Already on the latest version "
+                    + f"(commit {old_sha or 'unknown'}).[/green]"
+                )
+                return 0
 
-        new_sha = _get_short_sha(source_root)
-        if new_sha == old_sha:
-            console.print(
-                "[green]Already on the latest version "
-                + f"(commit {old_sha or 'unknown'}).[/green]"
-            )
-            return 0
+            if old_sha and behind and branch:
+                console.print(
+                    f"[cyan]Updating from {old_sha} "
+                    + f"({behind} commit(s) behind origin/{branch})…[/cyan]"
+                )
+            else:
+                console.print(
+                    f"[cyan]Updating KiwiMateCoder from {old_sha or 'unknown'}…[/cyan]"
+                )
 
-        if old_sha and new_sha:
-            console.print(f"[dim]Updated {old_sha} → {new_sha}.[/dim]")
+            pull_code = _run(build_git_pull_command(source_root), console)
+            if pull_code != 0:
+                console.print(
+                    "[red]Update failed while pulling from Git.[/red] "
+                    + "[yellow]Commit/stash local changes or resolve Git errors, "
+                    + "then try again.[/yellow]"
+                )
+                return pull_code
 
-        code = _run(build_source_install_command(source_root), console)
+            new_sha = _get_short_sha(source_root)
+            if new_sha == old_sha:
+                console.print(
+                    "[green]Already on the latest version "
+                    + f"(commit {old_sha or 'unknown'}).[/green]"
+                )
+                return 0
+
+            if old_sha and new_sha:
+                console.print(f"[dim]Updated {old_sha} → {new_sha}.[/dim]")
+
+            code = _run(build_source_install_command(source_root), console)
     else:
-        code = _run(build_update_command(), console)
+        code = _run(build_update_command(ref), console)
         if code != 0:
+            target = f"git+{GITHUB_REPO_URL}"
+            if ref:
+                target = f"{target}@{ref}"
             console.print(
                 f"[red]Update failed with exit code {code}.[/red] "
                 + "[yellow]KiwiMateCoder is not on PyPI; install from a source "
                 + "checkout or run: pip install --upgrade --force-reinstall "
-                + f"git+{GITHUB_REPO_URL}[/yellow]"
+                + f"{target}[/yellow]"
             )
             return code
 

@@ -3587,9 +3587,17 @@ def eval_run_cmd(
 
 
 @app.command("update")
-def update_cmd() -> None:
+def update_cmd(
+    ref: Annotated[
+        str | None,
+        typer.Option(
+            "--ref",
+            help="Git ref to install: branch, tag, or commit SHA (default: current branch).",
+        ),
+    ] = None,
+) -> None:
     """Update KiwiMateCoder in the current Python environment."""
-    raise typer.Exit(run_update(console))
+    raise typer.Exit(run_update(console, ref=ref))
 
 
 @app.command("version")

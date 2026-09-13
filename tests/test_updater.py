@@ -39,6 +39,39 @@ def test_build_update_command_uses_github_repo_url():
     assert upgrade_idx < force_idx < len(command) - 1
 
 
+def test_build_update_command_pins_ref():
+    command = updater.build_update_command("v0.2.0")
+
+    assert command[-1] == f"git+{updater.GITHUB_REPO_URL}@v0.2.0"
+
+
+def test_build_git_checkout_command_uses_plain_checkout_for_other_refs():
+    root = Path("/tmp/kiwimatecoder")
+
+    assert updater.build_git_checkout_command(root, "v0.2.0") == [
+        "git",
+        "-C",
+        str(root),
+        "checkout",
+        "v0.2.0",
+    ]
+
+
+def test_build_git_checkout_command_fast_forwards_current_branch():
+    root = Path("/tmp/kiwimatecoder")
+
+    assert updater.build_git_checkout_command(
+        root, "main", current_branch="main"
+    ) == updater.build_git_pull_command(root)
+    assert updater.build_git_checkout_command(root, "main") == [
+        "git",
+        "-C",
+        str(root),
+        "checkout",
+        "main",
+    ]
+
+
 def _patch_git_helpers(monkeypatch, *, root, behind, shas, branch="main"):
     """Patch the Git helper functions used by run_update's Git branch."""
     monkeypatch.setattr(updater, "find_source_root", lambda: root)
@@ -173,3 +206,101 @@ def test_run_update_git_fallback_failure_prints_guidance(monkeypatch):
     assert "not on PyPI" in output
     assert updater.GITHUB_REPO_URL in output
     assert "--force-reinstall" in output
+
+
+def test_run_update_with_ref_checks_out_tag(monkeypatch):
+    calls: list[list[str]] = []
+    root = Path("/tmp/kiwimatecoder")
+
+    _patch_git_helpers(monkeypatch, root=root, behind=None, shas=["abc1234", "def5678"])
+    monkeypatch.setattr(updater, "_run", _record_run(calls))
+
+    console = Console(record=True)
+    code = updater.run_update(console, ref="v0.2.0")
+
+    assert code == 0
+    assert calls == [
+        updater.build_git_checkout_command(root, "v0.2.0", current_branch="main"),
+        updater.build_source_install_command(root),
+    ]
+    output = console.export_text()
+    assert "v0.2.0" in output
+    assert "abc1234" in output
+    assert "def5678" in output
+
+
+def test_run_update_with_ref_matching_branch_fast_forwards(monkeypatch):
+    calls: list[list[str]] = []
+    root = Path("/tmp/kiwimatecoder")
+
+    _patch_git_helpers(monkeypatch, root=root, behind=2, shas=["abc1234", "def5678"])
+    monkeypatch.setattr(updater, "_run", _record_run(calls))
+
+    code = updater.run_update(Console(record=True), ref="main")
+
+    assert code == 0
+    assert calls == [
+        updater.build_git_pull_command(root),
+        updater.build_source_install_command(root),
+    ]
+
+
+def test_run_update_with_ref_on_current_branch_is_noop(monkeypatch):
+    calls: list[list[str]] = []
+    root = Path("/tmp/kiwimatecoder")
+
+    _patch_git_helpers(monkeypatch, root=root, behind=0, shas=["abc1234"])
+    monkeypatch.setattr(updater, "_run", _record_run(calls))
+
+    console = Console(record=True)
+    code = updater.run_update(console, ref="main")
+
+    assert code == 0
+    assert calls == []
+    output = console.export_text()
+    assert "Already on main" in output
+    assert "abc1234" in output
+
+
+def test_run_update_ref_checkout_failure_stops(monkeypatch):
+    calls: list[list[str]] = []
+    root = Path("/tmp/kiwimatecoder")
+
+    _patch_git_helpers(monkeypatch, root=root, behind=None, shas=["abc1234"])
+
+    def fake_run(command: list[str], console: object) -> int:
+        calls.append(command)
+        return 7
+
+    monkeypatch.setattr(updater, "_run", fake_run)
+
+    console = Console(record=True)
+    code = updater.run_update(console, ref="v0.2.0")
+
+    assert code == 7
+    assert calls == [updater.build_git_checkout_command(root, "v0.2.0", current_branch="main")]
+    assert "checking out v0.2.0" in console.export_text()
+
+
+def test_run_update_packaged_install_pins_ref(monkeypatch):
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(updater, "find_source_root", lambda: None)
+    monkeypatch.setattr(updater, "_run", _record_run(calls))
+
+    code = updater.run_update(Console(record=True), ref="v0.2.0")
+
+    assert code == 0
+    assert calls == [updater.build_update_command("v0.2.0")]
+    assert calls[0][-1] == f"git+{updater.GITHUB_REPO_URL}@v0.2.0"
+
+
+def test_run_update_packaged_ref_failure_prints_pinned_guidance(monkeypatch):
+    monkeypatch.setattr(updater, "find_source_root", lambda: None)
+    monkeypatch.setattr(updater, "_run", lambda command, console: 1)
+
+    console = Console(record=True)
+    code = updater.run_update(console, ref="v0.2.0")
+
+    assert code == 1
+    assert f"git+{updater.GITHUB_REPO_URL}@v0.2.0" in console.export_text()

@@ -150,7 +150,7 @@ Goal: breadth of integrations and long-tail quality.
 - [ ] 5.4 Team sharing: shared policies, session links, SSO (XL; depends 4.9)
 - [ ] 5.5 i18n of CLI strings (L; depends 2.8)
 - [ ] 5.6 Vim/Emacs keybindings, notifications, image paste, @-mentions (M; depends 2.8)
-- [ ] 5.7 Packaging: Homebrew/curl/Docker, version pin/rollback, SBOM, Windows CI (M–L)
+- [x] 5.7 Packaging: Homebrew/curl/Docker, version pin/rollback, SBOM, Windows CI (M–L)
 - [ ] 5.8 Full accessibility audit (M; depends 2.8)
 
 **5.1 follow-up:** image generation ships through OpenAI-compatible
@@ -170,6 +170,15 @@ substrings, tool names, resulting files, and the run's success flag (add via
 scoring, cost/latency thresholds, and automatic runs against a live provider
 in CI are deliberately deferred; tests use a mocked SDK and never touch the
 network.
+
+**5.7 follow-up:** `kiwimatecoder update --ref <branch|tag|sha>` pins or rolls
+back packaged and source installs; `scripts/install.sh` covers curl installs
+(pipx or `pip --user`), `Dockerfile` builds a non-root image,
+`packaging/homebrew/kiwimatecoder.rb` is a virtualenv formula template (not a
+published tap yet), and `scripts/generate_sbom.py` writes a stdlib-only
+CycloneDX-style SBOM that CI uploads. The `windows-latest` CI job is
+`continue-on-error: true` because POSIX-only features (seatbelt/bwrap sandbox,
+some shell paths) are still unsupported there.
 
 ## Critical paths
 
