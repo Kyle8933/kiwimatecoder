@@ -148,7 +148,7 @@ Goal: breadth of integrations and long-tail quality.
 - [x] 5.2 Telemetry/OTel + debug logging + opt-in crash reports (M; depends 2.1)
 - [x] 5.3 Evals/benchmark harness for prompt/tool regressions (L; depends 4.1)
 - [ ] 5.4 Team sharing: shared policies, session links, SSO (XL; depends 4.9)
-- [ ] 5.5 i18n of CLI strings (L; depends 2.8)
+- [x] 5.5 i18n of CLI strings (L; depends 2.8)
 - [ ] 5.6 Vim/Emacs keybindings, notifications, image paste, @-mentions (M; depends 2.8)
 - [x] 5.7 Packaging: Homebrew/curl/Docker, version pin/rollback, SBOM, Windows CI (M–L)
 - [ ] 5.8 Full accessibility audit (M; depends 2.8)
@@ -170,6 +170,13 @@ substrings, tool names, resulting files, and the run's success flag (add via
 scoring, cost/latency thresholds, and automatic runs against a live provider
 in CI are deliberately deferred; tests use a mocked SDK and never touch the
 network.
+
+**5.5 follow-up:** `kiwimatecoder/i18n.py` ships English/German/Spanish
+catalogs covering the banner hint, prompt and approval labels, common errors,
+`/help` group titles, and key CLI messages. `ui.locale` (then
+`KIWIMATECODER_LANG`, then English) selects the language. Migration is
+incremental: strings are wired through `t()` as they are touched, and missing
+keys fall back to English and then the key itself.
 
 **5.7 follow-up:** `kiwimatecoder update --ref <branch|tag|sha>` pins or rolls
 back packaged and source installs; `scripts/install.sh` covers curl installs

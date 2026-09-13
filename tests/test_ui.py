@@ -144,7 +144,7 @@ def test_get_ui_defaults_when_unset():
 
 def test_set_ui_roundtrip():
     updated = config.set_ui(
-        color="never", output_mode="compact", ascii=True, theme="ocean"
+        color="never", output_mode="compact", ascii=True, theme="ocean", locale="de"
     )
 
     assert updated == {
@@ -152,6 +152,7 @@ def test_set_ui_roundtrip():
         "output_mode": "compact",
         "ascii": True,
         "theme": "ocean",
+        "locale": "de",
     }
     assert config.get_ui() == updated
     assert config.load_config()["ui"] == updated

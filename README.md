@@ -1326,7 +1326,8 @@ under the `ui` key in `~/.kiwimatecoder/config.json`:
     "theme": "ocean",
     "color": "auto",
     "output_mode": "normal",
-    "ascii": false
+    "ascii": false,
+    "locale": "en"
   }
 }
 ```
@@ -1346,6 +1347,23 @@ ASCII mode replaces the check, cross, blocked, folder, and bullet glyphs with
 plain text (`[ok]`, `[fail]`, `[blocked]`, no folder prefix, `-`) and the CLI
 confirmations follow suit. Color, theme, ASCII, and output-mode changes apply
 to the next session.
+
+### Language and locale
+
+A representative subset of user-facing strings is translated: the banner hint,
+prompt and approval labels, common errors, `/help` group titles, and key CLI
+messages. Pick the language from `ui.locale`, the `KIWIMATECODER_LANG`
+environment variable, or English (in that precedence order):
+
+```bash
+kiwimatecoder config ui locale de          # en | de | es
+KIWIMATECODER_LANG=es kiwimatecoder        # per-run override
+```
+
+The migration is incremental: untranslated strings stay in English, and a
+locale that is missing a key falls back to English and then to the key itself.
+`/config ui locale <en|de|es>` switches the language for the current session
+immediately.
 
 ## Model routing
 

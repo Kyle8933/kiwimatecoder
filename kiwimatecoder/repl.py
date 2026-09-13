@@ -67,6 +67,7 @@ from kiwimatecoder.commands import (
 )
 from kiwimatecoder.config import get_ui, get_vision
 from kiwimatecoder.hunks import Hunk, parse_hunk_selection, split_hunks
+from kiwimatecoder.i18n import apply_config_locale, t
 from kiwimatecoder.permissions import ApprovalResult, ConfirmFn
 from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
@@ -138,11 +139,11 @@ def _banner(session: Session) -> Panel:
     git_branch = _git_info(session.workspace_root)
     git_badge = f" · [magenta]git:{git_branch}[/magenta]" if git_branch else ""
     ctx_badge = (
-        f" · [cyan]{len(session.context_files)} pinned[/cyan]"
+        f" · [cyan]{t('banner.pinned', count=len(session.context_files))}[/cyan]"
         if session.context_files
         else ""
     )
-    dry_badge = " · [yellow]dry-run[/yellow]" if session.dry_run else ""
+    dry_badge = f" · [yellow]{t('banner.dry_run')}[/yellow]" if session.dry_run else ""
 
     active = session.active_providers
     provider_summary = (
@@ -156,7 +157,7 @@ def _banner(session: Session) -> Panel:
         f"[bold {accent}]KiwiMateCoder[/bold {accent}] [dim]v{__version__}[/dim] — "
         f"{provider_summary}\n"
         f"[dim]{folder_prefix}{session.workspace_root.name}{git_badge} · mode:[bold]{session.mode.value}[/bold]{ctx_badge}{dry_badge}\n"
-        f"Type /help for commands · Alt+Enter for newline · Ctrl-C cancels · Ctrl-D exits[/dim]"
+        f"{t('banner.help_hint')}[/dim]"
     )
     return Panel(
         content,
@@ -390,7 +391,7 @@ def _hunk_overview(hunk: Hunk, limit: int = 2) -> list[str]:
 
 def _review_hunks(hunk_list: Sequence[Hunk]) -> ApprovalResult:
     """Prompt for a 1-based hunk selection; deny after repeated bad input."""
-    console.print("[bold]Review hunks:[/bold]")
+    console.print(f"[bold]{t('approval.review_hunks')}[/bold]")
     for hunk in hunk_list:
         console.print(f"  [cyan]{hunk.index}[/cyan]. {hunk.header}")
         for line in _hunk_overview(hunk):
@@ -399,17 +400,15 @@ def _review_hunks(hunk_list: Sequence[Hunk]) -> ApprovalResult:
     for _ in range(3):
         try:
             answer = console.input(
-                "[bold]Apply which hunks?[/bold] "
-                "([cyan]1,3[/cyan] / [cyan]1-2[/cyan] / [cyan]all[/cyan] / "
-                "[cyan]none[/cyan]): "
+                f"[bold]{t('approval.apply_hunks')}[/bold] "
             )
         except (EOFError, KeyboardInterrupt):
-            console.print("[yellow]Denied.[/yellow]")
+            console.print(f"[yellow]{t('approval.denied')}[/yellow]")
             return ApprovalResult(allowed=False)
 
         selection = parse_hunk_selection(answer, len(hunk_list))
         if selection is None:
-            console.print("[yellow]Unrecognized selection — try again.[/yellow]")
+            console.print(f"[yellow]{t('approval.retry_selection')}[/yellow]")
             continue
         if selection == "all":
             return ApprovalResult(allowed=True)
@@ -417,7 +416,7 @@ def _review_hunks(hunk_list: Sequence[Hunk]) -> ApprovalResult:
             return ApprovalResult(allowed=False)
         return ApprovalResult(allowed=True, selected_hunks=selection)
 
-    console.print("[yellow]Too many invalid attempts; denied.[/yellow]")
+    console.print(f"[yellow]{t('approval.too_many_attempts')}[/yellow]")
     return ApprovalResult(allowed=False)
 
 
@@ -450,11 +449,17 @@ def _make_confirm(session: Session) -> ConfirmFn:
                     if (added or removed)
                     else ""
                 )
-                title = f"[bold yellow]Approve Change: {summary}[/bold yellow]{stats}"
+                title = (
+                    f"[bold yellow]{t('approval.approve_change', summary=summary)}"
+                    f"[/bold yellow]{stats}"
+                )
                 border = "yellow"
                 hunk_list = split_hunks(preview_text)
             else:
-                title = f"[bold magenta]Approve Shell: {summary}[/bold magenta]"
+                title = (
+                    f"[bold magenta]{t('approval.approve_shell', summary=summary)}"
+                    f"[/bold magenta]"
+                )
                 border = "magenta"
 
             console.print(
@@ -471,7 +476,9 @@ def _make_confirm(session: Session) -> ConfirmFn:
                 )
             )
         else:
-            console.print(f"[yellow]Approve: {summary}[/yellow]")
+            console.print(
+                f"[yellow]{t('approval.approve', summary=summary)}[/yellow]"
+            )
 
         multi_hunk = len(hunk_list) >= 2
         choices = (
@@ -483,9 +490,11 @@ def _make_confirm(session: Session) -> ConfirmFn:
                 "([cyan]a[/cyan])lways / ([magenta]h[/magenta])unks"
             )
         try:
-            answer = console.input(f"[bold]Allow?[/bold] {choices}): ").strip().lower()
+            answer = console.input(
+                f"[bold]{t('approval.allow')}[/bold] {choices}): "
+            ).strip().lower()
         except (EOFError, KeyboardInterrupt):
-            console.print("[yellow]Denied.[/yellow]")
+            console.print(f"[yellow]{t('approval.denied')}[/yellow]")
             return False
 
         if answer in ("a", "always"):
@@ -496,8 +505,9 @@ def _make_confirm(session: Session) -> ConfirmFn:
 
                 persist_always_allowed_tool(tool_name)
                 console.print(
-                    f"[dim]'{tool_name}' will be allowed in future sessions "
-                    f"(remove with /config permissions remove {tool_name}).[/dim]"
+                    "[dim]"
+                    + t("approval.always_saved", tool=tool_name)
+                    + "[/dim]"
                 )
             except OSError:
                 pass
@@ -553,10 +563,15 @@ def _make_ask_user(console: Console):
     return ask
 
 
-_STEERING_PROMPT = HTML(
-    '<style fg="ansibrightblack">(steering — Enter to send, '
-    "Ctrl-C to cancel turn)</style> "
-)
+_STEERING_STYLE = "ansibrightblack"
+
+
+def _steering_prompt() -> HTML:
+    from html import escape as html_escape
+
+    return HTML(
+        f'<style fg="{_STEERING_STYLE}">{html_escape(t("prompt.steering"))}</style> '
+    )
 
 
 def _resolve_slash_line(line: str, session: Session) -> tuple[str, str] | None:
@@ -660,7 +675,7 @@ def _route_steering_line(session: Session, line: str) -> str:
             session.steering.append(resolved[1])
             return "steered"
         session.deferred_commands.append(text)
-        console.print("[dim]Command queued; it will run after this turn.[/dim]")
+        console.print(f"[dim]{t('prompt.command_queued')}[/dim]")
         return "deferred"
     session.steering.append(text)
     return "steered"
@@ -712,7 +727,7 @@ async def _steering_input(pt_session: PromptSession[str]) -> tuple[str, str]:
     task, so it must not cross the task boundary.
     """
     try:
-        return await pt_session.prompt_async(_STEERING_PROMPT), "input"
+        return await pt_session.prompt_async(_steering_prompt()), "input"
     except KeyboardInterrupt:
         return "", "interrupt"
     except EOFError:
@@ -762,7 +777,7 @@ async def _run_turn_with_steering(
                 break
             if outcome == "eof":
                 await _cancel_task(turn_task)
-                console.print("[dim]Goodbye![/dim]")
+                console.print(f"[dim]{t('prompt.goodbye')}[/dim]")
                 exit_requested = True
                 break
 
@@ -779,7 +794,7 @@ async def _run_turn_with_steering(
         raise
 
     if interrupted:
-        console.print("\n[yellow]Interrupted.[/yellow]")
+        console.print(f"\n[yellow]{t('prompt.interrupted')}[/yellow]")
 
     if await _process_deferred_commands(session):
         exit_requested = True
@@ -878,7 +893,7 @@ async def _run_interactive(
                 continue
             except EOFError:
                 # Ctrl-D: exit.
-                console.print("[dim]Goodbye![/dim]")
+                console.print(f"[dim]{t('prompt.goodbye')}[/dim]")
                 break
 
             # Check for triple-quote multiline block mode
@@ -941,6 +956,8 @@ async def _run_interactive(
 def run(session: Session, bus: events.EventBus | None = None) -> None:
     """Run the interactive loop until the user exits."""
     global console
+    # Apply the persisted locale before anything is rendered.
+    apply_config_locale()
     # Rebuild the console for this session so the persisted color setting and
     # NO_COLOR/FORCE_COLOR take effect at launch (Rich auto-detects the TTY).
     console = ui.make_console()

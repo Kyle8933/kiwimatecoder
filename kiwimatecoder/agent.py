@@ -25,6 +25,7 @@ from kiwimatecoder.client import (
     UnifiedClient,
     Usage,
 )
+from kiwimatecoder.i18n import t
 from kiwimatecoder.permissions import ConfirmFn, PermissionMode, gate
 from kiwimatecoder.prompts import build_system_prompt
 from kiwimatecoder.redaction import redact
@@ -149,9 +150,12 @@ class Agent:
         key = get_key(provider.id)
         if not key and provider.needs_key:
             raise ProviderError(
-                f"No API key for {provider.name}. Set one with "
-                + f"`config set-key --provider {provider.id} <KEY>` or the "
-                + f"{provider.key_env} environment variable."
+                t(
+                    "error.no_key",
+                    provider=provider.name,
+                    provider_id=provider.id,
+                    env=provider.key_env,
+                )
             )
         return UnifiedClient(
             provider,

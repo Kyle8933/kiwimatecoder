@@ -14,7 +14,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from kiwimatecoder import __version__
+from kiwimatecoder import __version__, i18n
 from kiwimatecoder.ai import stream_response
 from kiwimatecoder.catalog import probe, summarize_ids
 from kiwimatecoder.config import (
@@ -106,6 +106,7 @@ from kiwimatecoder.config import (
     update_provider,
     validate_config,
 )
+from kiwimatecoder.i18n import t
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import ProviderConfig
 from kiwimatecoder.session import Session, apply_session_profile
@@ -135,7 +136,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config model set <id>[/cyan]       Set the default model")
     console.print("  [cyan]config mode set <ask|auto-accept|plan>[/cyan]  Set default mode")
     console.print("  [cyan]config models show[/cyan]         List the models offered")
-    console.print("  [cyan]config ui show[/cyan]             Theme, color, output, ASCII")
+    console.print("  [cyan]config ui show[/cyan]             Theme, color, output, ASCII, locale")
     console.print("  [cyan]config web show[/cyan]            Web fetch/search limits")
     console.print("  [cyan]config network show[/cyan]        Proxy, CA bundle, offline mode")
     console.print("  [cyan]config index show[/cyan]          Codebase index status")
@@ -171,7 +172,8 @@ def _print_ui(current: dict[str, Any]) -> None:
         f"Theme: [cyan]{current['theme']}[/cyan]\n"
         f"Color: [cyan]{current['color']}[/cyan]\n"
         f"Output mode: [cyan]{current['output_mode']}[/cyan]\n"
-        f"ASCII: [cyan]{'on' if current['ascii'] else 'off'}[/cyan]"
+        f"ASCII: [cyan]{'on' if current['ascii'] else 'off'}[/cyan]\n"
+        f"Locale: [cyan]{current['locale']}[/cyan]"
     )
 
 
@@ -2085,6 +2087,24 @@ def ui_theme(
     )
 
 
+@ui_app.command("locale")
+def ui_locale(
+    value: Annotated[str, typer.Argument(help="en, de, or es")],
+) -> None:
+    """Set the interface language for translated strings."""
+    try:
+        current = set_ui(locale=value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    from kiwimatecoder.i18n import set_locale
+
+    set_locale(current["locale"])
+    console.print(
+        f"[green]{_check()} Locale set to [cyan]{current['locale']}[/cyan].[/green]"
+    )
+
+
 # --- canonical `config profile ...` -----------------------------------------
 
 profile_app = typer.Typer(help="Save, apply, or remove named configuration profiles.")
@@ -2122,7 +2142,7 @@ def profile_show(name: Annotated[str, typer.Argument(help="Profile name")]) -> N
     """Show one profile's settings."""
     profile = get_profile(name)
     if profile is None:
-        console.print(f"[red]Unknown profile '{name}'.[/red]")
+        console.print(f"[red]{t('error.unknown_profile', name=name)}[/red]")
         raise typer.Exit(1)
     console.print(f"[bold]{name}[/bold]")
     console.print_json(data=profile)
@@ -2265,7 +2285,8 @@ def config_show() -> None:
         + f"[cyan]{ui_config['theme']}[/cyan] theme, "
         + f"[cyan]{ui_config['color']}[/cyan] color, "
         + f"[cyan]{ui_config['output_mode']}[/cyan] output, "
-        + f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan]"
+        + f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan], "
+        + f"locale [cyan]{ui_config['locale']}[/cyan]"
     )
     network_config = get_network(cfg)
     console.print(
@@ -2782,6 +2803,9 @@ def main(
     ] = False,
 ) -> None:
     """Launch the interactive session when run with no subcommand."""
+    # Locale applies to every run path, including management subcommands.
+    i18n.apply_config_locale()
+
     if version:
         console.print(f"kiwimatecoder {__version__}")
         raise typer.Exit(0)
@@ -2828,7 +2852,7 @@ def main(
             session = load_session(target, workspace_root=Path.cwd())
             resumed = True
             console.print(
-                f"[bold green]Resumed session '{target}'[/bold green] "
+                f"[bold green]{t('cli.session_resumed', name=target)}[/bold green] "
                 + f"([dim]{len(session.messages)} messages, {session.total_tokens:,} tokens[/dim])"
             )
         except Exception as exc:
@@ -2893,7 +2917,7 @@ def main(
     if profile is not None:
         profile_values = get_profile(profile)
         if profile_values is None:
-            console.print(f"[red]Unknown profile '{profile}'.[/red]")
+            console.print(f"[red]{t('error.unknown_profile', name=profile)}[/red]")
             raise typer.Exit(1)
         if resumed:
             profile_values = {
@@ -2906,10 +2930,7 @@ def main(
     # The REPL needs a real terminal: prompt_toolkit cannot read piped stdin.
     # Point scripts and CI at the headless path instead of crashing or hanging.
     if not _stdin_is_tty():
-        sys.stderr.write(
-            "Interactive session needs a TTY. Use: "
-            'kiwimatecoder -p "..." or echo ... | kiwimatecoder -p -\n'
-        )
+        sys.stderr.write(t("cli.no_tty") + "\n")
         raise typer.Exit(2)
 
     # repl.run loads user (and opted-in project) plugins before the agent is

@@ -95,6 +95,7 @@ from kiwimatecoder.config import (
     set_web,
     update_provider,
 )
+from kiwimatecoder.i18n import t
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY, ProviderConfig
 from kiwimatecoder.session import (
@@ -170,7 +171,7 @@ def dispatch(
 
     handler = _COMMANDS.get(name)
     if handler is None:
-        console.print(f"[yellow]Unknown command '/{name}'. Try /help.[/yellow]")
+        console.print(f"[yellow]{t('error.unknown_command', name=name)}[/yellow]")
         return CommandResult.CONTINUE
 
     if name == "config" and not arg and selector is not None:
@@ -213,7 +214,7 @@ def dispatch(
 
 def _help(arg: str, session: Session, console: Console) -> str:
     for group, entries in _HELP_GROUPS:
-        table = Table(title=group, show_header=True, expand=False)
+        table = Table(title=t(group), show_header=True, expand=False)
         table.add_column("Command", style="cyan", no_wrap=True)
         table.add_column("Description")
         for cmd, desc in entries:
@@ -222,10 +223,7 @@ def _help(arg: str, session: Session, console: Console) -> str:
             table.add_row(escape(cmd), desc)
         console.print(table)
     _print_custom_commands(session, console)
-    console.print(
-        "[dim]Tip: no API key yet? From the shell run "
-        "`kiwimatecoder setup`.[/dim]"
-    )
+    console.print("[dim]" + t("help.tip") + "[/dim]")
     return CommandResult.CONTINUE
 
 
@@ -234,7 +232,7 @@ def _print_custom_commands(session: Session, console: Console) -> None:
     templates = discover_templates(session.workspace_root)
     if not templates:
         return
-    table = Table(title="Custom commands", show_header=True, expand=False)
+    table = Table(title=t("help.group.custom"), show_header=True, expand=False)
     table.add_column("Command", style="cyan", no_wrap=True)
     table.add_column("Description")
     for name, template in templates.items():
@@ -375,7 +373,7 @@ def _print_model_catalog(session: Session, console: Console, catalog: ModelCatal
     console.print(table)
     if not visible:
         console.print(
-            f"[yellow]No models are visible for {session.provider_id}.[/yellow] "
+            f"[yellow]{t('error.no_models', provider=session.provider_id)}[/yellow] "
             "Use /config models clear or /model <name>."
         )
 
@@ -408,8 +406,14 @@ def _model_search(
         )
     if not matches:
         console.print(
-            f"[yellow]No models matching '{query}' "
-            f"for {session.provider.name} ({session.provider_id}).[/yellow]"
+            "[yellow]"
+            + t(
+                "error.no_model_matches",
+                query=query,
+                provider=session.provider.name,
+                provider_id=session.provider_id,
+            )
+            + "[/yellow]"
         )
         return
 
@@ -1094,8 +1098,8 @@ def _config_help(console: Console) -> None:
         (
             "/config ui [show|color <auto|always|never>|"
             "output <normal|compact|verbose>|ascii <on|off>|"
-            "theme <default|ocean|magenta|mono>]",
-            "Set theme, color, output verbosity, and ASCII mode.",
+            "theme <default|ocean|magenta|mono>|locale <en|de|es>]",
+            "Set theme, color, output verbosity, ASCII mode, and locale.",
         ),
         (
             "/config cache [on|off]",
@@ -1141,7 +1145,8 @@ def _config_show(session: Session, console: Console) -> None:
         f"UI: [cyan]{ui_config['theme']}[/cyan] theme, "
         f"[cyan]{ui_config['color']}[/cyan] color, "
         f"[cyan]{ui_config['output_mode']}[/cyan] output, "
-        f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan]"
+        f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan], "
+        f"locale [cyan]{ui_config['locale']}[/cyan]"
     )
     network_config = get_network()
     console.print(
@@ -2591,7 +2596,7 @@ def _config_telemetry(action_parts: list[str], console: Console) -> None:
 _UI_USAGE = (
     "/config ui [show|color <auto|always|never>|"
     "output <normal|compact|verbose>|ascii <on|off>|"
-    "theme <default|ocean|magenta|mono>]"
+    "theme <default|ocean|magenta|mono>|locale <en|de|es>]"
 )
 
 
@@ -2606,11 +2611,12 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
             f"theme=[cyan]{current['theme']}[/cyan], "
             f"color=[cyan]{current['color']}[/cyan], "
             f"output=[cyan]{current['output_mode']}[/cyan], "
-            f"ascii=[cyan]{'on' if current['ascii'] else 'off'}[/cyan]"
+            f"ascii=[cyan]{'on' if current['ascii'] else 'off'}[/cyan], "
+            f"locale=[cyan]{current['locale']}[/cyan]"
         )
         return
 
-    if action in {"color", "output", "ascii", "theme"}:
+    if action in {"color", "output", "ascii", "theme", "locale"}:
         if not rest:
             console.print(f"[yellow]Usage: /config ui {action} <value>[/yellow]")
             return
@@ -2622,6 +2628,11 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
                 set_ui(output_mode=value)
             elif action == "theme":
                 set_ui(theme=value)
+            elif action == "locale":
+                set_ui(locale=value)
+                from kiwimatecoder.i18n import set_locale
+
+                set_locale(value)
             else:
                 token = value.strip().lower()
                 if token in {"on", "true", "yes", "enable", "enabled"}:
@@ -2640,7 +2651,8 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
             f"theme=[cyan]{current['theme']}[/cyan], "
             f"color=[cyan]{current['color']}[/cyan], "
             f"output=[cyan]{current['output_mode']}[/cyan], "
-            f"ascii=[cyan]{'on' if current['ascii'] else 'off'}[/cyan]"
+            f"ascii=[cyan]{'on' if current['ascii'] else 'off'}[/cyan], "
+            f"locale=[cyan]{current['locale']}[/cyan]"
         )
         console.print(
             "[dim]Restart the session for color, theme, ascii, and output "
@@ -2959,7 +2971,7 @@ def _config_interact(
             CommandOption("media", "Opt-in image generation (provider/model/size)"),
             CommandOption("telemetry", "Opt-in local telemetry and crash reports"),
             CommandOption("style", "Show or set the output style"),
-            CommandOption("ui", "Theme, color, output mode, and ASCII mode"),
+            CommandOption("ui", "Theme, color, output mode, ASCII mode, and locale"),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
             CommandOption("profile", "Save or apply configuration profiles"),
             CommandOption("cache", "Toggle Anthropic prompt caching"),
@@ -3666,7 +3678,7 @@ def unregister_command(name: str) -> bool:
 
 _HELP_GROUPS = [
     (
-        "Session",
+        "help.group.session",
         [
             ("/help", "Show this help."),
             ("/exit, /quit", "Leave the session."),
@@ -3706,7 +3718,7 @@ _HELP_GROUPS = [
         ],
     ),
     (
-        "Model & provider",
+        "help.group.model",
         [
             (
                 "/model [name|refresh|list|search <term>]",
@@ -3729,7 +3741,7 @@ _HELP_GROUPS = [
         ],
     ),
     (
-        "Context",
+        "help.group.context",
         [
             (
                 "/context [list|add|remove|clear]",
@@ -3743,7 +3755,7 @@ _HELP_GROUPS = [
         ],
     ),
     (
-        "Configuration",
+        "help.group.configuration",
         [
             (
                 "/config",
@@ -3866,7 +3878,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",
     "profiles": "Save, apply, or remove named configuration presets.",
-    "ui": "Set theme, color, output verbosity, and ASCII mode.",
+    "ui": "Set theme, color, output verbosity, ASCII mode, and locale.",
     "cache": "Toggle prompt caching for native Anthropic providers.",
 }
 

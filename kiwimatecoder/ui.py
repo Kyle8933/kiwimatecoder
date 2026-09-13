@@ -13,11 +13,14 @@ from typing import Any
 
 from rich.console import Console
 
+from kiwimatecoder.i18n import DEFAULT_LOCALE
+
 UI_DEFAULTS: dict[str, Any] = {
     "color": "auto",
     "output_mode": "normal",
     "ascii": False,
     "theme": "default",
+    "locale": DEFAULT_LOCALE,
 }
 
 COLOR_MODES = ("auto", "always", "never")

@@ -2954,6 +2954,7 @@ def get_ui(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     (same tolerance as the other section getters), so a hand-edited config can
     never crash the REPL.
     """
+    from kiwimatecoder.i18n import normalize_locale
     from kiwimatecoder.ui import COLOR_MODES, OUTPUT_MODES, THEMES, UI_DEFAULTS
 
     cfg = cfg or load_config()
@@ -2973,6 +2974,9 @@ def get_ui(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     theme = str(stored.get("theme") or "").strip().lower()
     if theme in THEMES:
         effective["theme"] = theme
+    locale = normalize_locale(stored.get("locale"))
+    if locale is not None:
+        effective["locale"] = locale
     return effective
 
 
@@ -2981,8 +2985,10 @@ def set_ui(
     output_mode: str | None = None,
     ascii: bool | None = None,
     theme: str | None = None,
+    locale: str | None = None,
 ) -> dict[str, Any]:
     """Update UI preferences and persist them; omitted values are unchanged."""
+    from kiwimatecoder.i18n import LOCALES, normalize_locale
     from kiwimatecoder.ui import COLOR_MODES, OUTPUT_MODES, THEMES
 
     cfg = load_config()
@@ -3011,6 +3017,13 @@ def set_ui(
         if cleaned not in THEMES:
             raise ValueError(f"Unknown theme '{theme}'. Choose: {', '.join(THEMES)}.")
         current["theme"] = cleaned
+    if locale is not None:
+        cleaned_locale = normalize_locale(locale)
+        if cleaned_locale is None:
+            raise ValueError(
+                f"Unknown locale '{locale}'. Choose: {', '.join(LOCALES)}."
+            )
+        current["locale"] = cleaned_locale
     cfg["ui"] = current
     save_config(cfg)
     return current
@@ -3905,6 +3918,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
     if not isinstance(ui, dict):
         add("error", "ui", "'ui' must be an object.")
     else:
+        from kiwimatecoder.i18n import normalize_locale
         from kiwimatecoder.ui import COLOR_MODES, OUTPUT_MODES, THEMES
 
         color = ui.get("color")
@@ -3921,6 +3935,9 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
         theme = ui.get("theme")
         if theme is not None and str(theme).strip().lower() not in THEMES:
             add("error", "ui.theme", f"Unknown theme '{theme}'.")
+        locale = ui.get("locale")
+        if locale is not None and normalize_locale(locale) is None:
+            add("error", "ui.locale", f"Unknown locale '{locale}'.")
 
     web = cfg.get("web")
     if web is not None:
