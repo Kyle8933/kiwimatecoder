@@ -145,7 +145,7 @@ never synced.
 Goal: breadth of integrations and long-tail quality.
 
 - [x] 5.1 Media generation (wire up `media.py` stub) (L; depends 2.3)
-- [ ] 5.2 Telemetry/OTel + debug logging + opt-in crash reports (M; depends 2.1)
+- [x] 5.2 Telemetry/OTel + debug logging + opt-in crash reports (M; depends 2.1)
 - [ ] 5.3 Evals/benchmark harness for prompt/tool regressions (L; depends 4.1)
 - [ ] 5.4 Team sharing: shared policies, session links, SSO (XL; depends 4.9)
 - [ ] 5.5 i18n of CLI strings (L; depends 2.8)
@@ -157,6 +157,12 @@ Goal: breadth of integrations and long-tail quality.
 `/images/generations` endpoints (b64 or URL responses), the approval-gated
 `generate_image` tool, and `/image <prompt>`; files are written atomically
 under the workspace at `.kiwimatecoder/media/`. Video generation is deferred.
+
+**5.2 follow-up:** telemetry is local-only JSON lines under
+`~/.kiwimatecoder/logs/` with rotation, secret redaction, event-bus lifecycle
+logging, and opt-in crash bundles; `KIWIMATECODER_DEBUG=1` forces the `debug`
+level for one run. There is **no OTLP exporter and no telemetry dependency** —
+shipping to an observability backend is reserved for a follow-up.
 
 ## Critical paths
 

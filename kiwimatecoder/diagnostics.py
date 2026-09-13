@@ -91,6 +91,21 @@ def _config_checks() -> list[Check]:
         checks.append(Check("Audit log", OK, f"{audit_path} ({size} bytes)"))
     else:
         checks.append(Check("Audit log", OK, f"{audit_path} (not created yet)"))
+
+    from kiwimatecoder import telemetry as telemetry_module
+
+    telemetry_settings = config.get_telemetry()
+    crash_count = len(telemetry_module.crash_report_paths())
+    checks.append(
+        Check(
+            "Telemetry",
+            OK,
+            f"level {telemetry_settings['level']} "
+            f"({'on' if telemetry_settings['enabled'] else 'off'}) — "
+            f"log {telemetry_module.current_log_path()}; "
+            f"{crash_count} crash report(s)",
+        )
+    )
     return checks
 
 

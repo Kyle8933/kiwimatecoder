@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
+from urllib.parse import urlparse
 
 import httpx
 
-from kiwimatecoder import network
+from kiwimatecoder import network, telemetry
 from kiwimatecoder.providers import ProviderConfig
 
 
@@ -507,12 +509,14 @@ class UnifiedClient:
         payload = self._payload(messages, tools, model)
         headers = self._headers()
         url = self._url
+        host = urlparse(url).hostname or ""
         connect_options = network.current_options()
 
         max_attempts = 3
         backoff_delays = [0.5, 1.0, 2.0]
 
         for attempt in range(max_attempts):
+            started = time.perf_counter()
             try:
                 async with httpx.AsyncClient(
                     timeout=self.timeout, **connect_options
@@ -524,12 +528,37 @@ class UnifiedClient:
                             response.status_code in (429, 500, 502, 503, 504)
                             and attempt < max_attempts - 1
                         ):
+                            telemetry.log_event(
+                                "provider_retry",
+                                level="error",
+                                provider=self.provider.id,
+                                host=host,
+                                status=response.status_code,
+                                attempt=attempt + 1,
+                            )
                             await asyncio.sleep(backoff_delays[attempt])
                             continue
+
+                        telemetry.log_event(
+                            "http_request",
+                            level="debug",
+                            method="POST",
+                            host=host,
+                            status=response.status_code,
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            provider=self.provider.id,
+                        )
 
                         if response.status_code != 200:
                             body = (await response.aread()).decode(
                                 "utf-8", "replace"
+                            )
+                            telemetry.log_event(
+                                "provider_error",
+                                level="error",
+                                provider=self.provider.id,
+                                model=model,
+                                status=response.status_code,
                             )
                             raise ProviderError(
                                 f"{self.provider.name} returned HTTP {response.status_code}: "
@@ -591,8 +620,23 @@ class UnifiedClient:
                 httpx.RemoteProtocolError,
             ) as exc:
                 if attempt < max_attempts - 1:
+                    telemetry.log_event(
+                        "provider_retry",
+                        level="error",
+                        provider=self.provider.id,
+                        host=host,
+                        error=exc.__class__.__name__,
+                        attempt=attempt + 1,
+                    )
                     await asyncio.sleep(backoff_delays[attempt])
                     continue
+                telemetry.log_event(
+                    "provider_error",
+                    level="error",
+                    provider=self.provider.id,
+                    host=host,
+                    error=exc.__class__.__name__,
+                )
                 raise ProviderError(
                     f"{self.provider.name} connection error: {exc}"
                 ) from exc

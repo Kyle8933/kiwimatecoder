@@ -132,6 +132,12 @@ def _empty_config() -> dict[str, Any]:
             "size": "1024x1024",
             "output_dir": ".kiwimatecoder/media",
         },
+        "telemetry": {
+            "enabled": False,
+            "level": "off",
+            "log_file": "",
+            "max_log_bytes": 1000000,
+        },
         "lsp": {
             "enabled": False,
             "timeout": 10.0,
@@ -312,6 +318,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("memory", {})
     cfg.setdefault("vision", {})
     cfg.setdefault("media", {})
+    cfg.setdefault("telemetry", {})
     cfg.setdefault("lsp", {})
     cfg.setdefault("index", {})
     cfg.setdefault("shell", {})
@@ -2544,6 +2551,111 @@ def set_media(
 
 
 # ---------------------------------------------------------------------------
+# Opt-in telemetry and debug logging
+# ---------------------------------------------------------------------------
+
+TELEMETRY_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "level": "off",
+    "log_file": "",
+    "max_log_bytes": 1_000_000,
+}
+TELEMETRY_LEVELS = ("off", "error", "info", "debug")
+TELEMETRY_MAX_LOG_BYTES_MIN = 10 * 1024
+TELEMETRY_MAX_LOG_BYTES_MAX = 100 * 1024 * 1024
+
+
+def _valid_telemetry_log_file(value: object) -> str | None:
+    """Return an absolute log path, "" to use the default, or None when bad."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        return None
+    return str(path)
+
+
+def get_telemetry(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized telemetry settings, always fully populated.
+
+    Telemetry is **off by default** and local-only. Malformed stored values
+    fall back to :data:`TELEMETRY_DEFAULTS` so a hand-edited config can never
+    crash a session; ``validate_config`` reports exactly what would be ignored.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("telemetry") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(TELEMETRY_DEFAULTS)
+    enabled = stored.get("enabled")
+    if isinstance(enabled, bool):
+        effective["enabled"] = enabled
+    level = str(stored.get("level") or "").strip().lower()
+    if level in TELEMETRY_LEVELS:
+        effective["level"] = level
+    log_file = _valid_telemetry_log_file(stored.get("log_file"))
+    if log_file is not None:
+        effective["log_file"] = log_file
+    effective["max_log_bytes"] = _bounded_int(
+        stored.get("max_log_bytes"),
+        int(TELEMETRY_DEFAULTS["max_log_bytes"]),
+        TELEMETRY_MAX_LOG_BYTES_MIN,
+        TELEMETRY_MAX_LOG_BYTES_MAX,
+    )
+    return effective
+
+
+def set_telemetry(
+    enabled: bool | None = None,
+    level: str | None = None,
+    log_file: str | None = None,
+    max_log_bytes: int | str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update telemetry settings; omitted arguments keep their current value.
+
+    Raises ``ValueError`` for a non-boolean ``enabled``, an unknown ``level``
+    (off/error/info/debug), a non-empty relative ``log_file``, or a
+    ``max_log_bytes`` outside 10 KB - 100 MB, so callers validate eagerly.
+    """
+    cfg = cfg or load_config()
+    current = get_telemetry(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("telemetry enabled must be true or false.")
+        current["enabled"] = enabled
+    if level is not None:
+        cleaned = str(level).strip().lower()
+        if cleaned not in TELEMETRY_LEVELS:
+            raise ValueError(
+                f"telemetry level must be one of: {', '.join(TELEMETRY_LEVELS)}."
+            )
+        current["level"] = cleaned
+    if log_file is not None:
+        cleaned_log = _valid_telemetry_log_file(log_file)
+        if cleaned_log is None:
+            raise ValueError(
+                "telemetry log_file must be empty or an absolute path."
+            )
+        current["log_file"] = cleaned_log
+    if max_log_bytes is not None:
+        try:
+            value = int(max_log_bytes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("telemetry max_log_bytes must be an integer.") from exc
+        if not TELEMETRY_MAX_LOG_BYTES_MIN <= value <= TELEMETRY_MAX_LOG_BYTES_MAX:
+            raise ValueError(
+                "telemetry max_log_bytes must be between "
+                f"{TELEMETRY_MAX_LOG_BYTES_MIN} and {TELEMETRY_MAX_LOG_BYTES_MAX}."
+            )
+        current["max_log_bytes"] = value
+    cfg["telemetry"] = current
+    save_config(cfg)
+    return get_telemetry(cfg)
+
+
+# ---------------------------------------------------------------------------
 # Language server (LSP) diagnostics
 # ---------------------------------------------------------------------------
 
@@ -3949,6 +4061,46 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                     "media.output_dir",
                     "'output_dir' must be a relative path inside the workspace.",
                 )
+
+    telemetry = cfg.get("telemetry")
+    if telemetry is not None:
+        if not isinstance(telemetry, dict):
+            add("error", "telemetry", "'telemetry' must be an object.")
+        else:
+            if "enabled" in telemetry and not isinstance(telemetry["enabled"], bool):
+                add("error", "telemetry.enabled", "'enabled' must be true or false.")
+            level = telemetry.get("level")
+            if level is not None and str(level).strip().lower() not in TELEMETRY_LEVELS:
+                add(
+                    "error",
+                    "telemetry.level",
+                    f"Must be one of: {', '.join(TELEMETRY_LEVELS)}.",
+                )
+            if "log_file" in telemetry and (
+                _valid_telemetry_log_file(telemetry["log_file"]) is None
+            ):
+                add(
+                    "error",
+                    "telemetry.log_file",
+                    "'log_file' must be empty or an absolute path.",
+                )
+            if "max_log_bytes" in telemetry:
+                try:
+                    max_bytes = int(telemetry["max_log_bytes"])
+                except (TypeError, ValueError):
+                    max_bytes = -1
+                if not (
+                    TELEMETRY_MAX_LOG_BYTES_MIN
+                    <= max_bytes
+                    <= TELEMETRY_MAX_LOG_BYTES_MAX
+                ):
+                    add(
+                        "error",
+                        "telemetry.max_log_bytes",
+                        "Must be between "
+                        f"{TELEMETRY_MAX_LOG_BYTES_MIN} and "
+                        f"{TELEMETRY_MAX_LOG_BYTES_MAX}.",
+                    )
 
     lsp = cfg.get("lsp")
     if lsp is not None:

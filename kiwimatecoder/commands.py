@@ -51,6 +51,7 @@ from kiwimatecoder.config import (
     get_sandbox,
     get_shell_config,
     get_subagents,
+    get_telemetry,
     get_ui,
     get_vision,
     get_web,
@@ -86,6 +87,7 @@ from kiwimatecoder.config import (
     set_shell_config,
     set_subagents,
     set_system_prompt,
+    set_telemetry,
     set_trusted_workspace,
     set_ui,
     set_verify_command,
@@ -1073,6 +1075,11 @@ def _config_help(console: Console) -> None:
             "Configure opt-in image generation (/image and generate_image).",
         ),
         (
+            "/config telemetry [show|enable on|off|level <lvl>|"
+            "log-file <path>|max-bytes <n>]",
+            "Configure opt-in local telemetry, debug logs, and crash reports.",
+        ),
+        (
             "/config style [set <default|concise|explanatory|code>]",
             "Show or set the output style.",
         ),
@@ -1151,6 +1158,7 @@ def _config_show(session: Session, console: Console) -> None:
         f"devcontainer [cyan]{escape(remote_config['devcontainer'])}[/cyan])"
     )
     console.print(_media_status_line(get_media()))
+    console.print(_telemetry_status_line(get_telemetry()))
     project_path = project_config_path()
     if project_path is not None:
         console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
@@ -2495,6 +2503,91 @@ def _config_media(action_parts: list[str], console: Console) -> None:
     )
 
 
+def _telemetry_status_line(settings: dict[str, Any]) -> str:
+    from kiwimatecoder import telemetry
+
+    state = "on" if settings["enabled"] else "off"
+    crashes = len(telemetry.crash_report_paths())
+    return (
+        f"Telemetry: [cyan]{state}[/cyan] "
+        f"(level [cyan]{settings['level']}[/cyan], "
+        f"log [cyan]{telemetry.current_log_path()}[/cyan], "
+        f"{crashes} crash report(s))"
+    )
+
+
+def _config_telemetry(action_parts: list[str], console: Console) -> None:
+    from kiwimatecoder import telemetry
+
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "ls", "status"}:
+        settings = get_telemetry()
+        console.print(_telemetry_status_line(settings))
+        console.print(f"Max log bytes: [cyan]{settings['max_log_bytes']:,}[/cyan]")
+        return
+
+    if action in {"enable", "on", "off", "disable"}:
+        if action in {"on", "off", "disable"}:
+            token = action
+        elif rest:
+            token = rest[0].lower()
+        else:
+            console.print("[yellow]Usage: /config telemetry enable <on|off>[/yellow]")
+            return
+        if token in {"on", "true", "yes", "enable", "enabled"}:
+            enabled = True
+        elif token in {"off", "false", "no", "disable", "disabled"}:
+            enabled = False
+        else:
+            console.print("[yellow]Usage: /config telemetry enable <on|off>[/yellow]")
+            return
+        try:
+            set_telemetry(enabled=enabled)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        telemetry.configure()
+        settings = get_telemetry()
+        console.print(
+            f"[green]Telemetry {'enabled' if enabled else 'disabled'}.[/green]"
+        )
+        if enabled and settings["level"] == "off":
+            console.print(
+                "[dim]Set a level with /config telemetry level "
+                "error|info|debug to start recording.[/dim]"
+            )
+        return
+
+    if action in {"level", "log-file", "log_file", "max-bytes", "max_bytes"}:
+        if not rest:
+            console.print(
+                "[yellow]Usage: /config telemetry "
+                f"{action} <{'level' if action == 'level' else 'value'}>[/yellow]"
+            )
+            return
+        try:
+            if action == "level":
+                set_telemetry(level=rest[0])
+            elif action in {"log-file", "log_file"}:
+                set_telemetry(log_file=" ".join(rest))
+            else:
+                set_telemetry(max_log_bytes=rest[0])
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        telemetry.configure()
+        console.print(_telemetry_status_line(get_telemetry()))
+        return
+
+    console.print(
+        "[yellow]Usage: /config telemetry "
+        "[show|enable on|off|level <off|error|info|debug>|"
+        "log-file <path>|max-bytes <n>][/yellow]"
+    )
+
+
 _UI_USAGE = (
     "/config ui [show|color <auto|always|never>|"
     "output <normal|compact|verbose>|ascii <on|off>|"
@@ -2803,6 +2896,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_vision(rest, console)
     elif section == "media":
         _config_media(rest, console)
+    elif section == "telemetry":
+        _config_telemetry(rest, console)
     elif section == "ui":
         _config_ui(rest, console)
     elif section == "style":
@@ -2862,6 +2957,7 @@ def _config_interact(
             CommandOption("network", "Proxy, custom CA bundle, and offline mode"),
             CommandOption("vision", "Image attachment size and count limits"),
             CommandOption("media", "Opt-in image generation (provider/model/size)"),
+            CommandOption("telemetry", "Opt-in local telemetry and crash reports"),
             CommandOption("style", "Show or set the output style"),
             CommandOption("ui", "Theme, color, output mode, and ASCII mode"),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
@@ -2910,6 +3006,7 @@ def _config_interact(
         "network",
         "vision",
         "media",
+        "telemetry",
         "style",
         "ui",
         "prompt",
@@ -3764,6 +3861,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "network": "Set proxy, CA bundle, and offline mode.",
     "vision": "Set image attachment size and count limits.",
     "media": "Configure image generation provider, model, size, and output.",
+    "telemetry": "Configure opt-in local telemetry, debug logs, crash reports.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",

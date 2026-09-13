@@ -1355,6 +1355,34 @@ before writing; the file is owner-only and safe to delete.
 A `pre_tool` hook that exits non-zero blocks the action and is recorded with
 the `hook_blocked` decision.
 
+## Telemetry and debug logging
+
+Telemetry is **opt-in, local-only, and off by default**. When enabled, events
+from the lifecycle bus (`session_start`, `session_end`, `pre_tool`,
+`post_tool`), provider errors and retries, and (at the `debug` level) provider
+HTTP metadata (method/host/status/duration only — never bodies or headers) are
+appended as one compact JSON object per line to
+`~/.kiwimatecoder/logs/kiwimatecoder.log`. Secret-looking strings are redacted
+with the same rules as the audit log, the file is owner-only, and it rotates to
+`.log.1` once it would grow past `max_log_bytes`:
+
+```bash
+kiwimatecoder config telemetry enable on
+kiwimatecoder config telemetry level info      # off | error | info | debug
+kiwimatecoder config telemetry show
+```
+
+Slash equivalents: `/config telemetry show|enable on|off|level <lvl>`. Log
+files are never uploaded anywhere. Crash bundles (`crash-<timestamp>.json`
+containing a redacted traceback, version, platform, and recent log lines) are
+written only while telemetry is enabled at a level other than `off`, and
+`/doctor` lists the level, log path, and crash-report count.
+
+Set `KIWIMATECODER_DEBUG=1` to force the `debug` level for one run without
+changing config (handy for diagnosing a stubborn provider or proxy issue).
+
+An OTLP exporter is not implemented yet; see the roadmap (5.2 follow-up).
+
 ## Lifecycle hooks
 
 Run your own shell commands when the agent reaches a lifecycle event. Hooks

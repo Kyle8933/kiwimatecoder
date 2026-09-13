@@ -582,6 +582,48 @@ Positional argument.
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.
+.SS \fBconfig telemetry\fP
+Configure opt-in local telemetry, debug...
+.PP
+.nf
+kiwimatecoder config telemetry [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig telemetry show\fP
+Show telemetry settings, log path, and...
+.PP
+.nf
+kiwimatecoder config telemetry show [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig telemetry enable\fP
+Enable or disable telemetry (on|off).
+.PP
+.nf
+kiwimatecoder config telemetry enable [OPTIONS] [MODE]
+.fi
+.TP
+\fB[MODE]\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig telemetry level\fP
+Set the telemetry level...
+.PP
+.nf
+kiwimatecoder config telemetry level [OPTIONS] LEVEL
+.fi
+.TP
+\fBLEVEL\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
 .SS \fBconfig permissions\fP
 Manage persisted 'always allow' tool...
 .PP
@@ -1823,6 +1865,9 @@ DeepSeek API key.
 .TP
 \fBKIWIMATECODER_PROJECT_CONFIG\fP
 Path to a project config overlay.
+.TP
+\fBKIWIMATECODER_DEBUG\fP
+Force the debug telemetry level for one run.
 .TP
 \fBNO_COLOR\fP
 Disable ANSI color output when set.

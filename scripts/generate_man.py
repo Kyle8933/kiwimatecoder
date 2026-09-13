@@ -35,6 +35,7 @@ _ENVIRONMENT = (
     ("ANTHROPIC_API_KEY", "Anthropic API key."),
     ("DEEPSEEK_API_KEY", "DeepSeek API key."),
     ("KIWIMATECODER_PROJECT_CONFIG", "Path to a project config overlay."),
+    ("KIWIMATECODER_DEBUG", "Force the debug telemetry level for one run."),
     ("NO_COLOR", "Disable ANSI color output when set."),
 )
 

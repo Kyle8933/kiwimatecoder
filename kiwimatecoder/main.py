@@ -56,6 +56,7 @@ from kiwimatecoder.config import (
     get_shell_config,
     get_subagents,
     get_system_prompt,
+    get_telemetry,
     get_trusted_workspace,
     get_ui,
     get_verify_command,
@@ -97,6 +98,7 @@ from kiwimatecoder.config import (
     set_subagents,
     set_sync,
     set_system_prompt,
+    set_telemetry,
     set_trusted_workspace,
     set_ui,
     set_verify_command,
@@ -141,6 +143,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config remote show[/cyan]         SSH/devcontainer command execution")
     console.print("  [cyan]config acp show[/cyan]            ACP editor-integration timeout")
     console.print("  [cyan]config media show[/cyan]          Opt-in image generation")
+    console.print("  [cyan]config telemetry show[/cyan]      Opt-in local telemetry and crash reports")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
 
@@ -189,6 +192,11 @@ config_app.add_typer(models_app, name="models")
 
 media_app = typer.Typer(help="Configure opt-in image generation.")
 config_app.add_typer(media_app, name="media")
+
+telemetry_app = typer.Typer(
+    help="Configure opt-in local telemetry, debug logging, and crash reports."
+)
+config_app.add_typer(telemetry_app, name="telemetry")
 
 jobs_app = typer.Typer(help="Manage background and scheduled agent jobs.")
 app.add_typer(jobs_app, name="jobs")
@@ -2277,6 +2285,12 @@ def config_show() -> None:
         + f"size [cyan]{media_config['size']}[/cyan], "
         + f"output [cyan]{media_config['output_dir']}[/cyan])"
     )
+    telemetry_config = get_telemetry(cfg)
+    console.print(
+        "Telemetry: "
+        + f"[cyan]{'on' if telemetry_config['enabled'] else 'off'}[/cyan] "
+        + f"(level [cyan]{telemetry_config['level']}[/cyan])"
+    )
     project_path = project_config_path()
     if project_path is not None:
         console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
@@ -2407,6 +2421,72 @@ def media_size(size: Annotated[str, typer.Argument(help="Image size as WxH")]) -
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Media size set to[/green] [cyan]{size}[/cyan]."
+    )
+
+
+# --- `config telemetry ...` -------------------------------------------------
+
+
+def _print_telemetry(settings: dict[str, Any]) -> None:
+    from kiwimatecoder import telemetry
+
+    console.print(
+        f"Telemetry: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
+        f"Level: [cyan]{settings['level']}[/cyan]\n"
+        f"Log file: [cyan]{telemetry.current_log_path()}[/cyan]\n"
+        f"Max log bytes: [cyan]{settings['max_log_bytes']:,}[/cyan]\n"
+        f"Crash reports: [cyan]{len(telemetry.crash_report_paths())}[/cyan]"
+    )
+
+
+@telemetry_app.command("show")
+def telemetry_show() -> None:
+    """Show telemetry settings, log path, and crash-report count."""
+    _print_telemetry(get_telemetry())
+
+
+@telemetry_app.command("enable")
+def telemetry_enable(
+    mode: Annotated[str, typer.Argument(help="on or off")] = "on",
+) -> None:
+    """Enable or disable telemetry (on|off)."""
+    token = mode.strip().lower()
+    if token in {"on", "true", "yes", "enable", "enabled"}:
+        enabled = True
+    elif token in {"off", "false", "no", "disable", "disabled"}:
+        enabled = False
+    else:
+        console.print("[red]Usage: config telemetry enable <on|off>[/red]")
+        raise typer.Exit(1)
+    try:
+        settings = set_telemetry(enabled=enabled)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Telemetry "
+        f"{'enabled' if settings['enabled'] else 'disabled'}.[/green]"
+    )
+    if settings["enabled"] and settings["level"] == "off":
+        console.print(
+            "[dim]Set a level with `config telemetry level error|info|debug` "
+            "to start recording.[/dim]"
+        )
+
+
+@telemetry_app.command("level")
+def telemetry_level(
+    level: Annotated[str, typer.Argument(help="off, error, info, or debug")],
+) -> None:
+    """Set the telemetry level (off|error|info|debug)."""
+    try:
+        settings = set_telemetry(level=level)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Telemetry level set to[/green] "
+        f"[cyan]{settings['level']}[/cyan]."
     )
 
 
@@ -2703,6 +2783,12 @@ def main(
 
     if update:
         raise typer.Exit(run_update(console))
+
+    from kiwimatecoder import telemetry
+
+    # Opt-in telemetry configures logging and crash capture for every run path
+    # (interactive, headless, and management commands); disabled is a no-op.
+    telemetry.configure()
 
     if ctx.invoked_subcommand is not None:
         return
