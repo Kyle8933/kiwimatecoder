@@ -147,7 +147,7 @@ Goal: breadth of integrations and long-tail quality.
 - [x] 5.1 Media generation (wire up `media.py` stub) (L; depends 2.3)
 - [x] 5.2 Telemetry/OTel + debug logging + opt-in crash reports (M; depends 2.1)
 - [x] 5.3 Evals/benchmark harness for prompt/tool regressions (L; depends 4.1)
-- [ ] 5.4 Team sharing: shared policies, session links, SSO (XL; depends 4.9)
+- [x] 5.4 Team sharing: shared policies, session links, SSO (XL; depends 4.9)
 - [x] 5.5 i18n of CLI strings (L; depends 2.8)
 - [x] 5.6 Vim/Emacs keybindings, notifications, image paste, @-mentions (M; depends 2.8)
 - [x] 5.7 Packaging: Homebrew/curl/Docker, version pin/rollback, SBOM, Windows CI (M–L)
@@ -170,6 +170,17 @@ substrings, tool names, resulting files, and the run's success flag (add via
 scoring, cost/latency thresholds, and automatic runs against a live provider
 in CI are deliberately deferred; tests use a mocked SDK and never touch the
 network.
+
+**5.4 follow-up:** team sharing ships as two local-first pieces. Shared
+policies are a JSON overlay (`team.policy_path`) applied after global and
+project config, with `team.enforce` making the policy namespace authoritative
+(`config team show|set-policy|enforce`, `/config team`). Session sharing writes
+a redacted bundle (`share create|import`, `/share`) locally under
+`.kiwimatecoder/shares/` or uploads it as a secret GitHub gist through the
+user's own `gh` login. **SSO/identity and any hosted sharing service are
+explicitly deferred**: there is no server component, no accounts, and no
+network path except the user-invoked `gh` CLI; adding an identity provider or a
+hosted bundle service would be a separate project.
 
 **5.5 follow-up:** `kiwimatecoder/i18n.py` ships English/German/Spanish
 catalogs covering the banner hint, prompt and approval labels, common errors,

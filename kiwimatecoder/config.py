@@ -33,6 +33,7 @@ which take precedence over stored keys so a shell can override config per run.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -188,6 +189,10 @@ def _empty_config() -> dict[str, Any]:
         "acp": {
             "permission_timeout": 300,
         },
+        "team": {
+            "policy_path": "",
+            "enforce": False,
+        },
     }
 
 
@@ -333,10 +338,26 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     )
     # Project overlay: values win over global config, secrets excluded.
     project = load_project_config(project_root)
+    global_cfg = copy.deepcopy(cfg) if project else None
     if project:
         _apply_project_overlay(cfg, project)
         if "selected_provider" in project and "active_providers" not in project:
             cfg["active_providers"] = [str(project["selected_provider"])]
+        cfg["active_providers"] = _normalized_active_providers(
+            {"active_providers": cfg.get("active_providers")},
+            str(cfg.get("selected_provider") or DEFAULT_PROVIDER_ID),
+        )
+    # Team policy is global-only: a repository cannot disable or redirect it.
+    if global_cfg is not None:
+        cfg["team"] = copy.deepcopy(global_cfg.get("team") or {})
+    # Shared team policy overlay, applied last so policy values win. Failures
+    # (missing/corrupt file) are non-fatal; ``team.policy_issues`` reports them.
+    from kiwimatecoder import team as team_module
+
+    applied = team_module.apply_policy(cfg, project=project, global_cfg=global_cfg)
+    if applied:
+        if "selected_provider" in applied and "active_providers" not in applied:
+            cfg["active_providers"] = [str(applied["selected_provider"])]
         cfg["active_providers"] = _normalized_active_providers(
             {"active_providers": cfg.get("active_providers")},
             str(cfg.get("selected_provider") or DEFAULT_PROVIDER_ID),
@@ -3521,6 +3542,67 @@ def rename_profile(old: str, new: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Shared team policy
+# ---------------------------------------------------------------------------
+
+TEAM_DEFAULTS: dict[str, Any] = {"policy_path": "", "enforce": False}
+
+
+def get_team(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized team-policy settings, always fully populated.
+
+    ``policy_path`` is the shared policy overlay file (empty when unset) and
+    ``enforce`` marks it authoritative: enforced policies replace their keys
+    and reject project-level values for the policy namespace. Malformed stored
+    values fall back to :data:`TEAM_DEFAULTS`; ``validate_config`` reports what
+    would be ignored.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("team") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    path = stored.get("policy_path")
+    enforce = stored.get("enforce")
+    return {
+        "policy_path": path.strip() if isinstance(path, str) else "",
+        "enforce": enforce if isinstance(enforce, bool) else False,
+    }
+
+
+def set_team(
+    policy_path: str | None = None,
+    enforce: bool | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update team-policy settings; omitted arguments keep their value.
+
+    ``policy_path`` must be empty (to clear) or the path of an existing file;
+    ``enforce`` must be a boolean. Raises ``ValueError`` otherwise so callers
+    validate eagerly. The path is stored expanded so a later load does not
+    depend on the current working directory.
+    """
+    cfg = cfg or load_config()
+    current = get_team(cfg)
+    if policy_path is not None:
+        if not isinstance(policy_path, str):
+            raise ValueError("team policy_path must be a path string.")
+        cleaned = policy_path.strip()
+        if cleaned:
+            path = Path(cleaned).expanduser()
+            if not path.is_file():
+                raise ValueError(f"Team policy file does not exist: {cleaned}")
+            cleaned = str(path)
+        current["policy_path"] = cleaned
+    if enforce is not None:
+        if not isinstance(enforce, bool):
+            raise ValueError("team enforce must be true or false.")
+        current["enforce"] = enforce
+    cfg["team"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
 # Config schema validation
 # ---------------------------------------------------------------------------
 
@@ -4359,6 +4441,25 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             get_provider_config(str(selected), cfg)
         except KeyError:
             add("warning", "selected_provider", f"Unknown provider '{selected}'.")
+
+    team_section = cfg.get("team")
+    if team_section is not None:
+        if not isinstance(team_section, dict):
+            add("error", "team", "'team' must be an object.")
+        else:
+            policy_path = team_section.get("policy_path")
+            if policy_path is not None and not isinstance(policy_path, str):
+                add("error", "team.policy_path", "'policy_path' must be a string.")
+            if "enforce" in team_section and not isinstance(
+                team_section["enforce"], bool
+            ):
+                add("error", "team.enforce", "'enforce' must be true or false.")
+    # Report a configured policy file that is missing or corrupt (non-fatal at
+    # load time; this is how `config validate` and `doctor` surface it).
+    from kiwimatecoder import team as team_module
+
+    for issue in team_module.policy_issues(cfg):
+        add(issue["level"], issue["key"], issue["message"])
 
     return issues
 

@@ -51,6 +51,7 @@ from kiwimatecoder.config import (
     get_sandbox,
     get_shell_config,
     get_subagents,
+    get_team,
     get_telemetry,
     get_ui,
     get_vision,
@@ -87,6 +88,7 @@ from kiwimatecoder.config import (
     set_shell_config,
     set_subagents,
     set_system_prompt,
+    set_team,
     set_telemetry,
     set_trusted_workspace,
     set_ui,
@@ -1094,6 +1096,10 @@ def _config_help(console: Console) -> None:
         (
             "/config profile [list|show <name>|save <name>|use <name>|remove <name>]",
             "Save or apply named configuration presets.",
+        ),
+        (
+            "/config team [show|set-policy <path>|enforce on|off]",
+            "Load a shared team policy overlay (global-only; no server).",
         ),
         (
             "/config ui [show|color <auto|always|never>|"
@@ -2874,6 +2880,83 @@ def _config_profile(
     )
 
 
+def _config_team(action_parts: list[str], console: Console) -> None:
+    """Show or edit the shared team policy (global-only, no server)."""
+    from kiwimatecoder import team as team_module
+
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "status"}:
+        settings = get_team()
+        if not settings["policy_path"]:
+            console.print("[dim]No team policy configured (optional).[/dim]")
+            console.print("[dim]Set one with /config team set-policy <path>.[/dim]")
+            return
+        state = "enforced" if settings["enforce"] else "advisory"
+        console.print(
+            f"Team policy: [cyan]{escape(settings['policy_path'])}[/cyan] ({state})"
+        )
+        for issue in team_module.policy_issues():
+            color = "red" if issue["level"] == "error" else "yellow"
+            console.print(f"[{color}]{issue['message']}[/{color}]")
+        try:
+            policy = team_module.load_policy()
+        except team_module.PolicyError:
+            return
+        console.print(
+            "Policy keys: [cyan]"
+            + (", ".join(sorted(policy)) or "none")
+            + "[/cyan]"
+        )
+        return
+
+    if action in {"set-policy", "set", "path"}:
+        if not rest:
+            console.print("[yellow]Usage: /config team set-policy <path>[/yellow]")
+            return
+        try:
+            settings = set_team(policy_path=" ".join(rest))
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        if settings["policy_path"]:
+            console.print(
+                f"[green]Team policy set to[/green] "
+                f"[cyan]{escape(settings['policy_path'])}[/cyan]."
+            )
+        else:
+            console.print("[green]Team policy cleared.[/green]")
+        return
+
+    if action in {"enforce", "enforced"}:
+        if not rest or rest[0].lower() not in {
+            "on",
+            "off",
+            "true",
+            "false",
+            "enable",
+            "disable",
+        }:
+            console.print("[yellow]Usage: /config team enforce on|off[/yellow]")
+            return
+        try:
+            settings = set_team(enforce=rest[0].lower() in {"on", "true", "enable"})
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        console.print(
+            "[green]Team policy "
+            + ("enforced" if settings["enforce"] else "advisory")
+            + ".[/green]"
+        )
+        return
+
+    console.print(
+        "[yellow]Usage: /config team [show|set-policy <path>|enforce on|off][/yellow]"
+    )
+
+
 def _doctor(arg: str, session: Session, console: Console) -> str:
     from kiwimatecoder import diagnostics
 
@@ -2952,6 +3035,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_prompt(rest, session, console)
     elif section in {"profile", "profiles"}:
         _config_profile(rest, session, console)
+    elif section == "team":
+        _config_team(rest, console)
     elif section in {"cache", "prompt-cache"}:
         _config_cache(rest, console)
     else:
@@ -3011,6 +3096,7 @@ def _config_interact(
             ),
             CommandOption("prompt", "Show, set, or clear a custom system prompt"),
             CommandOption("profile", "Save or apply configuration profiles"),
+            CommandOption("team", "Load a shared team policy overlay"),
             CommandOption("cache", "Toggle Anthropic prompt caching"),
             CommandOption("help", "Show all /config commands"),
         ),
@@ -3060,6 +3146,7 @@ def _config_interact(
         "ui",
         "prompt",
         "profile",
+        "team",
         "cache",
         "commands",
         "trust",
@@ -3213,6 +3300,82 @@ def _export(arg: str, session: Session, console: Console) -> str:
         console.print(f"[red]Failed to export session: {exc}[/red]")
         return CommandResult.CONTINUE
     console.print(f"[green]Exported session to [bold]{destination}[/bold].[/green]")
+    return CommandResult.CONTINUE
+
+
+_SHARE_USAGE = (
+    "/share [gist] [--include-tool-output] | "
+    "/share import <path> [--name NAME]"
+)
+
+
+def _share(arg: str, session: Session, console: Console) -> str:
+    """Write (or gist) a redacted share bundle, or import one."""
+    from kiwimatecoder import share as share_module
+
+    try:
+        parts = shlex.split(arg)
+    except ValueError as exc:
+        console.print(f"[red]Could not parse command: {exc}[/red]")
+        return CommandResult.CONTINUE
+    include_tool_output = "--include-tool-output" in parts
+    parts = [part for part in parts if part != "--include-tool-output"]
+
+    if parts and parts[0].lower() == "import":
+        rest = parts[1:]
+        path: str | None = None
+        name: str | None = None
+        index = 0
+        while index < len(rest):
+            if rest[index] in {"--name", "-n"} and index + 1 < len(rest):
+                name = rest[index + 1]
+                index += 2
+            elif path is None:
+                path = rest[index]
+                index += 1
+            else:
+                index += 1
+        if not path:
+            console.print(f"[yellow]Usage: {_SHARE_USAGE}[/yellow]")
+            return CommandResult.CONTINUE
+        try:
+            saved = share_module.import_share(path, name)
+        except (share_module.ShareError, OSError, ValueError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            return CommandResult.CONTINUE
+        console.print(
+            f"[green]Imported session as [cyan]{saved.stem}[/cyan].[/green] "
+            f"Load it with /load {saved.stem}."
+        )
+        return CommandResult.CONTINUE
+
+    to_gist = bool(parts) and parts[0].lower() == "gist"
+    if parts and not to_gist:
+        console.print(f"[yellow]Usage: {_SHARE_USAGE}[/yellow]")
+        return CommandResult.CONTINUE
+    if to_gist:
+        ok, detail = share_module.share_to_gist(
+            session, include_tool_output=include_tool_output
+        )
+        if not ok:
+            console.print(f"[red]{detail}[/red]")
+            return CommandResult.CONTINUE
+        console.print(f"[green]Shared as a secret gist:[/green] {detail}")
+        return CommandResult.CONTINUE
+    try:
+        bundle_path = share_module.write_share(
+            session, include_tool_output=include_tool_output
+        )
+    except OSError as exc:
+        console.print(f"[red]Failed to write share bundle: {exc}[/red]")
+        return CommandResult.CONTINUE
+    console.print(
+        f"[green]Wrote redacted share bundle to [bold]{bundle_path}[/bold].[/green]"
+    )
+    console.print(
+        "[dim]Tool output is omitted by default; pass --include-tool-output "
+        "to include it (redacted and truncated).[/dim]"
+    )
     return CommandResult.CONTINUE
 
 
@@ -3660,6 +3823,7 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "sessions": _sessions,
     "fork": _fork,
     "export": _export,
+    "share": _share,
     "sync": _sync,
     "undo": _undo,
     "rewind": _undo,
@@ -3729,6 +3893,14 @@ _HELP_GROUPS = [
             ("/sessions", "List all saved sessions."),
             ("/fork [name]", "Save an independent copy of this session."),
             ("/export [path]", "Export the conversation as Markdown."),
+            (
+                "/share [gist] [--include-tool-output]",
+                "Write a redacted session bundle, or upload it as a secret gist.",
+            ),
+            (
+                "/share import <path> [--name NAME]",
+                "Import a share bundle as a saved session.",
+            ),
             (
                 "/sync [status|push|pull]",
                 "Show or sync saved sessions across machines (opt-in).",
@@ -3839,6 +4011,7 @@ _COMMAND_DESCRIPTIONS = {
     "sessions": "List all saved sessions.",
     "fork": "Save an independent copy of this session.",
     "export": "Export the conversation as Markdown.",
+    "share": "Write or gist a redacted session bundle, or import one.",
     "sync": "Show or sync saved sessions across machines (opt-in).",
     "undo": "Restore files changed by recent tool actions.",
     "rewind": "Alias for /undo.",
@@ -3915,6 +4088,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "prompt": "Show, set, or clear a custom system prompt.",
     "profile": "Save, apply, or remove named configuration presets.",
     "profiles": "Save, apply, or remove named configuration presets.",
+    "team": "Load a shared team policy overlay (global-only; no server).",
     "ui": "Set theme, color, output verbosity, ASCII mode, locale, keys, notifications, and spinners.",
     "cache": "Toggle prompt caching for native Anthropic providers.",
 }
@@ -3937,6 +4111,11 @@ _JOBS_ACTION_DESCRIPTIONS = {
     "cancel": "Terminate a running job.",
     "tick": "Start scheduled jobs whose interval has elapsed.",
     "run": "Start a detached job in this workspace.",
+}
+
+_SHARE_ACTION_DESCRIPTIONS = {
+    "gist": "Write a redacted bundle and upload it as a secret GitHub gist.",
+    "import": "Import a share bundle as a saved session.",
 }
 
 
@@ -4042,6 +4221,8 @@ def slash_argument_completions(
         choices = _LSP_ACTION_DESCRIPTIONS
     elif command == "jobs":
         choices = _JOBS_ACTION_DESCRIPTIONS
+    elif command == "share":
+        choices = _SHARE_ACTION_DESCRIPTIONS
     elif command == "sync":
         choices = _SYNC_ACTION_DESCRIPTIONS
     elif command == "load":

@@ -159,6 +159,7 @@ paths outside the workspace root; writes stay sandboxed.
 | `/templates` | List custom prompt templates discovered in the workspace and user command directories. |
 | `/compact [budget]` | Trim older history to fit a token budget. |
 | `/save`, `/load`, `/sessions`, `/fork [name]`, `/export [path]` | Save, resume, branch, or export sessions as Markdown. |
+| `/share [gist] [--include-tool-output]`, `/share import <path> [--name NAME]` | Share a redacted session bundle as a local file or a secret GitHub gist, or import one as a saved session. |
 | `/sync [status\|push\|pull]` | Show or sync saved sessions across machines through a shared folder (opt-in). |
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
@@ -1539,6 +1540,11 @@ root (or wherever `KIWIMATECODER_PROJECT_CONFIG` points). Project values
 override global config — useful for pinning a provider, model, mode, sampling,
 or permissions per repository. API keys are never read from project files.
 
+A shared **team policy** file can be layered on top of both (see
+[Team policies and session sharing](#team-policies-and-session-sharing)); it is
+configured only in the global config, so a cloned repository can never disable
+or redirect it.
+
 Fetched model catalogs are cached separately in
 `~/.kiwimatecoder/model_cache.json`. It holds no secrets and can be deleted at
 any time; the next `/model` rebuilds it.
@@ -1623,6 +1629,86 @@ incoming file to `<name>__<remote-machine>.json` instead of overwriting the
 local one. Pass `--force` to `push`/`pull` to make the local copy (push) or the
 shared copy (pull) win unconditionally.
 
+## Team policies and session sharing
+
+### Shared team policies
+
+A team can publish a shared policy JSON file (same shape as
+`.kiwimatecoder.json`) that is layered **on top of** global and project config,
+so policy values win. There is no server component and no identity provider:
+the file is read from the local path you configure, and a cloned repository can
+never disable or redirect it because `team` settings are taken from the global
+config only.
+
+Point the global config at the shared file:
+
+```bash
+kiwimatecoder config team set-policy ~/team/kiwimatecoder-policy.json
+kiwimatecoder config team enforce on
+kiwimatecoder config team show
+```
+
+or edit `~/.kiwimatecoder/config.json` directly:
+
+```json
+{
+  "team": {
+    "policy_path": "/Users/you/team/kiwimatecoder-policy.json",
+    "enforce": true
+  }
+}
+```
+
+The policy file may only control these keys: `default_mode`,
+`selected_provider`, `active_providers`, `selected_model`, `model_filters`,
+`command_rules`, `tool_permissions`, `sampling`, `trusted_workspace`,
+`output_style`, `system_prompt`, `verify_command`, `budget`, `mcp_servers`,
+`plugins`, `subagents`, `sandbox`, `remote`, and `network`. `keys`, `version`,
+and `team` are ignored, so a policy can never carry API keys or weaken its own
+enforcement. Unknown keys are reported as warnings.
+
+- **Advisory** (`enforce: false`): policy values override global and project
+  values, but project config still fills in any key the policy does not set.
+- **Enforced** (`enforce: true`): each policy key replaces the merged value
+  wholesale, and project values for policy keys the policy does not define are
+  ignored, so a repository cannot widen or weaken the policy namespace.
+
+A missing or corrupt policy file never blocks startup: it is skipped and
+reported by `kiwimatecoder config validate`, `kiwimatecoder doctor`, and
+`/config team show`. The REPL equivalents are
+`/config team [show|set-policy <path>|enforce on|off]`.
+
+### Session sharing
+
+Share a conversation as a redacted JSON bundle, either as a local file or as a
+**secret** GitHub gist through your own `gh` login (no token is read or stored
+by KiwiMateCoder):
+
+```bash
+kiwimatecoder share create                 # last session -> .kiwimatecoder/shares/
+kiwimatecoder share create my-session --output ~/Desktop/review.json
+kiwimatecoder share create --gist          # uploads via `gh gist create`
+kiwimatecoder share import bundle.share.json --name from-teammate
+```
+
+In the REPL, `/share` bundles the current session, `/share gist` uploads it,
+and `/share import <path>` turns a bundle into a normal saved session.
+
+Privacy notes:
+
+- Every string is passed through the same secret redactor used for logs, so
+  API keys and `token = ...` assignments never leave the machine.
+- Tool **results are omitted** (replaced with `[tool output omitted]`) unless
+  you pass `--include-tool-output`; when included they are redacted and
+  truncated to 2 KB. Tool call names are kept for context, and their arguments
+  are redacted and clipped.
+- Image attachments are replaced with `[image omitted]` so no base64 image data
+  is embedded in the bundle.
+- Bundles are capped at ~256 KB; when a conversation is larger the oldest
+  messages are dropped and `truncated` / `truncated_messages` record it.
+- Sharing is local or gist-based only. **SSO/identity and any hosted sharing
+  service are deferred** (see the roadmap) — there is no server to run.
+
 ## Config validation
 
 `kiwimatecoder config validate` checks the stored config and prints a table of
@@ -1630,7 +1716,8 @@ issues, exiting non-zero when any error-level problem is found. It surfaces
 exactly what the tolerant getters would silently drop: unknown top-level keys
 (warning), malformed provider/model-filter/sampling/budget/hook/command-rule/
 profile/MCP/plugin entries, invalid regexes, unknown hook events, bad network
-(proxy/CA/offline) values, bad ACP permission timeouts, and bad default mode,
+(proxy/CA/offline) values, bad ACP permission timeouts, a missing or corrupt
+team policy file, and bad default mode,
 output style, UI (theme/color/ASCII/output mode), or workspace-flag values.
 
 ## Evals

@@ -56,6 +56,7 @@ from kiwimatecoder.config import (
     get_shell_config,
     get_subagents,
     get_system_prompt,
+    get_team,
     get_telemetry,
     get_trusted_workspace,
     get_ui,
@@ -98,6 +99,7 @@ from kiwimatecoder.config import (
     set_subagents,
     set_sync,
     set_system_prompt,
+    set_team,
     set_telemetry,
     set_trusted_workspace,
     set_ui,
@@ -213,6 +215,14 @@ sync_app = typer.Typer(
     help="Sync saved sessions across machines through a shared folder (opt-in)."
 )
 app.add_typer(sync_app, name="sync")
+
+share_app = typer.Typer(
+    help="Share redacted session bundles (local file or secret GitHub gist)."
+)
+app.add_typer(share_app, name="share")
+
+team_app = typer.Typer(help="Shared team policy overlay.")
+config_app.add_typer(team_app, name="team")
 
 eval_app = typer.Typer(
     help="Run the eval harness: deterministic prompt/tool regression checks."
@@ -3588,6 +3598,166 @@ def sync_disable_cmd() -> None:
     console.print(
         f"[green]{_check()} Session sync disabled.[/green] "
         "The shared folder was not modified."
+    )
+
+
+# --- shared team policy ------------------------------------------------------
+
+
+@team_app.command("show")
+def team_show_cmd() -> None:
+    """Show the shared policy file, its state, keys, and any issues."""
+    from kiwimatecoder import team as team_module
+
+    settings = get_team()
+    if not settings["policy_path"]:
+        console.print("Team policy: [cyan]none[/cyan] (optional)")
+        console.print("Set one with [cyan]config team set-policy <path>[/cyan].")
+        return
+    state = "enforced" if settings["enforce"] else "advisory"
+    console.print(
+        f"Team policy: [cyan]{escape(settings['policy_path'])}[/cyan] ({state})"
+    )
+    for issue in team_module.policy_issues():
+        color = "red" if issue["level"] == "error" else "yellow"
+        console.print(f"[{color}]{issue['message']}[/{color}]")
+    try:
+        policy = team_module.load_policy()
+    except team_module.PolicyError:
+        return
+    console.print(
+        "Policy keys: [cyan]" + (", ".join(sorted(policy)) or "none") + "[/cyan]"
+    )
+
+
+@team_app.command("set-policy")
+def team_set_policy_cmd(
+    path: Annotated[
+        str,
+        typer.Argument(help="Shared policy JSON file (empty string clears it)."),
+    ],
+) -> None:
+    """Point the team policy at a shared JSON file."""
+    try:
+        settings = set_team(policy_path=path)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if settings["policy_path"]:
+        console.print(
+            f"[green]{_check()} Team policy set[/green] to "
+            f"[cyan]{escape(settings['policy_path'])}[/cyan]."
+        )
+    else:
+        console.print(f"[green]{_check()} Team policy cleared.[/green]")
+
+
+@team_app.command("enforce")
+def team_enforce_cmd(
+    state: Annotated[str, typer.Argument(help="on or off")],
+) -> None:
+    """Make the team policy authoritative (on) or merely advisory (off)."""
+    normalized = state.strip().lower()
+    if normalized not in {"on", "off", "true", "false", "enable", "disable"}:
+        console.print("[red]Usage: config team enforce on|off[/red]")
+        raise typer.Exit(1)
+    try:
+        settings = set_team(enforce=normalized in {"on", "true", "enable"})
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Team policy "
+        + ("enforced" if settings["enforce"] else "advisory")
+        + ".[/green]"
+    )
+
+
+# --- session sharing ---------------------------------------------------------
+
+
+@share_app.command("create")
+def share_create_cmd(
+    session_name: Annotated[
+        str,
+        typer.Argument(help="Saved session name (default: last)."),
+    ] = "last",
+    gist: Annotated[
+        bool,
+        typer.Option("--gist", help="Upload as a secret gist via the gh CLI."),
+    ] = False,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Write the bundle here (a directory uses the default name).",
+        ),
+    ] = None,
+    include_tool_output: Annotated[
+        bool,
+        typer.Option(
+            "--include-tool-output",
+            help="Include redacted, 2 KB-truncated tool output.",
+        ),
+    ] = False,
+) -> None:
+    """Write a redacted share bundle for a saved session."""
+    from kiwimatecoder import share as share_module
+    from kiwimatecoder.session import load_session
+
+    try:
+        session = load_session(session_name, workspace_root=Path.cwd())
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if gist:
+        ok, detail = share_module.share_to_gist(
+            session, include_tool_output=include_tool_output, dest=output
+        )
+        if not ok:
+            console.print(f"[red]{detail}[/red]")
+            raise typer.Exit(1)
+        console.print(f"[green]{_check()} Shared as a secret gist:[/green] {detail}")
+        return
+    try:
+        bundle_path = share_module.write_share(
+            session, dest=output, include_tool_output=include_tool_output
+        )
+    except OSError as exc:
+        console.print(f"[red]Failed to write share bundle: {exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Wrote redacted share bundle[/green] to "
+        f"[cyan]{escape(str(bundle_path))}[/cyan]."
+    )
+    console.print(
+        "[dim]Tool output is omitted by default; pass --include-tool-output "
+        "to include it (redacted and truncated).[/dim]"
+    )
+
+
+@share_app.command("import")
+def share_import_cmd(
+    path: Annotated[Path, typer.Argument(help="Share bundle to import.")],
+    name: Annotated[
+        str | None,
+        typer.Option("--name", "-n", help="Name for the new saved session."),
+    ] = None,
+) -> None:
+    """Import a share bundle as a normal saved session."""
+    from kiwimatecoder import share as share_module
+
+    try:
+        saved = share_module.import_share(path, name)
+    except (share_module.ShareError, OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Imported session[/green] as [cyan]{saved.stem}[/cyan]."
+    )
+    console.print(
+        f"[dim]Resume it with kiwimatecoder --resume {saved.stem}.[/dim]"
     )
 
 

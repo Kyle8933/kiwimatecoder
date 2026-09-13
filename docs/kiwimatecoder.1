@@ -630,6 +630,48 @@ Positional argument.
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.
+.SS \fBconfig team\fP
+Shared team policy overlay.
+.PP
+.nf
+kiwimatecoder config team [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig team show\fP
+Show the shared policy file, its state,...
+.PP
+.nf
+kiwimatecoder config team show [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig team set\-policy\fP
+Point the team policy at a shared JSON file.
+.PP
+.nf
+kiwimatecoder config team set-policy [OPTIONS] PATH
+.fi
+.TP
+\fBPATH\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig team enforce\fP
+Make the team policy authoritative (on) or...
+.PP
+.nf
+kiwimatecoder config team enforce [OPTIONS] STATE
+.fi
+.TP
+\fBSTATE\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
 .SS \fBconfig permissions\fP
 Manage persisted 'always allow' tool...
 .PP
@@ -1902,6 +1944,51 @@ Disable session sync (the shared folder is...
 .nf
 kiwimatecoder sync disable [OPTIONS]
 .fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBshare\fP
+Share redacted session bundles (local file...
+.PP
+.nf
+kiwimatecoder share [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBshare create\fP
+Write a redacted share bundle for a saved...
+.PP
+.nf
+kiwimatecoder share create [OPTIONS] [SESSION_NAME]
+.fi
+.TP
+\fB[SESSION_NAME]\fP
+Positional argument.
+.TP
+\fB\-\-gist\fP
+Upload as a secret gist via the gh CLI.
+.TP
+\fB\-\-output\fP, \fB\-o\fP \fIPATH\fP
+Write the bundle here (a directory uses the default name).
+.TP
+\fB\-\-include\-tool\-output\fP
+Include redacted, 2 KB-truncated tool output.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBshare import\fP
+Import a share bundle as a normal saved...
+.PP
+.nf
+kiwimatecoder share import [OPTIONS] PATH
+.fi
+.TP
+\fBPATH\fP
+Positional argument.
+.TP
+\fB\-\-name\fP, \fB\-n\fP \fITEXT\fP
+Name for the new saved session.
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.

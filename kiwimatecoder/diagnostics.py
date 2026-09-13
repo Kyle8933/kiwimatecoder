@@ -78,6 +78,28 @@ def _config_checks() -> list[Check]:
         candidate = Path.cwd() / config.PROJECT_CONFIG_NAME
         checks.append(Check("Project config", OK, f"none (optional; {candidate} not found)"))
 
+    from kiwimatecoder import team as team_module
+
+    team_settings = config.get_team()
+    if not team_settings["policy_path"]:
+        checks.append(Check("Team policy", OK, "none (optional)"))
+    else:
+        issues = team_module.policy_issues()
+        errors = [issue for issue in issues if issue["level"] == "error"]
+        detail = (
+            f"{team_settings['policy_path']} "
+            f"({'enforced' if team_settings['enforce'] else 'advisory'})"
+        )
+        if errors:
+            status = FAIL
+            detail += f" — {errors[0]['message']}"
+        elif issues:
+            status = WARN
+            detail += f" — {issues[0]['message']}"
+        else:
+            status = OK
+        checks.append(Check("Team policy", status, detail))
+
     sessions = config.ensure_config_dir() / "sessions"
     count = len(list(sessions.glob("*.json"))) if sessions.is_dir() else 0
     checks.append(Check("Saved sessions", OK, f"{count} in {sessions}"))

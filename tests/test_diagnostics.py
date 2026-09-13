@@ -68,3 +68,32 @@ def test_render_prints_table_and_summary(tmp_path):
     text = output.getvalue().lower()
     assert "diagnostics" in text
     assert "check(s)" in text or "all checks passed" in text or "warning" in text
+
+
+def test_team_policy_check_reports_missing_and_valid(tmp_path):
+    session = Session(provider_id="openrouter", model="test-model", workspace_root=tmp_path)
+    checks = diagnostics.run_checks(session)
+    policy = next(check for check in checks if check.name == "Team policy")
+    assert policy.status == diagnostics.OK
+    assert "none" in policy.detail
+
+    missing = tmp_path / "gone.json"
+    cfg = config.load_config()
+    cfg["team"] = {"policy_path": str(missing), "enforce": True}
+    config.save_config(cfg)
+
+    checks = diagnostics.run_checks(session)
+    policy = next(check for check in checks if check.name == "Team policy")
+    assert policy.status == diagnostics.FAIL
+    assert "not found" in policy.detail
+
+    valid = tmp_path / "policy.json"
+    valid.write_text('{"default_mode": "plan"}')
+    cfg = config.load_config()
+    cfg["team"] = {"policy_path": str(valid), "enforce": True}
+    config.save_config(cfg)
+
+    checks = diagnostics.run_checks(session)
+    policy = next(check for check in checks if check.name == "Team policy")
+    assert policy.status == diagnostics.OK
+    assert "enforced" in policy.detail
