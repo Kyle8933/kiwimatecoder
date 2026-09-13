@@ -1668,6 +1668,69 @@ kiwimatecoder jobs tick [OPTIONS]
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.
+.SS \fBsync\fP
+Sync saved sessions across machines...
+.PP
+.nf
+kiwimatecoder sync [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBsync status\fP
+Show local/remote session counts and...
+.PP
+.nf
+kiwimatecoder sync status [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBsync push\fP
+Copy local sessions into the shared folder.
+.PP
+.nf
+kiwimatecoder sync push [OPTIONS]
+.fi
+.TP
+\fB\-\-force\fP
+Overwrite shared sessions with local copies, even on conflict.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBsync pull\fP
+Copy newer shared sessions into the local...
+.PP
+.nf
+kiwimatecoder sync pull [OPTIONS]
+.fi
+.TP
+\fB\-\-force\fP
+Overwrite local sessions with shared copies, even on conflict.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBsync enable\fP
+Enable session sync through an existing...
+.PP
+.nf
+kiwimatecoder sync enable [OPTIONS] PATH
+.fi
+.TP
+\fBPATH\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBsync disable\fP
+Disable session sync (the shared folder is...
+.PP
+.nf
+kiwimatecoder sync disable [OPTIONS]
+.fi
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
 .SH FILES
 .TP
 \fB~/.kiwimatecoder/config.json\fP

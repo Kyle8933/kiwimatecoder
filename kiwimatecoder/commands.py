@@ -2985,6 +2985,45 @@ def _export(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
+_SYNC_USAGE = "/sync [status|push|pull]"
+
+_SYNC_ACTION_DESCRIPTIONS = {
+    "status": "Show local/remote session counts and pending changes.",
+    "push": "Copy local sessions into the shared sync folder.",
+    "pull": "Copy newer shared sessions into the local sessions directory.",
+}
+
+
+def _sync(arg: str, session: Session, console: Console) -> str:
+    from kiwimatecoder import sync as sync_module
+
+    action = arg.strip().lower() or "status"
+    if action in {"status", "show", "ls", "list"}:
+        console.print(
+            sync_module.status().summary(), markup=False, highlight=False
+        )
+        return CommandResult.CONTINUE
+    try:
+        if action == "push":
+            report = sync_module.push()
+        elif action == "pull":
+            report = sync_module.pull()
+        else:
+            console.print(f"[yellow]Usage: {_SYNC_USAGE}[/yellow]")
+            return CommandResult.CONTINUE
+    except sync_module.SyncError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        return CommandResult.CONTINUE
+    for line in report.lines:
+        console.print(line, markup=False, highlight=False)
+    for error in report.errors:
+        console.print(f"[yellow]{error}[/yellow]")
+    console.print(
+        report.summary(), markup=False, highlight=False
+    )
+    return CommandResult.CONTINUE
+
+
 def _undo(arg: str, session: Session, console: Console) -> str:
     if not session.checkpoints:
         console.print(
@@ -3353,6 +3392,7 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "sessions": _sessions,
     "fork": _fork,
     "export": _export,
+    "sync": _sync,
     "undo": _undo,
     "rewind": _undo,
     "checkpoints": _checkpoints,
@@ -3421,6 +3461,10 @@ _HELP_GROUPS = [
             ("/sessions", "List all saved sessions."),
             ("/fork [name]", "Save an independent copy of this session."),
             ("/export [path]", "Export the conversation as Markdown."),
+            (
+                "/sync [status|push|pull]",
+                "Show or sync saved sessions across machines (opt-in).",
+            ),
             ("/undo [count]", "Restore files changed by recent tool actions."),
             ("/checkpoints", "List captured file checkpoints."),
             ("/todos", "Show the agent's task list."),
@@ -3521,6 +3565,7 @@ _COMMAND_DESCRIPTIONS = {
     "sessions": "List all saved sessions.",
     "fork": "Save an independent copy of this session.",
     "export": "Export the conversation as Markdown.",
+    "sync": "Show or sync saved sessions across machines (opt-in).",
     "undo": "Restore files changed by recent tool actions.",
     "rewind": "Alias for /undo.",
     "checkpoints": "List captured file checkpoints.",
@@ -3721,6 +3766,8 @@ def slash_argument_completions(
         choices = _LSP_ACTION_DESCRIPTIONS
     elif command == "jobs":
         choices = _JOBS_ACTION_DESCRIPTIONS
+    elif command == "sync":
+        choices = _SYNC_ACTION_DESCRIPTIONS
     elif command == "load":
         choices = {
             s["name"]: f"{s['provider']}:{s['model']} ({s['messages']} msgs)"

@@ -93,6 +93,7 @@ from kiwimatecoder.config import (
     set_selected_provider,
     set_shell_config,
     set_subagents,
+    set_sync,
     set_system_prompt,
     set_trusted_workspace,
     set_ui,
@@ -185,6 +186,11 @@ config_app.add_typer(models_app, name="models")
 
 jobs_app = typer.Typer(help="Manage background and scheduled agent jobs.")
 app.add_typer(jobs_app, name="jobs")
+
+sync_app = typer.Typer(
+    help="Sync saved sessions across machines through a shared folder (opt-in)."
+)
+app.add_typer(sync_app, name="sync")
 
 
 # --- canonical `config key ...` ---------------------------------------------
@@ -3194,6 +3200,97 @@ def doctor_cmd() -> None:
         custom_system_prompt=get_system_prompt(cfg),
     )
     diagnostics.render(diagnostics.run_checks(session), console)
+
+
+# --- cross-machine session sync ---------------------------------------------
+
+
+def _print_sync_report(report: Any) -> None:
+    for line in report.lines:
+        console.print(line, markup=False, highlight=False)
+    for error in report.errors:
+        console.print(f"[yellow]{error}[/yellow]")
+    console.print(report.summary())
+
+
+@sync_app.command("status")
+def sync_status_cmd() -> None:
+    """Show local/remote session counts and pending changes."""
+    from kiwimatecoder import sync as sync_module
+
+    console.print(sync_module.status().summary(), markup=False, highlight=False)
+
+
+@sync_app.command("push")
+def sync_push_cmd(
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Overwrite shared sessions with local copies, even on conflict.",
+        ),
+    ] = False,
+) -> None:
+    """Copy local sessions into the shared folder."""
+    from kiwimatecoder import sync as sync_module
+
+    try:
+        report = sync_module.push(force=force)
+    except sync_module.SyncError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(1)
+    _print_sync_report(report)
+
+
+@sync_app.command("pull")
+def sync_pull_cmd(
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Overwrite local sessions with shared copies, even on conflict.",
+        ),
+    ] = False,
+) -> None:
+    """Copy newer shared sessions into the local sessions directory."""
+    from kiwimatecoder import sync as sync_module
+
+    try:
+        report = sync_module.pull(force=force)
+    except sync_module.SyncError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(1)
+    _print_sync_report(report)
+
+
+@sync_app.command("enable")
+def sync_enable_cmd(
+    path: Annotated[
+        Path,
+        typer.Argument(help="Existing folder to share (Dropbox/iCloud/git/...)."),
+    ],
+) -> None:
+    """Enable session sync through an existing folder."""
+    try:
+        settings = set_sync(enabled=True, path=str(path))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Session sync enabled[/green] for machine "
+        f"[cyan]{escape(settings['machine'])}[/cyan] in "
+        f"[cyan]{escape(settings['path'])}[/cyan]."
+    )
+
+
+@sync_app.command("disable")
+def sync_disable_cmd() -> None:
+    """Disable session sync (the shared folder is left untouched)."""
+    set_sync(enabled=False)
+    console.print(
+        f"[green]{_check()} Session sync disabled.[/green] "
+        "The shared folder was not modified."
+    )
 
 
 @app.command("update")

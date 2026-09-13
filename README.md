@@ -130,6 +130,7 @@ paths outside the workspace root; writes stay sandboxed.
 | `/templates` | List custom prompt templates discovered in the workspace and user command directories. |
 | `/compact [budget]` | Trim older history to fit a token budget. |
 | `/save`, `/load`, `/sessions`, `/fork [name]`, `/export [path]` | Save, resume, branch, or export sessions as Markdown. |
+| `/sync [status\|push\|pull]` | Show or sync saved sessions across machines through a shared folder (opt-in). |
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
@@ -1398,6 +1399,58 @@ settings come from the profile; with `--resume`/`--continue` only the mode and
 model are overlaid so the restored conversation keeps its provider. Sampling
 and budget are global settings, so use `config profile use` to apply those.
 The REPL equivalent is `/config profile list|show|save|use|remove`.
+
+## Cross-machine session sync
+
+Sync saved sessions across machines through a folder you already share (Dropbox,
+iCloud Drive, a network mount, or a git checkout). There is no server component
+and nothing is sent anywhere: the feature is off by default and only reads and
+writes the folder you point it at.
+
+Enable it with an existing directory:
+
+```bash
+kiwimatecoder sync enable ~/Dropbox/kiwimatecoder
+```
+
+or edit `~/.kiwimatecoder/config.json` directly:
+
+```json
+{
+  "sync": {
+    "enabled": true,
+    "path": "~/Dropbox/kiwimatecoder",
+    "machine": "laptop",
+    "include_autosave": false
+  }
+}
+```
+
+The folder gets a `kiwimatecoder-sessions/` subdirectory holding the session
+JSON files plus a `manifest.json` index. `machine` defaults to a slug of the
+hostname; set it explicitly when two machines would otherwise share a name.
+
+```bash
+kiwimatecoder sync status    # local/remote counts, pending changes, conflicts
+kiwimatecoder sync push      # copy local sessions into the shared folder
+kiwimatecoder sync pull      # copy newer shared sessions into the local store
+kiwimatecoder sync disable   # opt out; the shared folder is left alone
+```
+
+The same actions are available in the REPL as `/sync [status|push|pull]`.
+Everything mirrors the local session store except the implicit `last.json`
+autosave, which is skipped by default (`include_autosave: true` opts in) because
+it changes on every exit. Unreadable or corrupt files are skipped and reported,
+never fatal.
+
+**Conflicts.** Each machine remembers what it last pushed or pulled. On the next
+`push`, a shared file that changed elsewhere *and* whose local copy also changed
+is kept as both: the shared copy stays put and the local copy is uploaded as
+`<name>__<machine>.json`. Every other difference is last-write-wins by the
+session's `saved_at` timestamp. `pull` uses the same rule but renames the
+incoming file to `<name>__<remote-machine>.json` instead of overwriting the
+local one. Pass `--force` to `push`/`pull` to make the local copy (push) or the
+shared copy (pull) win unconditionally.
 
 ## Config validation
 

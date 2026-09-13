@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -164,6 +165,12 @@ def _empty_config() -> dict[str, Any]:
             "identity": "",
             "workspace": "",
             "devcontainer": "auto",
+        },
+        "sync": {
+            "enabled": False,
+            "path": "",
+            "machine": "",
+            "include_autosave": False,
         },
         "acp": {
             "permission_timeout": 300,
@@ -301,6 +308,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("index", {})
     cfg.setdefault("shell", {})
     cfg.setdefault("remote", {})
+    cfg.setdefault("sync", {})
     cfg.setdefault("acp", {})
     # Active-provider roster. Configs written before this feature lack the key;
     # migrate by seeding it from the single selected provider. An explicitly
@@ -1799,6 +1807,105 @@ def set_remote(
             "(set a host or name a devcontainer)."
         )
     cfg["remote"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
+# Opt-in cross-machine session sync
+# ---------------------------------------------------------------------------
+
+SYNC_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "path": "",
+    "machine": "",
+    "include_autosave": False,
+}
+
+
+def _machine_slug(name: str | None = None) -> str:
+    """Return a filename-safe machine slug (a hostname-derived one by default)."""
+    if name is None:
+        try:
+            name = socket.gethostname()
+        except OSError:
+            name = ""
+    cleaned = re.sub(r"[^a-z0-9]+", "-", str(name).strip().lower()).strip("-")
+    return cleaned or "machine"
+
+
+def get_sync(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized session-sync settings, always fully populated.
+
+    Sync is **opt-in** and off by default. A missing or empty ``machine`` is
+    resolved to a slug of the hostname so callers (and conflict copies) always
+    have a stable name to use. Malformed stored values fall back to
+    :data:`SYNC_DEFAULTS`; ``validate_config`` reports exactly what would be
+    ignored.
+    """
+    cfg = cfg or load_config()
+    stored = cfg.get("sync") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    effective = dict(SYNC_DEFAULTS)
+    enabled = stored.get("enabled")
+    if isinstance(enabled, bool):
+        effective["enabled"] = enabled
+    path = stored.get("path")
+    if isinstance(path, str):
+        effective["path"] = path.strip()
+    machine = stored.get("machine")
+    if isinstance(machine, str) and machine.strip():
+        effective["machine"] = machine.strip()
+    else:
+        effective["machine"] = _machine_slug()
+    include_autosave = stored.get("include_autosave")
+    if isinstance(include_autosave, bool):
+        effective["include_autosave"] = include_autosave
+    return effective
+
+
+def set_sync(
+    enabled: bool | None = None,
+    path: str | None = None,
+    machine: str | None = None,
+    include_autosave: bool | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update session-sync settings; omitted arguments keep their value.
+
+    Raises ``ValueError`` for non-boolean flags, a non-string path, an empty
+    machine name, or when sync is enabled without an existing directory. The
+    resolved machine slug is persisted so it cannot drift when a hostname
+    changes.
+    """
+    cfg = cfg or load_config()
+    current = get_sync(cfg)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise ValueError("sync enabled must be true or false.")
+        current["enabled"] = enabled
+    if path is not None:
+        if not isinstance(path, str):
+            raise ValueError("sync path must be a string.")
+        cleaned = path.strip()
+        current["path"] = str(Path(cleaned).expanduser()) if cleaned else ""
+    if machine is not None:
+        if not isinstance(machine, str) or not machine.strip():
+            raise ValueError("sync machine must be a non-empty string.")
+        current["machine"] = machine.strip()
+    if include_autosave is not None:
+        if not isinstance(include_autosave, bool):
+            raise ValueError("sync include_autosave must be true or false.")
+        current["include_autosave"] = include_autosave
+    if current["enabled"]:
+        if not current["path"]:
+            raise ValueError("sync path is required when sync is enabled.")
+        if not Path(current["path"]).is_dir():
+            raise ValueError(
+                f"sync path is not an existing directory: {current['path']}"
+            )
+    cfg["sync"] = current
     save_config(cfg)
     return current
 
@@ -3458,6 +3565,44 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                     "remote.host",
                     "A host is required when remote execution is enabled.",
                 )
+
+    sync_section = cfg.get("sync")
+    if sync_section is not None:
+        if not isinstance(sync_section, dict):
+            add("error", "sync", "'sync' must be an object.")
+        else:
+            if "enabled" in sync_section and not isinstance(
+                sync_section["enabled"], bool
+            ):
+                add("error", "sync.enabled", "'enabled' must be true or false.")
+            if "path" in sync_section and not isinstance(sync_section["path"], str):
+                add("error", "sync.path", "'path' must be a string.")
+            if "machine" in sync_section and not isinstance(
+                sync_section["machine"], str
+            ):
+                add("error", "sync.machine", "'machine' must be a string.")
+            if "include_autosave" in sync_section and not isinstance(
+                sync_section["include_autosave"], bool
+            ):
+                add(
+                    "error",
+                    "sync.include_autosave",
+                    "'include_autosave' must be true or false.",
+                )
+            if sync_section.get("enabled") is True:
+                sync_path = str(sync_section.get("path") or "").strip()
+                if not sync_path:
+                    add(
+                        "error",
+                        "sync.path",
+                        "A path is required when sync is enabled.",
+                    )
+                elif not Path(sync_path).expanduser().is_dir():
+                    add(
+                        "error",
+                        "sync.path",
+                        f"Sync path does not exist: {sync_path}",
+                    )
 
     acp_section = cfg.get("acp")
     if acp_section is not None:
