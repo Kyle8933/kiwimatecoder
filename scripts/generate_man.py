@@ -65,7 +65,7 @@ def _metavar(param: click.Parameter) -> str:
 
 def _option_label(param: click.Parameter) -> str:
     names = ", ".join(_bold(opt) for opt in param.opts)
-    if isinstance(param.type, click.Choice):
+    if hasattr(param.type, "choices"):
         choices = "|".join(str(choice) for choice in param.type.choices)
         label = f"{names} {_italic(choices)}"
     elif getattr(param, "is_flag", False) or getattr(param, "count", False):
@@ -98,9 +98,7 @@ def _command_usage(path: str, command: click.Command) -> str:
         parts.append(path)
     parts.append("[OPTIONS]")
     for param in command.params:
-        if not isinstance(param, click.Parameter):
-            continue
-        if isinstance(param, click.Argument):
+        if getattr(param, "param_type_name", None) == "argument":
             parts.append(_argument_usage(param))
     return " ".join(parts)
 
@@ -109,11 +107,12 @@ def _render_params(command: click.Command) -> list[str]:
     """Render every option and positional argument as ``.TP`` blocks."""
     lines: list[str] = []
     for param in command.params:
-        if isinstance(param, click.Option):
+        kind = getattr(param, "param_type_name", None)
+        if kind == "option":
             lines.append(".TP")
             lines.append(_option_label(param))
             lines.append(_option_help(param))
-        elif isinstance(param, click.Argument):
+        elif kind == "argument":
             lines.append(".TP")
             lines.append(_bold(_argument_usage(param)))
             lines.append("Positional argument.")
@@ -121,8 +120,11 @@ def _render_params(command: click.Command) -> list[str]:
 
 
 def _walk(command: click.Command, prefix: str) -> list[tuple[str, click.Command]]:
+    # Typer's own Group/Option/Argument classes (typer.core.Typer*) no longer
+    # subclass the standalone `click` package's classes in modern typer
+    # releases, so detect a group structurally instead of via isinstance.
     found: list[tuple[str, click.Command]] = []
-    if not isinstance(command, click.Group):
+    if not (hasattr(command, "list_commands") and hasattr(command, "get_command")):
         return found
     ctx = click.Context(command)
     for name in command.list_commands(ctx):

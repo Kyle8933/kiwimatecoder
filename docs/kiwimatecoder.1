@@ -17,34 +17,34 @@ Show the installed KiwiMateCoder version and exit.
 \fB\-update\fP, \fB\-\-update\fP
 Update KiwiMateCoder in the current Python environment.
 .TP
-\fB\-resume\fP, \fB\-\-resume\fP \fITEXT\fP
+\fB\-resume\fP, \fB\-\-resume\fP \fISTR\fP
 Resume a saved session by name or path ('last' = autosave).
 .TP
 \fB\-\-continue\fP, \fB\-c\fP
 Continue the most recent session (same as --resume last).
 .TP
-\fB\-\-profile\fP \fITEXT\fP
+\fB\-\-profile\fP \fISTR\fP
 Apply a saved config profile for this session (not persisted).
 .TP
-\fB\-\-print\fP, \fB\-p\fP \fITEXT\fP
+\fB\-\-print\fP, \fB\-p\fP \fISTR\fP
 Run one headless agent turn with this prompt ('-' reads stdin).
 .TP
-\fB\-\-output\-format\fP \fITEXT\fP
+\fB\-\-output\-format\fP \fISTR\fP
 Headless output: text, json, or stream-json.
 .TP
-\fB\-\-mode\fP \fITEXT\fP
+\fB\-\-mode\fP \fISTR\fP
 Override the permission mode: ask, auto-accept, or plan.
 .TP
 \fB\-\-yes\fP, \fB\-y\fP
 Treat every approval as granted (auto-accept) without prompting.
 .TP
-\fB\-\-max\-turns\fP \fIINTEGER\fP
+\fB\-\-max\-turns\fP \fIINT\fP
 Maximum tool-loop iterations before stopping (default 30).
 .TP
-\fB\-\-provider\fP \fITEXT\fP
+\fB\-\-provider\fP \fISTR\fP
 Provider id override for this run.
 .TP
-\fB\-\-model\fP \fITEXT\fP
+\fB\-\-model\fP \fISTR\fP
 Model id override for this run.
 .TP
 \fB\-\-workspace\fP \fIPATH\fP
@@ -79,10 +79,10 @@ Choose a provider and save its API key —...
 kiwimatecoder setup [OPTIONS]
 .fi
 .TP
-\fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
+\fB\-\-provider\fP, \fB\-p\fP \fISTR\fP
 Provider id (default: configured provider)
 .TP
-\fB\-\-key\fP, \fB\-k\fP \fITEXT\fP
+\fB\-\-key\fP, \fB\-k\fP \fISTR\fP
 API key (skips the interactive prompt)
 .TP
 \fB\-\-help\fP
@@ -100,10 +100,10 @@ Positional argument.
 \fB\-\-file\fP, \fB\-f\fP \fIPATH\fP
 Path to a code file to include
 .TP
-\fB\-\-model\fP, \fB\-m\fP \fITEXT\fP
+\fB\-\-model\fP, \fB\-m\fP \fISTR\fP
 Override the default model
 .TP
-\fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
+\fB\-\-provider\fP, \fB\-p\fP \fISTR\fP
 Provider id (default: configured provider)
 .TP
 \fB\-\-help\fP
@@ -136,7 +136,7 @@ Update KiwiMateCoder in the current Python...
 kiwimatecoder update [OPTIONS]
 .fi
 .TP
-\fB\-\-ref\fP \fITEXT\fP
+\fB\-\-ref\fP \fISTR\fP
 Git ref to install: branch, tag, or commit SHA (default: current branch).
 .TP
 \fB\-\-help\fP
@@ -325,16 +325,16 @@ Positional argument.
 \fBDEFAULT_MODEL\fP
 Positional argument.
 .TP
-\fB\-\-key\-env\fP \fITEXT\fP
+\fB\-\-key\-env\fP \fISTR\fP
 API key environment variable (default: <ID>_API_KEY)
 .TP
-\fB\-\-key\-header\fP \fITEXT\fP
+\fB\-\-key\-header\fP \fISTR\fP
 Auth header name (default: Authorization)
 .TP
-\fB\-\-key\-prefix\fP \fITEXT\fP
+\fB\-\-key\-prefix\fP \fISTR\fP
 Prefix before the key (default: 'Bearer '; use '' for none)
 .TP
-\fB\-\-api\-version\fP \fITEXT\fP
+\fB\-\-api\-version\fP \fISTR\fP
 Azure-style ?api-version= value (default: none)
 .TP
 \fB\-\-help\fP
@@ -361,28 +361,28 @@ kiwimatecoder config provider edit [OPTIONS] PROVIDER
 \fBPROVIDER\fP
 Positional argument.
 .TP
-\fB\-\-name\fP \fITEXT\fP
+\fB\-\-name\fP \fISTR\fP
 New display name
 .TP
-\fB\-\-base\-url\fP \fITEXT\fP
+\fB\-\-base\-url\fP \fISTR\fP
 New base URL
 .TP
-\fB\-\-default\-model\fP \fITEXT\fP
+\fB\-\-default\-model\fP \fISTR\fP
 New default model
 .TP
-\fB\-\-key\-env\fP \fITEXT\fP
+\fB\-\-key\-env\fP \fISTR\fP
 New key environment variable
 .TP
-\fB\-\-compat\fP \fITEXT\fP
+\fB\-\-compat\fP \fISTR\fP
 \&'openai' or 'anthropic'
 .TP
-\fB\-\-key\-header\fP \fITEXT\fP
+\fB\-\-key\-header\fP \fISTR\fP
 New auth header name
 .TP
-\fB\-\-key\-prefix\fP \fITEXT\fP
+\fB\-\-key\-prefix\fP \fISTR\fP
 New prefix before the key ('' clears the prefix)
 .TP
-\fB\-\-api\-version\fP \fITEXT\fP
+\fB\-\-api\-version\fP \fISTR\fP
 New ?api-version= value ('' clears it)
 .TP
 \fB\-\-help\fP
@@ -463,7 +463,7 @@ List the models offered for a provider,...
 kiwimatecoder config models show [OPTIONS]
 .fi
 .TP
-\fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
+\fB\-\-provider\fP, \fB\-p\fP \fISTR\fP
 Provider id (default: configured provider)
 .TP
 \fB\-\-help\fP
@@ -475,7 +475,7 @@ Fetch the provider's live model list,...
 kiwimatecoder config models refresh [OPTIONS]
 .fi
 .TP
-\fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
+\fB\-\-provider\fP, \fB\-p\fP \fISTR\fP
 Provider id (default: configured provider)
 .TP
 \fB\-\-help\fP
@@ -490,7 +490,7 @@ kiwimatecoder config models allow [OPTIONS] MODELS...
 \fBMODELS...\fP
 Positional argument.
 .TP
-\fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
+\fB\-\-provider\fP, \fB\-p\fP \fISTR\fP
 Provider id (default: configured provider)
 .TP
 \fB\-\-help\fP
@@ -505,7 +505,7 @@ kiwimatecoder config models deny [OPTIONS] MODELS...
 \fBMODELS...\fP
 Positional argument.
 .TP
-\fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
+\fB\-\-provider\fP, \fB\-p\fP \fISTR\fP
 Provider id (default: configured provider)
 .TP
 \fB\-\-help\fP
@@ -517,7 +517,7 @@ Clear model visibility for a provider.
 kiwimatecoder config models clear [OPTIONS]
 .fi
 .TP
-\fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
+\fB\-\-provider\fP, \fB\-p\fP \fISTR\fP
 Provider id (default: configured provider)
 .TP
 \fB\-\-help\fP
@@ -805,16 +805,16 @@ kiwimatecoder config mcp add [OPTIONS] NAME
 \fBNAME\fP
 Positional argument.
 .TP
-\fB\-\-command\fP \fITEXT\fP
+\fB\-\-command\fP \fISTR\fP
 stdio command to run
 .TP
-\fB\-\-args\fP \fITEXT\fP
+\fB\-\-args\fP \fISTR\fP
 stdio arguments (quote the whole value)
 .TP
-\fB\-\-url\fP \fITEXT\fP
+\fB\-\-url\fP \fISTR\fP
 HTTP MCP endpoint
 .TP
-\fB\-\-header\fP, \fB\-H\fP \fITEXT\fP
+\fB\-\-header\fP, \fB\-H\fP \fISTR\fP
 HTTP header 'Name: value' (repeatable)
 .TP
 \fB\-\-help\fP
@@ -1780,13 +1780,13 @@ Positional argument.
 \fB\-\-workspace\fP \fIPATH\fP
 Workspace root (default: current directory)
 .TP
-\fB\-\-provider\fP \fITEXT\fP
+\fB\-\-provider\fP \fISTR\fP
 Provider id override
 .TP
-\fB\-\-model\fP \fITEXT\fP
+\fB\-\-model\fP \fISTR\fP
 Model id override
 .TP
-\fB\-\-mode\fP \fITEXT\fP
+\fB\-\-mode\fP \fISTR\fP
 Permission mode (default: auto-accept, i.e. unattended).
 .TP
 \fB\-\-help\fP
@@ -1807,13 +1807,13 @@ Seconds between runs
 \fB\-\-workspace\fP \fIPATH\fP
 Workspace root (default: current directory)
 .TP
-\fB\-\-provider\fP \fITEXT\fP
+\fB\-\-provider\fP \fISTR\fP
 Provider id override
 .TP
-\fB\-\-model\fP \fITEXT\fP
+\fB\-\-model\fP \fISTR\fP
 Model id override
 .TP
-\fB\-\-mode\fP \fITEXT\fP
+\fB\-\-mode\fP \fISTR\fP
 Permission mode (default: auto-accept).
 .TP
 \fB\-\-help\fP
@@ -1987,7 +1987,7 @@ kiwimatecoder share import [OPTIONS] PATH
 \fBPATH\fP
 Positional argument.
 .TP
-\fB\-\-name\fP, \fB\-n\fP \fITEXT\fP
+\fB\-\-name\fP, \fB\-n\fP \fISTR\fP
 Name for the new saved session.
 .TP
 \fB\-\-help\fP
@@ -2023,13 +2023,13 @@ kiwimatecoder eval run [OPTIONS]
 \fB\-\-dir\fP \fIPATH\fP
 Directory of *.json eval cases (default: evals/cases).
 .TP
-\fB\-\-provider\fP \fITEXT\fP
+\fB\-\-provider\fP \fISTR\fP
 Provider id override for every case.
 .TP
-\fB\-\-model\fP \fITEXT\fP
+\fB\-\-model\fP \fISTR\fP
 Model id override for every case.
 .TP
-\fB\-\-filter\fP \fITEXT\fP
+\fB\-\-filter\fP \fISTR\fP
 Only run cases whose name contains this text.
 .TP
 \fB\-\-json\fP

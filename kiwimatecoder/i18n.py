@@ -49,9 +49,34 @@ _EN: dict[str, str] = {
         "(remove with /config permissions remove {tool})."
     ),
     "approval.review_hunks": "Review hunks:",
+    "approval.review_hunks_title": "Review Changes",
+    "approval.hunk_label": "Hunk",
     "approval.apply_hunks": "Apply which hunks? (1,3 / 1-2 / all / none):",
+    "approval.attempt": "(attempt {attempt}/{total})",
     "approval.retry_selection": "Unrecognized selection — try again.",
     "approval.too_many_attempts": "Too many invalid attempts; denied.",
+    "approval.options_label": "Options:",
+    "approval.option_all": "Apply all hunks",
+    "approval.option_none": "Reject all hunks",
+    "approval.option_specific": "Apply specific hunks (comma-separated)",
+    "approval.applying_all": "Applying all hunks",
+    "approval.rejecting_all": "Rejecting all hunks",
+    "approval.applying_hunks": "Applying hunks: {selection}",
+    "approval.required_title": "Approval Required",
+    "approval.approved_always": "Approved (always for this tool)",
+    "approval.approved": "Approved",
+    "approval.denied_mark": "Denied",
+    "ask.title": "Question",
+    "ask.choose_option": "Choose an option:",
+    "ask.instructions": (
+        "Enter a number to select an option, or type your own answer."
+    ),
+    "ask.prompt": "Your answer",
+    "ask.cancelled": "Answer cancelled.",
+    "ask.invalid_option": (
+        "Invalid option. Please enter 1-{count} or type your answer."
+    ),
+    "ask.selected": "Selected:",
     # Errors
     "error.unknown_command": "Unknown command '/{name}'. Try /help.",
     "error.no_key": (
@@ -109,11 +134,38 @@ _DE: dict[str, str] = {
         "(entfernen mit /config permissions remove {tool})."
     ),
     "approval.review_hunks": "Änderungsblöcke prüfen:",
+    "approval.review_hunks_title": "Änderungen prüfen",
+    "approval.hunk_label": "Block",
     "approval.apply_hunks": (
         "Welche Blöcke anwenden? (1,3 / 1-2 / all / none):"
     ),
+    "approval.attempt": "(Versuch {attempt}/{total})",
     "approval.retry_selection": "Auswahl nicht erkannt — bitte erneut versuchen.",
     "approval.too_many_attempts": "Zu viele ungültige Versuche; abgelehnt.",
+    "approval.options_label": "Optionen:",
+    "approval.option_all": "Alle Blöcke anwenden",
+    "approval.option_none": "Alle Blöcke ablehnen",
+    "approval.option_specific": "Bestimmte Blöcke anwenden (kommagetrennt)",
+    "approval.applying_all": "Alle Blöcke werden angewendet",
+    "approval.rejecting_all": "Alle Blöcke werden abgelehnt",
+    "approval.applying_hunks": "Blöcke werden angewendet: {selection}",
+    "approval.required_title": "Genehmigung erforderlich",
+    "approval.approved_always": "Genehmigt (immer für dieses Tool)",
+    "approval.approved": "Genehmigt",
+    "approval.denied_mark": "Abgelehnt",
+    "ask.title": "Frage",
+    "ask.choose_option": "Option wählen:",
+    "ask.instructions": (
+        "Gib eine Zahl ein, um eine Option zu wählen, "
+        "oder tippe deine eigene Antwort."
+    ),
+    "ask.prompt": "Deine Antwort",
+    "ask.cancelled": "Antwort abgebrochen.",
+    "ask.invalid_option": (
+        "Ungültige Option. Bitte 1-{count} eingeben "
+        "oder deine eigene Antwort tippen."
+    ),
+    "ask.selected": "Ausgewählt:",
     "error.unknown_command": "Unbekannter Befehl '/{name}'. Versuche /help.",
     "error.no_key": (
         "Kein API-Schlüssel für {provider}. Setze einen mit "
@@ -171,9 +223,35 @@ _ES: dict[str, str] = {
         "(elimínalo con /config permissions remove {tool})."
     ),
     "approval.review_hunks": "Revisar bloques:",
+    "approval.review_hunks_title": "Revisar cambios",
+    "approval.hunk_label": "Bloque",
     "approval.apply_hunks": "¿Qué bloques aplicar? (1,3 / 1-2 / all / none):",
+    "approval.attempt": "(intento {attempt}/{total})",
     "approval.retry_selection": "Selección no reconocida — inténtalo de nuevo.",
     "approval.too_many_attempts": "Demasiados intentos no válidos; denegado.",
+    "approval.options_label": "Opciones:",
+    "approval.option_all": "Aplicar todos los bloques",
+    "approval.option_none": "Rechazar todos los bloques",
+    "approval.option_specific": "Aplicar bloques específicos (separados por comas)",
+    "approval.applying_all": "Aplicando todos los bloques",
+    "approval.rejecting_all": "Rechazando todos los bloques",
+    "approval.applying_hunks": "Aplicando bloques: {selection}",
+    "approval.required_title": "Aprobación requerida",
+    "approval.approved_always": "Aprobado (siempre para esta herramienta)",
+    "approval.approved": "Aprobado",
+    "approval.denied_mark": "Denegado",
+    "ask.title": "Pregunta",
+    "ask.choose_option": "Elige una opción:",
+    "ask.instructions": (
+        "Introduce un número para elegir una opción, "
+        "o escribe tu propia respuesta."
+    ),
+    "ask.prompt": "Tu respuesta",
+    "ask.cancelled": "Respuesta cancelada.",
+    "ask.invalid_option": (
+        "Opción no válida. Introduce 1-{count} o escribe tu propia respuesta."
+    ),
+    "ask.selected": "Seleccionado:",
     "error.unknown_command": "Comando desconocido '/{name}'. Prueba /help.",
     "error.no_key": (
         "No hay clave de API para {provider}. Configura una con "
