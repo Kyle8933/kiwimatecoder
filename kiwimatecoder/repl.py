@@ -53,6 +53,7 @@ from prompt_toolkit.styles import BaseStyle, Style, merge_styles
 from prompt_toolkit.widgets import Box, Frame, Label
 from prompt_toolkit.widgets.base import _DialogList
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 
@@ -468,36 +469,39 @@ def _review_hunks(hunk_list: Sequence[Hunk]) -> ApprovalResult:
     console.print(
         Panel(
             f"[bold]{t('approval.review_hunks')}[/bold]",
-            title="[cyan]Review Changes[/cyan]",
+            title=f"[cyan]{t('approval.review_hunks_title')}[/cyan]",
             border_style="cyan",
             padding=(0, 1),
         )
     )
     console.print()
-    
+
     for hunk in hunk_list:
-        console.print(f"[bold cyan]Hunk {hunk.index}[/bold cyan]: {hunk.header}")
+        console.print(
+            f"[bold cyan]{t('approval.hunk_label')} {hunk.index}[/bold cyan]: "
+            f"{escape(hunk.header)}"
+        )
         # Display changed lines with syntax highlighting
         for line in _hunk_overview(hunk):
             if line.startswith("+"):
-                console.print(f"  [green]{line}[/green]", markup=False, highlight=False)
+                console.print(f"  [green]{escape(line)}[/green]")
             elif line.startswith("-"):
-                console.print(f"  [red]{line}[/red]", markup=False, highlight=False)
+                console.print(f"  [red]{escape(line)}[/red]")
             else:
-                console.print(f"  {line}", markup=False, highlight=False)
+                console.print(f"  {escape(line)}")
         console.print()
 
-    console.print("[dim]Options:[/dim]")
-    console.print("  [green]all[/green]   - Apply all hunks")
-    console.print("  [red]none[/red]  - Reject all hunks")
-    console.print("  [cyan]1,2,3[/cyan] - Apply specific hunks (comma-separated)")
+    console.print(f"[dim]{t('approval.options_label')}[/dim]")
+    console.print(f"  [green]all[/green]   - {t('approval.option_all')}")
+    console.print(f"  [red]none[/red]  - {t('approval.option_none')}")
+    console.print(f"  [cyan]1,2,3[/cyan] - {t('approval.option_specific')}")
     console.print()
-    
+
     for attempt in range(3):
         try:
             answer = console.input(
                 f"[bold]{t('approval.apply_hunks')}[/bold] "
-                f"[dim](attempt {attempt + 1}/3)[/dim]: "
+                f"[dim]{t('approval.attempt', attempt=attempt + 1, total=3)}[/dim]: "
             ).strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[yellow]{t('approval.denied')}[/yellow]")
@@ -508,12 +512,14 @@ def _review_hunks(hunk_list: Sequence[Hunk]) -> ApprovalResult:
             console.print(f"[yellow]{t('approval.retry_selection')}[/yellow]")
             continue
         if selection == "all":
-            console.print("[green]✓ Applying all hunks[/green]")
+            console.print(f"[green]✓ {t('approval.applying_all')}[/green]")
             return ApprovalResult(allowed=True)
         if selection == "none":
-            console.print("[yellow]✓ Rejecting all hunks[/yellow]")
+            console.print(f"[yellow]✓ {t('approval.rejecting_all')}[/yellow]")
             return ApprovalResult(allowed=False)
-        console.print(f"[green]✓ Applying hunks: {selection}[/green]")
+        console.print(
+            f"[green]✓ {t('approval.applying_hunks', selection=selection)}[/green]"
+        )
         return ApprovalResult(allowed=True, selected_hunks=selection)
 
     console.print(f"[yellow]{t('approval.too_many_attempts')}[/yellow]")
@@ -580,7 +586,7 @@ def _make_confirm(session: Session) -> ConfirmFn:
             console.print(
                 Panel(
                     f"[bold]{t('approval.approve', summary=summary)}[/bold]",
-                    title="[yellow]Approval Required[/yellow]",
+                    title=f"[yellow]{t('approval.required_title')}[/yellow]",
                     border_style="yellow",
                     padding=(0, 1),
                 )
@@ -595,12 +601,12 @@ def _make_confirm(session: Session) -> ConfirmFn:
                 "([green]y[/green])es / ([red]n[/red])o / "
                 "([cyan]a[/cyan])lways / ([magenta]h[/magenta])unks"
             )
-        
-        # Display clear instructions
+
         console.print()
-        console.print(f"[bold]{t('approval.allow')}[/bold] {choices}): ", end="")
         try:
-            answer = console.input("").strip().lower()
+            answer = console.input(
+                f"[bold]{t('approval.allow')}[/bold] {choices}): "
+            ).strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[yellow]{t('approval.denied')}[/yellow]")
             return False
@@ -619,14 +625,14 @@ def _make_confirm(session: Session) -> ConfirmFn:
                 )
             except OSError:
                 pass
-            console.print("[green]✓ Approved (always for this tool)[/green]")
+            console.print(f"[green]✓ {t('approval.approved_always')}[/green]")
             return True
         if multi_hunk and answer in ("h", "hunks"):
             return _review_hunks(hunk_list)
         if answer in ("y", "yes"):
-            console.print("[green]✓ Approved[/green]")
+            console.print(f"[green]✓ {t('approval.approved')}[/green]")
             return True
-        console.print("[red]✗ Denied[/red]")
+        console.print(f"[red]✗ {t('approval.denied_mark')}[/red]")
         return False
 
     return confirm
@@ -667,54 +673,46 @@ def _make_ask_user(console: Console):
         console.print(
             Panel(
                 f"[bold]{question}[/bold]",
-                title="[yellow]Question[/yellow]",
+                title=f"[yellow]{t('ask.title')}[/yellow]",
                 border_style="yellow",
                 padding=(0, 1),
             )
         )
-        
-        if options:
-            console.print("[dim]Choose an option:[/dim]")
-            for index, option in enumerate(options, 1):
-                console.print(f"  [green]{index}[/green]. {option}")
-            console.print()
-            
-            # Provide clear instructions
-            console.print(
-                "[dim]Enter a number to select an option, or type your own answer.[/dim]"
-            )
-            
+
+        if not options:
             try:
-                answer = console.input("[bold cyan]Your answer[/bold cyan]: ").strip()
+                answer = console.input(f"[bold cyan]{t('ask.prompt')}[/bold cyan]: ").strip()
             except (EOFError, KeyboardInterrupt):
-                console.print("\n[yellow]Answer cancelled.[/yellow]")
+                console.print(f"\n[yellow]{t('ask.cancelled')}[/yellow]")
                 return ""
-            
+            return answer
+
+        console.print(f"[dim]{t('ask.choose_option')}[/dim]")
+        for index, option in enumerate(options, 1):
+            console.print(f"  [green]{index}[/green]. {option}")
+        console.print()
+        console.print(f"[dim]{t('ask.instructions')}[/dim]")
+
+        for _ in range(2):
+            try:
+                answer = console.input(f"[bold cyan]{t('ask.prompt')}[/bold cyan]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print(f"\n[yellow]{t('ask.cancelled')}[/yellow]")
+                return ""
+
             if answer.isdigit():
                 position = int(answer)
                 if 1 <= position <= len(options):
                     selected = options[position - 1]
-                    console.print(f"[green]✓ Selected:[/green] {selected}")
+                    console.print(f"[green]✓ {t('ask.selected')}[/green] {selected}")
                     return selected
-                else:
-                    console.print(
-                        f"[yellow]Invalid option. Please enter 1-{len(options)} or type your answer.[/yellow]"
-                    )
-                    # Give one more chance
-                    try:
-                        answer = console.input("[bold cyan]Your answer[/bold cyan]: ").strip()
-                    except (EOFError, KeyboardInterrupt):
-                        return ""
-                    return answer
+                console.print(
+                    f"[yellow]{t('ask.invalid_option', count=len(options))}[/yellow]"
+                )
+                continue
             return answer
-        else:
-            # No options provided - free-form answer
-            try:
-                answer = console.input("[bold cyan]Your answer[/bold cyan]: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                console.print("\n[yellow]Answer cancelled.[/yellow]")
-                return ""
-            return answer
+
+        return answer
 
     return ask
 

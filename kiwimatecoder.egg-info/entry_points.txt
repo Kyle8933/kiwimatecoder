@@ -1,2 +1,0 @@
-[console_scripts]
-kiwimatecoder = kiwimatecoder.main:app

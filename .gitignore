@@ -1,4 +1,3 @@
-```gitignore
 # Python compiled files
 *.pyc
 __pycache__/
@@ -37,4 +36,3 @@ target/
 # System files
 .DS_Store
 Thumbs.db
-```
