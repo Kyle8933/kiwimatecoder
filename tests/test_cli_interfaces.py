@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import typer.main
 from typer.testing import CliRunner
 
 from kiwimatecoder import config, main
@@ -90,14 +91,16 @@ def test_print_dash_still_reads_stdin_without_tty(tmp_path, monkeypatch):
 
 
 def test_help_advertises_shell_completion_flags():
-    # Rich wraps the options table to the detected terminal width, which can
-    # split a flag name across lines on a narrow/headless CI runner. Pin a
-    # wide COLUMNS so the assertion doesn't depend on the ambient terminal.
-    result = CliRunner().invoke(main.app, ["--help"], env={"COLUMNS": "200"})
-
+    result = CliRunner().invoke(main.app, ["--help"])
     assert result.exit_code == 0
-    assert "--install-completion" in result.stdout
-    assert "--show-completion" in result.stdout
+
+    # Check the registered option names directly rather than scraping Rich's
+    # rendered --help text: that table wraps to the detected terminal width
+    # and can truncate/split a flag name on a narrow or headless CI runner.
+    root = typer.main.get_command(main.app)
+    all_opts = {opt for param in root.params for opt in getattr(param, "opts", [])}
+    assert "--install-completion" in all_opts
+    assert "--show-completion" in all_opts
 
 
 def test_show_completion_emits_a_script(monkeypatch):
