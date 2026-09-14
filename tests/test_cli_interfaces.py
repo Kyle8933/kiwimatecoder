@@ -90,7 +90,10 @@ def test_print_dash_still_reads_stdin_without_tty(tmp_path, monkeypatch):
 
 
 def test_help_advertises_shell_completion_flags():
-    result = CliRunner().invoke(main.app, ["--help"])
+    # Rich wraps the options table to the detected terminal width, which can
+    # split a flag name across lines on a narrow/headless CI runner. Pin a
+    # wide COLUMNS so the assertion doesn't depend on the ambient terminal.
+    result = CliRunner().invoke(main.app, ["--help"], env={"COLUMNS": "200"})
 
     assert result.exit_code == 0
     assert "--install-completion" in result.stdout
