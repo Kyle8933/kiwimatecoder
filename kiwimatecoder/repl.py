@@ -464,19 +464,43 @@ def _hunk_overview(hunk: Hunk, limit: int = 2) -> list[str]:
 
 def _review_hunks(hunk_list: Sequence[Hunk]) -> ApprovalResult:
     """Prompt for a 1-based hunk selection; deny after repeated bad input."""
-    console.print(f"[bold]{t('approval.review_hunks')}[/bold]")
+    console.print()
+    console.print(
+        Panel(
+            f"[bold]{t('approval.review_hunks')}[/bold]",
+            title="[cyan]Review Changes[/cyan]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    console.print()
+    
     for hunk in hunk_list:
-        console.print(f"  [cyan]{hunk.index}[/cyan]. {hunk.header}")
+        console.print(f"[bold cyan]Hunk {hunk.index}[/bold cyan]: {hunk.header}")
+        # Display changed lines with syntax highlighting
         for line in _hunk_overview(hunk):
-            console.print(f"     {line}", markup=False, highlight=False)
+            if line.startswith("+"):
+                console.print(f"  [green]{line}[/green]", markup=False, highlight=False)
+            elif line.startswith("-"):
+                console.print(f"  [red]{line}[/red]", markup=False, highlight=False)
+            else:
+                console.print(f"  {line}", markup=False, highlight=False)
+        console.print()
 
-    for _ in range(3):
+    console.print("[dim]Options:[/dim]")
+    console.print("  [green]all[/green]   - Apply all hunks")
+    console.print("  [red]none[/red]  - Reject all hunks")
+    console.print("  [cyan]1,2,3[/cyan] - Apply specific hunks (comma-separated)")
+    console.print()
+    
+    for attempt in range(3):
         try:
             answer = console.input(
                 f"[bold]{t('approval.apply_hunks')}[/bold] "
-            )
+                f"[dim](attempt {attempt + 1}/3)[/dim]: "
+            ).strip()
         except (EOFError, KeyboardInterrupt):
-            console.print(f"[yellow]{t('approval.denied')}[/yellow]")
+            console.print(f"\n[yellow]{t('approval.denied')}[/yellow]")
             return ApprovalResult(allowed=False)
 
         selection = parse_hunk_selection(answer, len(hunk_list))
@@ -484,9 +508,12 @@ def _review_hunks(hunk_list: Sequence[Hunk]) -> ApprovalResult:
             console.print(f"[yellow]{t('approval.retry_selection')}[/yellow]")
             continue
         if selection == "all":
+            console.print("[green]✓ Applying all hunks[/green]")
             return ApprovalResult(allowed=True)
         if selection == "none":
+            console.print("[yellow]✓ Rejecting all hunks[/yellow]")
             return ApprovalResult(allowed=False)
+        console.print(f"[green]✓ Applying hunks: {selection}[/green]")
         return ApprovalResult(allowed=True, selected_hunks=selection)
 
     console.print(f"[yellow]{t('approval.too_many_attempts')}[/yellow]")
@@ -549,8 +576,14 @@ def _make_confirm(session: Session) -> ConfirmFn:
                 )
             )
         else:
+            # No preview - show a simple confirmation panel
             console.print(
-                f"[yellow]{t('approval.approve', summary=summary)}[/yellow]"
+                Panel(
+                    f"[bold]{t('approval.approve', summary=summary)}[/bold]",
+                    title="[yellow]Approval Required[/yellow]",
+                    border_style="yellow",
+                    padding=(0, 1),
+                )
             )
 
         multi_hunk = len(hunk_list) >= 2
@@ -562,12 +595,14 @@ def _make_confirm(session: Session) -> ConfirmFn:
                 "([green]y[/green])es / ([red]n[/red])o / "
                 "([cyan]a[/cyan])lways / ([magenta]h[/magenta])unks"
             )
+        
+        # Display clear instructions
+        console.print()
+        console.print(f"[bold]{t('approval.allow')}[/bold] {choices}): ", end="")
         try:
-            answer = console.input(
-                f"[bold]{t('approval.allow')}[/bold] {choices}): "
-            ).strip().lower()
+            answer = console.input("").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            console.print(f"[yellow]{t('approval.denied')}[/yellow]")
+            console.print(f"\n[yellow]{t('approval.denied')}[/yellow]")
             return False
 
         if answer in ("a", "always"):
@@ -584,10 +619,15 @@ def _make_confirm(session: Session) -> ConfirmFn:
                 )
             except OSError:
                 pass
+            console.print("[green]✓ Approved (always for this tool)[/green]")
             return True
         if multi_hunk and answer in ("h", "hunks"):
             return _review_hunks(hunk_list)
-        return answer in ("y", "yes")
+        if answer in ("y", "yes"):
+            console.print("[green]✓ Approved[/green]")
+            return True
+        console.print("[red]✗ Denied[/red]")
+        return False
 
     return confirm
 
@@ -623,15 +663,58 @@ def _make_ask_user(console: Console):
 
     def ask(question: str, options: list[str]) -> str:
         console.print()
-        console.print(f"[bold yellow]{question}[/bold yellow]")
-        for index, option in enumerate(options, 1):
-            console.print(f"  [cyan]{index}[/cyan]. {option}")
-        answer = console.input("answer> ").strip()
-        if options and answer.isdigit():
-            position = int(answer)
-            if 1 <= position <= len(options):
-                return options[position - 1]
-        return answer
+        # Display the question in a styled panel for better visibility
+        console.print(
+            Panel(
+                f"[bold]{question}[/bold]",
+                title="[yellow]Question[/yellow]",
+                border_style="yellow",
+                padding=(0, 1),
+            )
+        )
+        
+        if options:
+            console.print("[dim]Choose an option:[/dim]")
+            for index, option in enumerate(options, 1):
+                console.print(f"  [green]{index}[/green]. {option}")
+            console.print()
+            
+            # Provide clear instructions
+            console.print(
+                "[dim]Enter a number to select an option, or type your own answer.[/dim]"
+            )
+            
+            try:
+                answer = console.input("[bold cyan]Your answer[/bold cyan]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[yellow]Answer cancelled.[/yellow]")
+                return ""
+            
+            if answer.isdigit():
+                position = int(answer)
+                if 1 <= position <= len(options):
+                    selected = options[position - 1]
+                    console.print(f"[green]✓ Selected:[/green] {selected}")
+                    return selected
+                else:
+                    console.print(
+                        f"[yellow]Invalid option. Please enter 1-{len(options)} or type your answer.[/yellow]"
+                    )
+                    # Give one more chance
+                    try:
+                        answer = console.input("[bold cyan]Your answer[/bold cyan]: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        return ""
+                    return answer
+            return answer
+        else:
+            # No options provided - free-form answer
+            try:
+                answer = console.input("[bold cyan]Your answer[/bold cyan]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[yellow]Answer cancelled.[/yellow]")
+                return ""
+            return answer
 
     return ask
 
