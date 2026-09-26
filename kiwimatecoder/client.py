@@ -2,7 +2,9 @@
 
 A single :class:`UnifiedClient` drives every provider in the registry. It supports
 both OpenAI-compatible ``/chat/completions`` SSE streaming and native Anthropic
-``/messages`` SSE streaming.
+``/messages`` SSE streaming. Chat-only providers (``supports_tools=False``) are
+sent no tool schemas, and :func:`flatten_tool_messages` rewrites any tool
+traffic in their history as plain text.
 
 Streamed responses are surfaced as :class:`StreamEvent` objects. Tool calls
 arrive as fragments indexed by position; :class:`ToolCallAssembler` reassembles
@@ -295,6 +297,171 @@ def format_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list
     return system_prompt, converted
 
 
+# Flattened tool results and call arguments longer than this are cut so one huge
+# file read (or write) cannot crowd the rest of the history out of a chat-only
+# endpoint's context.
+_FLATTENED_TEXT_LIMIT = 8000
+
+
+def _clip(text: str) -> str:
+    """Cut ``text`` to the flattened-history limit, marking the cut."""
+    if len(text) <= _FLATTENED_TEXT_LIMIT:
+        return text
+    return text[:_FLATTENED_TEXT_LIMIT] + "\n…[truncated]"
+
+
+def _content_text(content: Any) -> str:
+    """Return the text of a string or OpenAI content-parts value."""
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        texts = [
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+        return "\n\n".join(text for text in texts if text)
+    return str(content)
+
+
+def _content_parts(content: Any) -> list[Any]:
+    """Return ``content`` as a new list of OpenAI content parts."""
+    if isinstance(content, list):
+        return list(content)
+    text = str(content or "")
+    return [{"type": "text", "text": text}] if text else []
+
+
+def _merge_content(first: Any, second: Any) -> Any:
+    """Join two message contents, producing parts if either side has parts."""
+    if isinstance(first, list) or isinstance(second, list):
+        return _content_parts(first) + _content_parts(second)
+    if not first:
+        return second
+    if not second:
+        return first
+    return f"{first}\n\n{second}"
+
+
+def flatten_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rewrite an OpenAI-format transcript for a chat-only endpoint.
+
+    Tool calls become assistant text, tool results become user text, developer
+    messages become system messages, consecutive same-role turns are merged,
+    and the transcript is made to end on a user turn. Only ``role`` and
+    ``content`` survive. The input is never mutated.
+    """
+    flattened: list[dict[str, Any]] = []
+    tool_names: dict[str, str] = {}
+
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+
+        if role in ("system", "developer"):
+            flattened.append({"role": "system", "content": _content_text(content)})
+            continue
+
+        if role == "assistant":
+            pieces: list[str] = []
+            text = _content_text(content)
+            if text.strip():
+                pieces.append(text)
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                name = str(fn.get("name") or "tool")
+                if tc.get("id"):
+                    tool_names[str(tc["id"])] = name
+                args = fn.get("arguments")
+                if not isinstance(args, str):
+                    args = json.dumps(args, ensure_ascii=False, default=str) if args else ""
+                pieces.append(f"[called tool {name} with {_clip(args.strip()) or '{}'}]")
+            if not pieces:
+                continue
+            entry: dict[str, Any] = {"role": "assistant", "content": "\n\n".join(pieces)}
+        elif role == "tool":
+            name = tool_names.get(str(msg.get("tool_call_id") or ""), "tool")
+            result = _clip(_content_text(content))
+            entry = {"role": "user", "content": f"[result of {name}]\n{result}"}
+        else:
+            entry = {
+                "role": "user",
+                "content": list(content) if isinstance(content, list) else content or "",
+            }
+
+        previous = flattened[-1] if flattened else None
+        if previous is not None and previous["role"] == entry["role"]:
+            # ``previous`` was built here, never taken from the input.
+            previous["content"] = _merge_content(previous["content"], entry["content"])
+        else:
+            flattened.append(entry)
+
+    last_turn = next((m for m in reversed(flattened) if m["role"] != "system"), None)
+    if last_turn is not None and last_turn["role"] == "assistant":
+        # E.g. a partial reply left behind by a failed stream.
+        flattened.append({"role": "user", "content": "Continue."})
+    return flattened
+
+
+def _image_url(part: Any) -> str | None:
+    """Return an ``image_url`` part's URL, or None for any other part."""
+    if not isinstance(part, dict) or part.get("type") != "image_url":
+        return None
+    image = part.get("image_url")
+    url = image.get("url") if isinstance(image, dict) else image
+    return str(url or "")
+
+
+def limit_images(
+    messages: list[dict[str, Any]],
+    provider: ProviderConfig,
+) -> list[dict[str, Any]]:
+    """Drop images a provider would reject, noting each drop as text.
+
+    Applies ``provider.max_image_url_chars`` (oversized images) and then
+    ``provider.max_images_per_message`` (keeping the newest images) to every
+    message whose content is a parts list; a limit of 0 means none. A request
+    the endpoint rejects would otherwise fail on every later turn, since the
+    images stay in the history. The input is never mutated.
+    """
+    max_images = provider.max_images_per_message
+    max_chars = provider.max_image_url_chars
+    if not max_images and not max_chars:
+        return messages
+    limited: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            limited.append(msg)
+            continue
+        oversized = 0
+        kept: list[Any] = []
+        for part in content:
+            url = _image_url(part)
+            if url is not None and max_chars and len(url) > max_chars:
+                oversized += 1
+                continue
+            kept.append(part)
+        image_rows = [index for index, part in enumerate(kept) if _image_url(part) is not None]
+        excess = image_rows[: max(0, len(image_rows) - max_images)] if max_images else []
+        if not oversized and not excess:
+            limited.append(msg)
+            continue
+        dropped = set(excess)
+        parts = [part for index, part in enumerate(kept) if index not in dropped]
+        notes: list[str] = []
+        if oversized:
+            notes.append(f"{oversized} image(s) too large for {provider.name}")
+        if excess:
+            notes.append(
+                f"{len(excess)} earlier image(s): {provider.name} accepts at most "
+                f"{max_images} per message"
+            )
+        parts.insert(0, {"type": "text", "text": f"[omitted {'; '.join(notes)}]"})
+        limited.append({**msg, "content": parts})
+    return limited
+
+
 def format_anthropic_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
     """Convert OpenAI tool schemas to Anthropic tools format."""
     if not tools:
@@ -481,9 +648,13 @@ class UnifiedClient:
         # OpenAI-compatible providers cache automatically; no payload change. The
         # ``prompt_cache`` toggle only affects native Anthropic requests.
 
+        # Chat-only endpoints (KiwiMate) reject tool traffic: flatten it, send no tools.
+        chat_only = not self.provider.supports_tools
+        if chat_only:
+            messages = flatten_tool_messages(messages)
         openai_payload: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": limit_images(messages, self.provider),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -491,7 +662,7 @@ class UnifiedClient:
             value = self.sampling.get(key)
             if value is not None:
                 openai_payload[key] = value
-        if tools:
+        if tools and not chat_only:
             openai_payload["tools"] = tools
             # Ollama rejects tool_choice; "auto" is the default behavior anyway.
             if not self.provider.is_local:
@@ -502,6 +673,13 @@ class UnifiedClient:
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, model: str
     ) -> AsyncIterator[StreamEvent]:
         """Yield :class:`StreamEvent` objects for one completion, with retry on transient errors."""
+        # There are no default models, so an unset model fails here (as a
+        # failover-compatible ProviderError) rather than as an HTTP 400.
+        if not model or not model.strip():
+            raise ProviderError(
+                f"No model chosen for {self.provider.name}; "
+                "choose one with /model or pass --model."
+            )
         if not self.provider.is_local and network.offline_enabled():
             raise ProviderError(
                 network.offline_message(f"{self.provider.name} chat completions")

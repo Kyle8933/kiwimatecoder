@@ -1,11 +1,23 @@
+import asyncio
+import copy
+import json
+from datetime import date
+
+import httpx
+import pytest
+
+from kiwimatecoder import network, telemetry
 from kiwimatecoder.client import (
     Done,
+    ProviderError,
     TextDelta,
     ToolCallAssembler,
     ToolCallDelta,
     UnifiedClient,
     Usage,
+    flatten_tool_messages,
     format_anthropic_messages,
+    limit_images,
     parse_sse_chunk,
 )
 from kiwimatecoder.providers import REGISTRY, ProviderConfig
@@ -88,7 +100,6 @@ def _azure_like(**overrides):
         "id": "my-azure",
         "name": "My Azure",
         "base_url": "https://my-resource.openai.azure.com/openai/v1",
-        "default_model": "my-deployment",
         "key_env": "AZURE_OPENAI_API_KEY",
         "key_header": "api-key",
         "key_prefix": "",
@@ -149,7 +160,6 @@ def test_anthropic_headers_ignore_custom_auth_fields():
         id="claude-proxy",
         name="Claude proxy",
         base_url="https://proxy.example.com/v1",
-        default_model="claude-sonnet-5",
         key_env="CLAUDE_PROXY_KEY",
         compat="anthropic",
         key_header="api-key",
@@ -448,3 +458,363 @@ def test_openai_payload_passes_image_content_through_untouched():
     payload = client._payload(messages, None, "gpt-5.6-sol")
 
     assert payload["messages"] == messages
+
+
+# ---------------------------------------------------------------------------
+# Chat-only providers (KiwiMate)
+# ---------------------------------------------------------------------------
+
+
+def _tool_round_trip() -> list[dict]:
+    return [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "What is in a.txt and b.txt?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'},
+                },
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "list_dir", "arguments": ""},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": "alpha"},
+        {"role": "tool", "tool_call_id": "call_2", "content": "b.txt"},
+    ]
+
+
+def test_flatten_turns_tool_round_trip_into_text():
+    flattened = flatten_tool_messages(_tool_round_trip())
+
+    assert flattened == [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "What is in a.txt and b.txt?"},
+        {
+            "role": "assistant",
+            "content": '[called tool read_file with {"path": "a.txt"}]\n\n'
+            "[called tool list_dir with {}]",
+        },
+        {
+            "role": "user",
+            "content": "[result of read_file]\nalpha\n\n[result of list_dir]\nb.txt",
+        },
+    ]
+
+
+def test_flatten_keeps_assistant_text_and_strips_tool_keys():
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "Let me look.",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "grep", "arguments": '{"q": "x"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "match"},
+        {"role": "tool", "tool_call_id": "unknown", "content": "orphan"},
+    ]
+
+    flattened = flatten_tool_messages(messages)
+
+    assert flattened[1] == {
+        "role": "assistant",
+        "content": 'Let me look.\n\n[called tool grep with {"q": "x"}]',
+    }
+    # An unknown tool_call_id falls back to a generic name.
+    assert flattened[2]["content"].endswith("[result of tool]\norphan")
+    for message in flattened:
+        assert set(message) == {"role", "content"}
+
+
+def test_flatten_truncates_long_tool_results():
+    messages = [
+        {"role": "user", "content": "read it"},
+        {"role": "tool", "tool_call_id": "x", "content": "a" * 20000},
+    ]
+
+    content = flatten_tool_messages(messages)[0]["content"]
+
+    assert content.endswith("[result of tool]\n" + "a" * 8000 + "\n…[truncated]")
+
+
+def test_flatten_truncates_long_arguments_and_encodes_non_string_ones():
+    # A write_file call can carry a whole file; it must be cut like a result.
+    big = json.dumps({"path": "x.py", "content": "y" * 20000})
+    messages = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "w", "function": {"name": "write_file", "arguments": big}},
+                # Non-string arguments (hand-edited sessions): readable, never a crash.
+                {
+                    "id": "d",
+                    "function": {
+                        "name": "note",
+                        "arguments": {"q": "héllo", "on": date(2026, 1, 2)},
+                    },
+                },
+            ],
+        },
+    ]
+
+    content = flatten_tool_messages(messages)[1]["content"]
+
+    assert len(content) < 8200
+    assert "\n…[truncated]]" in content
+    assert content.endswith('[called tool note with {"q": "héllo", "on": "2026-01-02"}]')
+
+
+def test_flatten_merges_text_with_image_parts():
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
+    messages = [
+        {"role": "user", "content": "Look at this:"},
+        {"role": "user", "content": [{"type": "text", "text": "the shot"}, image]},
+    ]
+
+    flattened = flatten_tool_messages(messages)
+
+    assert flattened == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Look at this:"},
+                {"type": "text", "text": "the shot"},
+                image,
+            ],
+        }
+    ]
+
+
+def test_flatten_drops_empty_assistant_and_appends_continue():
+    messages = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": None},
+        {"role": "user", "content": "two"},
+        {"role": "assistant", "content": "partial repl"},
+    ]
+
+    flattened = flatten_tool_messages(messages)
+
+    assert flattened == [
+        {"role": "user", "content": "one\n\ntwo"},
+        {"role": "assistant", "content": "partial repl"},
+        {"role": "user", "content": "Continue."},
+    ]
+
+
+def test_flatten_maps_developer_to_system_and_never_merges_systems():
+    messages = [
+        {"role": "system", "content": "base"},
+        {"role": "developer", "content": [{"type": "text", "text": "extra"}]},
+        {"role": "user", "content": "hi"},
+    ]
+
+    flattened = flatten_tool_messages(messages)
+
+    assert flattened == [
+        {"role": "system", "content": "base"},
+        {"role": "system", "content": "extra"},
+        {"role": "user", "content": "hi"},
+    ]
+    assert flatten_tool_messages([{"role": "system", "content": "only"}]) == [
+        {"role": "system", "content": "only"}
+    ]
+
+
+def test_flatten_does_not_mutate_input():
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
+    messages = [
+        *_tool_round_trip(),
+        {"role": "user", "content": [{"type": "text", "text": "and this"}, image]},
+        {"role": "user", "content": [image]},
+        {"role": "assistant", "content": "ok"},
+    ]
+    before = copy.deepcopy(messages)
+
+    flattened = flatten_tool_messages(messages)
+    # Mutating the output must not reach back into the input either.
+    for message in flattened:
+        if isinstance(message["content"], list):
+            message["content"].append({"type": "text", "text": "later"})
+
+    assert messages == before
+
+
+def test_payload_for_chat_only_provider_flattens_and_omits_tools():
+    tools = [{"type": "function", "function": {"name": "read_file"}}]
+    client = UnifiedClient(REGISTRY["kiwimate"], "sk-km-test")
+
+    payload = client._payload(_tool_round_trip(), tools, "kiwimate-small-1-0")
+
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
+    assert payload["messages"] == flatten_tool_messages(_tool_round_trip())
+    assert payload["messages"][-1]["role"] == "user"
+    assert all(m["role"] in ("system", "user", "assistant") for m in payload["messages"])
+
+
+def test_payload_for_tool_provider_keeps_tools_and_history():
+    tools = [{"type": "function", "function": {"name": "read_file"}}]
+    client = UnifiedClient(REGISTRY["openai"], "sk-test")
+
+    payload = client._payload(_tool_round_trip(), tools, "gpt-5.6-sol")
+
+    assert payload["tools"] == tools
+    assert payload["tool_choice"] == "auto"
+    assert payload["messages"] == _tool_round_trip()
+
+
+def _isolate_network(monkeypatch):
+    """Keep stream_chat off the user's config and telemetry log."""
+    monkeypatch.setattr(network, "offline_enabled", lambda: False)
+    monkeypatch.setattr(network, "current_options", lambda: {})
+    monkeypatch.setattr(telemetry, "log_event", lambda *args, **kwargs: None)
+
+
+@pytest.mark.parametrize("model", ["", "   "])
+def test_stream_chat_without_model_fails_before_any_request(monkeypatch, model):
+    def no_http(*args, **kwargs):
+        raise AssertionError("stream_chat must not open an HTTP client")
+
+    _isolate_network(monkeypatch)
+    monkeypatch.setattr(httpx, "AsyncClient", no_http)
+    client = UnifiedClient(REGISTRY["kiwimate"], "sk-km-test")
+
+    async def consume() -> None:
+        async for _event in client.stream_chat([{"role": "user", "content": "hi"}], None, model):
+            pass
+
+    # Specific enough that the offline-mode refusal (which also names the
+    # provider) cannot satisfy it.
+    with pytest.raises(ProviderError, match=r"^No model chosen for KiwiMate; .*/model"):
+        asyncio.run(consume())
+
+
+def test_stream_chat_sends_kiwimate_a_request_it_accepts(monkeypatch):
+    """End to end over a fake endpoint that enforces KiwiMate's rules."""
+    bodies: list[dict] = []
+
+    def kiwimate(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        roles = [m["role"] for m in body["messages"]]
+        if {"tool", "developer"} & set(roles) or roles[-1] != "user":
+            return httpx.Response(400, json={"error": {"message": f"bad roles {roles}"}})
+        sse = (
+            'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1}}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=sse, headers={"content-type": "text/event-stream"})
+
+    _isolate_network(monkeypatch)
+    real_client = httpx.AsyncClient
+    transport = httpx.MockTransport(kiwimate)
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: real_client(transport=transport, **kwargs)
+    )
+    client = UnifiedClient(REGISTRY["kiwimate"], "sk-km-test")
+    tools = [{"type": "function", "function": {"name": "read_file"}}]
+    # A partial reply left by a failed stream after tools ran elsewhere.
+    messages = [*_tool_round_trip(), {"role": "assistant", "content": "Partial"}]
+
+    async def collect() -> list:
+        return [event async for event in client.stream_chat(messages, tools, "kiwimate-small-1-0")]
+
+    events = asyncio.run(collect())
+
+    assert len(bodies) == 1
+    assert "tools" not in bodies[0] and "tool_choice" not in bodies[0]
+    assert bodies[0]["messages"][-1] == {"role": "user", "content": "Continue."}
+    assert TextDelta(text="hi") in events
+    assert Usage(prompt_tokens=3, completion_tokens=1) in events
+    assert events[-1] == Done(finish_reason=None)
+
+
+# ---------------------------------------------------------------------------
+# Per-provider image limits (KiwiMate: <= 4 per message, data URLs < 3M chars)
+# ---------------------------------------------------------------------------
+
+
+def _image(size: int = 10) -> dict:
+    return {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * size}}
+
+
+def test_limit_images_keeps_the_newest_images_within_the_per_message_cap():
+    provider = REGISTRY["kiwimate"]
+    images = [_image(index + 1) for index in range(6)]
+    messages = [{"role": "user", "content": [{"type": "text", "text": "look"}, *images]}]
+    original = copy.deepcopy(messages)
+
+    limited = limit_images(messages, provider)
+
+    parts = limited[0]["content"]
+    assert parts[0] == {
+        "type": "text",
+        "text": "[omitted 2 earlier image(s): KiwiMate accepts at most 4 per message]",
+    }
+    assert parts[1] == {"type": "text", "text": "look"}
+    assert parts[2:] == images[2:]
+    assert messages == original
+
+
+def test_limit_images_drops_oversized_data_urls():
+    provider = REGISTRY["kiwimate"]
+    small = _image()
+    huge = _image(provider.max_image_url_chars)
+    messages = [{"role": "user", "content": [huge, small]}]
+
+    limited = limit_images(messages, provider)
+
+    assert limited[0]["content"] == [
+        {"type": "text", "text": "[omitted 1 image(s) too large for KiwiMate]"},
+        small,
+    ]
+
+
+def test_limit_images_is_a_no_op_without_limits_or_parts():
+    provider = REGISTRY["openai"]
+    messages = [{"role": "user", "content": [_image() for _ in range(9)]}]
+    assert limit_images(messages, provider) is messages
+
+    text_only = [{"role": "user", "content": "hi"}]
+    assert limit_images(text_only, REGISTRY["kiwimate"]) == text_only
+
+
+def test_kiwimate_payload_caps_images_after_merging_unanswered_turns():
+    # A failed turn leaves its images behind; flattening merges it with the
+    # next turn, which would exceed KiwiMate's cap and fail every later turn.
+    first = [_image(index + 1) for index in range(3)]
+    second = [_image(index + 10) for index in range(3)]
+    history = [
+        {"role": "user", "content": [{"type": "text", "text": "a"}, *first]},
+        {"role": "user", "content": [{"type": "text", "text": "b"}, *second]},
+    ]
+    client = UnifiedClient(REGISTRY["kiwimate"], "sk-km-test")
+
+    payload = client._payload(history, None, "kiwimate-small-1-0")
+
+    (message,) = payload["messages"]
+    image_urls = [part for part in message["content"] if part.get("type") == "image_url"]
+    assert image_urls == [first[2], *second]
+    assert "2 earlier image(s)" in message["content"][0]["text"]
+
+
+def test_openai_payload_keeps_every_image():
+    history = [{"role": "user", "content": [_image(index + 1) for index in range(6)]}]
+    client = UnifiedClient(REGISTRY["openai"], "sk-test")
+
+    payload = client._payload(history, None, "gpt-5.5")
+
+    assert payload["messages"] is history

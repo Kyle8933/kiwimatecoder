@@ -26,12 +26,15 @@ from tests.conftest import track_console
 @pytest.fixture(autouse=True)
 def isolate_config_home(tmp_path, monkeypatch):
     from kiwimatecoder import config
+    from kiwimatecoder.providers import REGISTRY
 
     home = tmp_path / "config-home"
     monkeypatch.setattr(config, "CONFIG_DIR", home)
     monkeypatch.setattr(config, "CONFIG_FILE", home / "config.json")
     monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", home / "config")
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
 
 
 @pytest.fixture
@@ -370,7 +373,10 @@ async def test_agent_stream_once_falls_back_to_next_provider(agent_session):
 
 @pytest.mark.anyio
 async def test_agent_stream_once_announces_primary_failure(agent_session):
+    from kiwimatecoder import config
+
     agent_session.set_active_providers(["openrouter", "openai"])
+    config.set_provider_model("openai", "openai-model")
     buf = io.StringIO()
     agent = Agent(
         agent_session, Console(file=buf, force_terminal=False, width=120), MagicMock()
@@ -391,7 +397,10 @@ async def test_agent_stream_once_announces_primary_failure(agent_session):
 
 @pytest.mark.anyio
 async def test_agent_stream_once_raises_when_all_providers_fail(agent_session):
+    from kiwimatecoder import config
+
     agent_session.set_active_providers(["openrouter", "openai"])
+    config.set_provider_model("openai", "openai-model")
     agent = Agent(agent_session, Console(quiet=True), MagicMock(return_value=True))
 
     def fake_client(provider_id: str | None = None):
@@ -408,7 +417,10 @@ async def test_agent_stream_once_raises_when_all_providers_fail(agent_session):
 
 @pytest.mark.anyio
 async def test_agent_stream_once_skips_provider_without_key(agent_session):
+    from kiwimatecoder import config
+
     agent_session.set_active_providers(["openrouter", "openai"])
+    config.set_provider_model("openai", "openai-model")
     agent = Agent(agent_session, Console(quiet=True), MagicMock(return_value=True))
 
     attempts: list[str] = []
@@ -432,6 +444,188 @@ def test_session_model_for_uses_override_for_fallback(agent_session):
 
     assert agent_session.model_for("openrouter") == agent_session.model
     assert agent_session.model_for("openai") == "custom-openai-model"
+
+
+def test_session_model_for_uses_the_chosen_model_or_nothing(agent_session):
+    from kiwimatecoder import config
+
+    agent_session.set_active_providers(["openrouter", "openai", "deepseek"])
+    config.set_provider_model("openai", "chosen-openai-model")
+
+    assert agent_session.model_for("openai") == "chosen-openai-model"
+    # There are no default models: an unconfigured fallback has none.
+    assert agent_session.model_for("deepseek") == ""
+
+
+class _RecordingStream:
+    """A UnifiedClient stand-in that records the model each request used."""
+
+    def __init__(self, provider_id: str, seen: list, fail: bool = False):
+        self.provider_id = provider_id
+        self.seen = seen
+        self.fail = fail
+
+    async def stream_chat(self, messages, tools, model):
+        self.seen.append((self.provider_id, model))
+        if self.fail:
+            raise ProviderError(f"{self.provider_id} down")
+        yield TextDelta(text=f"hi from {self.provider_id}")
+        yield Done(finish_reason="stop")
+
+
+@pytest.mark.anyio
+async def test_agent_skips_a_fallback_without_a_chosen_model(agent_session):
+    from kiwimatecoder import config
+
+    agent_session.set_active_providers(["openrouter", "openai", "deepseek"])
+    config.set_provider_model("deepseek", "deepseek-model")
+    buf = io.StringIO()
+    agent = Agent(
+        agent_session, Console(file=buf, force_terminal=False, width=200), MagicMock()
+    )
+    seen: list[tuple[str, str]] = []
+
+    def fake_client(provider_id: str | None = None):
+        return _RecordingStream(provider_id or "", seen, fail=provider_id == "openrouter")
+
+    with patch("kiwimatecoder.agent.Agent._client", side_effect=fake_client):
+        msg, _calls = await agent._stream_once()
+
+    assert msg["content"] == "hi from deepseek"
+    # OpenAI was never asked: it has no model to ask for.
+    assert seen == [("openrouter", "test-model"), ("deepseek", "deepseek-model")]
+    output = " ".join(buf.getvalue().split())
+    assert "OpenAI failed (no model chosen for OpenAI; choose one with" in output
+    assert "/config model set <model> openai" in output
+    assert "trying DeepSeek" in output
+
+
+@pytest.mark.anyio
+async def test_agent_primary_without_a_model_fails_over(agent_session):
+    from kiwimatecoder import config
+
+    agent_session.set_active_providers(["openrouter", "openai"])
+    agent_session.model = ""
+    config.set_provider_model("openai", "openai-model")
+    buf = io.StringIO()
+    agent = Agent(
+        agent_session, Console(file=buf, force_terminal=False, width=200), MagicMock()
+    )
+    seen: list[tuple[str, str]] = []
+
+    def fake_client(provider_id: str | None = None):
+        return _RecordingStream(provider_id or "", seen)
+
+    with patch("kiwimatecoder.agent.Agent._client", side_effect=fake_client):
+        msg, _calls = await agent._stream_once()
+
+    assert msg["content"] == "hi from openai"
+    assert seen == [("openai", "openai-model")]
+    output = " ".join(buf.getvalue().split())
+    assert "no model chosen for OpenRouter; choose one with /model" in output
+    assert "trying OpenAI" in output
+
+
+@pytest.mark.anyio
+async def test_agent_raises_when_no_active_provider_has_a_model(agent_session):
+    agent_session.set_active_providers(["openrouter", "openai"])
+    agent_session.model = ""
+    agent = Agent(agent_session, Console(quiet=True), MagicMock())
+    seen: list[tuple[str, str]] = []
+
+    def fake_client(provider_id: str | None = None):
+        return _RecordingStream(provider_id or "", seen)
+
+    with (
+        patch("kiwimatecoder.agent.Agent._client", side_effect=fake_client),
+        pytest.raises(ProviderError, match="All active providers failed") as caught,
+    ):
+        await agent._stream_once()
+
+    assert seen == []
+    assert "no model chosen for OpenRouter" in str(caught.value)
+    assert "no model chosen for OpenAI" in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# Output-limit truncation notice
+# ---------------------------------------------------------------------------
+
+_CUT_OFF = "The reply was cut off at the provider's output limit."
+
+
+class _ScriptedStream:
+    def __init__(self, events):
+        self.events = events
+
+    async def stream_chat(self, messages, tools, model):
+        for event in self.events:
+            yield event
+
+
+async def _stream_output(agent_session, events, **agent_kwargs) -> tuple[str, list]:
+    buf = io.StringIO()
+    agent = Agent(
+        agent_session,
+        Console(file=buf, force_terminal=False, width=200),
+        MagicMock(),
+        **agent_kwargs,
+    )
+    with patch(
+        "kiwimatecoder.agent.Agent._client",
+        side_effect=lambda provider_id=None: _ScriptedStream(events),
+    ):
+        _msg, calls = await agent._stream_once()
+    return buf.getvalue(), calls
+
+
+@pytest.mark.anyio
+async def test_agent_notes_a_reply_cut_off_at_the_output_limit(agent_session):
+    output, calls = await _stream_output(
+        agent_session,
+        [TextDelta(text="The answer is"), Done(finish_reason="length")],
+    )
+
+    assert calls == []
+    assert _CUT_OFF in output
+    assert output.index("The answer is") < output.index(_CUT_OFF)
+
+
+@pytest.mark.anyio
+async def test_agent_no_cut_off_notice_for_a_normal_stop(agent_session):
+    output, _calls = await _stream_output(
+        agent_session, [TextDelta(text="Done."), Done(finish_reason="stop")]
+    )
+
+    assert "Done." in output
+    assert _CUT_OFF not in output
+
+
+@pytest.mark.anyio
+async def test_agent_no_cut_off_notice_when_tool_calls_arrived(agent_session):
+    output, calls = await _stream_output(
+        agent_session,
+        [
+            ToolCallDelta(
+                index=0, id="c1", name="list_dir", args_fragment='{"path": "."}'
+            ),
+            Done(finish_reason="length"),
+        ],
+    )
+
+    assert [call.name for call in calls] == ["list_dir"]
+    assert _CUT_OFF not in output
+
+
+@pytest.mark.anyio
+async def test_agent_no_cut_off_notice_without_rendered_text(agent_session):
+    output, _calls = await _stream_output(
+        agent_session,
+        [TextDelta(text="partial"), Done(finish_reason="length")],
+        render_text=False,
+    )
+
+    assert _CUT_OFF not in output
 
 
 # ---------------------------------------------------------------------------

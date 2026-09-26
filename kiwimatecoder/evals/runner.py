@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kiwimatecoder import sdk
+from kiwimatecoder import config, sdk
 from kiwimatecoder.evals.cases import (
     CaseError,
     EvalCase,
@@ -277,8 +277,9 @@ def run_suite(
     """Run every matching case and optionally write a JSON report.
 
     Raises :class:`CaseError` for invalid input: a missing directory, no
-    matching cases, or malformed case files. A case whose expectations fail is
-    reported, never raised.
+    matching cases, malformed case files, or an unknown provider / no model
+    passed or chosen for it. A case whose expectations fail is reported, never
+    raised.
     """
     root = resolve_cases_dir(cases_dir)
     cases = discover_cases(root)
@@ -289,6 +290,14 @@ def run_suite(
         if filter:
             raise CaseError(f"No eval cases matched {filter!r} in {root}")
         raise CaseError(f"No eval cases found in {root}")
+    # One clear error up front instead of every case failing the same way.
+    try:
+        config.require_model(
+            config.get_provider_config(provider or config.get_selected_provider_id()),
+            override=model,
+        )
+    except (KeyError, ValueError) as exc:
+        raise CaseError(str(exc)) from exc
 
     report = EvalReport(provider=provider, model=model, cases_dir=str(root))
     for case in cases:

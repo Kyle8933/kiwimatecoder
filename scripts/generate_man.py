@@ -34,6 +34,7 @@ _ENVIRONMENT = (
     ("OPENAI_API_KEY", "OpenAI API key."),
     ("ANTHROPIC_API_KEY", "Anthropic API key."),
     ("DEEPSEEK_API_KEY", "DeepSeek API key."),
+    ("KIWIMATE_API_KEY", "KiwiMate API key (experimental provider)."),
     ("KIWIMATECODER_PROJECT_CONFIG", "Path to a project config overlay."),
     ("KIWIMATECODER_DEBUG", "Force the debug telemetry level for one run."),
     ("NO_COLOR", "Disable ANSI color output when set."),
@@ -225,7 +226,8 @@ def render_man() -> str:
             "Success.",
             ".TP",
             _bold("1"),
-            "Runtime failure (for example a missing API key or provider error).",
+            "Runtime failure (for example a missing API key, no model chosen, "
+            "or a provider error).",
             ".TP",
             _bold("2"),
             "Invalid usage, or an interactive session attempted without a TTY.",

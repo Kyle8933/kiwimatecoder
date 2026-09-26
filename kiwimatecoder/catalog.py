@@ -169,13 +169,16 @@ def normalize_model_id(raw: object) -> str:
     return model_id
 
 
-def is_chat_model(entry: dict[str, Any], model_id: str) -> bool:
+def is_chat_model(
+    entry: dict[str, Any], model_id: str, *, require_tools: bool = True
+) -> bool:
     """Return whether a listed model is a text chat model this CLI can drive.
 
     Provider metadata wins when present; otherwise the id is matched against
     :data:`NON_CHAT_MARKERS`. Tool calling is required — the agent loop is built
     on it — so a provider that reports ``supported_parameters`` without
-    ``tools`` (OpenRouter does this for every entry) is filtered out.
+    ``tools`` (OpenRouter does this for every entry) is filtered out, unless
+    ``require_tools`` is off for a chat-only provider.
     """
     lowered = model_id.lower()
     if not lowered or any(marker in lowered for marker in NON_CHAT_MARKERS):
@@ -186,7 +189,7 @@ def is_chat_model(entry: dict[str, Any], model_id: str) -> bool:
         chat = capabilities.get("completion_chat")
         if chat is False:
             return False
-        if capabilities.get("function_calling") is False:
+        if require_tools and capabilities.get("function_calling") is False:
             return False
 
     architecture = entry.get("architecture")
@@ -199,19 +202,27 @@ def is_chat_model(entry: dict[str, Any], model_id: str) -> bool:
             return False
 
     supported = entry.get("supported_parameters")
-    if isinstance(supported, list) and supported and "tools" not in supported:
+    if (
+        require_tools
+        and isinstance(supported, list)
+        and supported
+        and "tools" not in supported
+    ):
         return False
 
     return True
 
 
-def parse_models_response(payload: object) -> list[RemoteModel]:
+def parse_models_response(
+    payload: object, *, require_tools: bool = True
+) -> list[RemoteModel]:
     """Extract usable chat models from a provider's listing payload.
 
     Accepts the OpenAI shape (``{"data": [...]}``), a bare list, or a
     ``{"models": [...]}`` variant, and tolerates entries that are plain strings.
     Unusable entries are skipped rather than raising, so one odd record cannot
-    break the whole catalog.
+    break the whole catalog. ``require_tools`` is passed to
+    :func:`is_chat_model`.
     """
     if isinstance(payload, dict):
         entries = payload.get("data")
@@ -234,7 +245,7 @@ def parse_models_response(payload: object) -> list[RemoteModel]:
         model_id = normalize_model_id(entry.get("id") or entry.get("name"))
         if not model_id or model_id in models:
             continue
-        if not is_chat_model(entry, model_id):
+        if not is_chat_model(entry, model_id, require_tools=require_tools):
             continue
 
         created = _parse_timestamp(
@@ -295,7 +306,7 @@ def fetch_models(
             f"{provider.name} returned a non-JSON model list from {url}"
         ) from exc
 
-    models = parse_models_response(payload)
+    models = parse_models_response(payload, require_tools=provider.supports_tools)
     if not models:
         raise CatalogFetchError(f"{provider.name} listed no usable chat models")
     return models
@@ -378,9 +389,9 @@ def merge_catalog(
 ) -> list[str]:
     """Turn a live listing into the catalog ``/model`` should offer.
 
-    The provider default comes first (it is the recommended pick), then any
-    caller-supplied ``keep`` ids such as the session's current model, then the
-    rest newest-first. Only ids the provider still lists survive — that is how
+    Caller-supplied ``keep`` ids such as the session's current model come
+    first, then the rest newest-first. There is no default model to pin: the
+    user chooses. Only ids the provider still lists survive — that is how
     deprecated models leave the catalog — so ``keep`` can pin a model but never
     resurrect a retired one.
     """
@@ -390,7 +401,7 @@ def merge_catalog(
     pinned = list(
         dict.fromkeys(
             model
-            for model in (provider.default_model, *keep)
+            for model in keep
             if model and model in live
         )
     )

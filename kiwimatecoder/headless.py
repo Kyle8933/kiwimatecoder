@@ -59,18 +59,19 @@ def build_session(
 ) -> Session:
     """Build a fresh session exactly like the interactive launch path.
 
-    ``provider``/``model``/``mode`` override the configured defaults for this
-    run only; nothing is persisted. Raises ``ValueError`` for an unknown
-    workspace or mode and ``KeyError`` for an unknown provider.
+    ``provider``/``model``/``mode`` override the configured values for this
+    run only; nothing is persisted. An overriding ``provider`` becomes the
+    primary, ahead of the configured roster. Raises ``ValueError`` for an
+    unknown workspace or mode, ``config.ModelNotChosenError`` (a
+    ``ValueError``) when no model was passed or chosen for the provider, and
+    ``KeyError`` for an unknown provider.
     """
     cfg = config.load_config()
     provider_id = provider or config.get_selected_provider_id(cfg)
     provider_cfg = config.get_provider_config(provider_id, cfg)
-    resolved_model = (
-        model
-        or str(cfg.get("selected_model") or "")
-        or config.resolve_default_model(provider_cfg)
-    )
+    resolved_model = config.require_model(provider_cfg, cfg, override=model)
+    roster = config.get_active_provider_ids(cfg)
+    active_provider_ids = [provider_id, *(pid for pid in roster if pid != provider_id)]
     if mode is None:
         try:
             resolved_mode = PermissionMode.from_str(str(cfg.get("default_mode", "ask")))
@@ -83,7 +84,7 @@ def build_session(
         model=resolved_model,
         mode=resolved_mode,
         workspace_root=_resolve_workspace(workspace),
-        active_provider_ids=config.get_active_provider_ids(cfg),
+        active_provider_ids=active_provider_ids,
         always_allowed=set(config.get_always_allowed_tools(cfg)),
         output_style=config.get_output_style(cfg),
         custom_system_prompt=config.get_system_prompt(cfg),
@@ -103,11 +104,20 @@ def _apply_overrides(
     model: str | None,
     mode: PermissionMode | str | None,
 ) -> None:
-    """Apply per-run overrides to an existing session."""
+    """Apply per-run overrides to an existing session.
+
+    Raises ``config.ModelNotChosenError`` when switching to a provider with no
+    model passed or chosen.
+    """
     if mode is not None:
         session.mode = PermissionMode.from_str(mode) if isinstance(mode, str) else mode
     if provider and provider != session.provider_id:
-        session.set_provider(provider, model)
+        provider_cfg = config.get_provider_config(provider)
+        session.set_provider(provider, config.require_model(provider_cfg, override=model))
+        session.active_provider_ids = [
+            provider,
+            *(pid for pid in session.active_provider_ids if pid != provider),
+        ]
     elif model:
         session.model = model
     if workspace is not None:

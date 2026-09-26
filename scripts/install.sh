@@ -46,7 +46,7 @@ fi
 
 if command -v kiwimatecoder >/dev/null 2>&1; then
     kiwimatecoder --version
-    say "Installed. Run 'kiwimatecoder setup' to add a provider key."
+    say "Installed. Run 'kiwimatecoder setup' to add a provider key and choose a model."
 else
     fail "kiwimatecoder was installed but is not on PATH. Add your user bin directory (usually \$HOME/.local/bin) to PATH, then run: kiwimatecoder --version"
 fi

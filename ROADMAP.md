@@ -101,7 +101,10 @@ Groq, Together, Fireworks, Cerebras, and DeepInfra. Azure and Bedrock keep
 placeholder endpoints because the resource is account-specific; point a custom
 provider at the real URL. Deferred: interactive OAuth/device-code flows, Azure
 managed identity, Google Vertex AI (project-specific endpoint plus OAuth2-only
-auth), and AWS SigV4/IAM request signing.
+auth), and AWS SigV4/IAM request signing. Later: providers no longer ship
+default models (config v3 stores the model chosen per provider), and KiwiMate
+(kiwimate.net) is an experimental, chat-only provider until its endpoint
+supports tool calls.
 
 **4.4 follow-up:** shell commands (`run_bash`, the persistent `shell`, and
 `shell_jobs`) run over SSH (agent/key auth only, `BatchMode=yes`) or inside a

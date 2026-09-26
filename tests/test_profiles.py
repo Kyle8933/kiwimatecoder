@@ -14,6 +14,13 @@ def isolate_config(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _pin_selected_model(model):
+    """Store a ``selected_model`` pin in the global config."""
+    cfg = config.load_config()
+    cfg["selected_model"] = model
+    config.save_config(cfg)
+
+
 # ---------------------------------------------------------------------------
 # profile storage
 # ---------------------------------------------------------------------------
@@ -94,7 +101,11 @@ def test_apply_profile_writes_global_config_and_persists():
 
     assert applied["provider"] == "openai"
     assert config.get_selected_provider_id() == "openai"
-    assert config.load_config()["selected_model"] == "gpt-5.6-sol"
+    cfg = config.load_config()
+    assert cfg["selected_model"] == "gpt-5.6-sol"
+    assert config.get_provider_model("openai", cfg) == "gpt-5.6-sol"
+    # The model chosen for the other provider is not forgotten.
+    assert cfg["provider_models"]["deepseek"] == "other"
     assert config.get_default_mode() == "plan"
 
 
@@ -139,6 +150,66 @@ def test_profile_with_provider_becomes_primary_on_apply():
     config.apply_profile("openai-mode")
 
     assert config.get_active_provider_ids() == ["openai"]
+
+
+def test_save_profile_captures_the_primarys_chosen_model():
+    config.set_active_providers(["openai", "deepseek"])
+    config.set_provider_model("openai", "gpt-chosen")
+    config.set_provider_model("deepseek", "ds-chosen")
+
+    profile = config.save_profile("work")
+
+    assert profile["provider"] == "openai"
+    assert profile["model"] == "gpt-chosen"
+
+
+def test_save_profile_captures_a_pinned_model_over_the_stored_choice():
+    config.set_selected_provider("openai")
+    config.set_provider_model("openai", "gpt-chosen")
+    _pin_selected_model("gpt-pinned")
+
+    assert config.save_profile("work")["model"] == "gpt-pinned"
+
+
+def test_save_profile_without_a_chosen_model_omits_model():
+    config.set_selected_provider("openai")
+
+    profile = config.save_profile("work")
+
+    assert profile["provider"] == "openai"
+    assert "model" not in profile
+
+
+def test_apply_profile_with_provider_but_no_model_uses_the_chosen_model():
+    config.set_provider_model("openai", "gpt-chosen")
+    config.set_selected_provider("deepseek")
+    _pin_selected_model("stale-pin")
+    config.save_profile("openai-mode", {"provider": "openai"})
+
+    config.apply_profile("openai-mode")
+
+    cfg = config.load_config()
+    assert cfg["selected_model"] is None
+    assert config.get_selected_provider_id(cfg) == "openai"
+    assert config.get_provider_model("openai", cfg) == "gpt-chosen"
+
+
+def test_apply_profile_model_pins_the_primary_without_forgetting_choices():
+    config.set_provider_model("openai", "gpt-chosen")
+    config.save_profile("fast", {"provider": "openai", "model": "gpt-fast"})
+
+    config.apply_profile("fast")
+
+    cfg = config.load_config()
+    assert cfg["selected_model"] == "gpt-fast"
+    assert config.get_provider_model("openai", cfg) == "gpt-fast"
+    assert cfg["provider_models"]["openai"] == "gpt-chosen"
+
+    # Choosing a model afterwards replaces the pin.
+    config.set_selected_model("gpt-new")
+    cfg = config.load_config()
+    assert cfg["selected_model"] is None
+    assert config.get_provider_model("openai", cfg) == "gpt-new"
 
 
 def test_get_profiles_drops_malformed_entries():
@@ -189,6 +260,7 @@ def test_validate_flags_representative_bad_values():
     cfg["mcp_servers"] = {"bad name": {"command": "x", "url": "http://x"}}
     cfg["plugins"] = {"disabled": "nope"}
     cfg["providers"] = {"custom": {"name": "Custom"}}
+    cfg["provider_models"] = {"openai": 5}
     cfg["keys"] = {"openai": 123}
 
     issues = config.validate_config(cfg)
@@ -198,6 +270,7 @@ def test_validate_flags_representative_bad_values():
     assert {
         "keys.openai",
         "providers.custom",
+        "provider_models.openai",
         "default_mode",
         "output_style",
         "trusted_workspace",
@@ -228,6 +301,7 @@ def test_validate_flags_unknown_active_provider_and_model_filter():
 def test_validate_passes_a_fully_populated_config():
     config.set_selected_provider("openai")
     config.set_selected_model("gpt-5.6-sol")
+    config.set_provider_model("kiwimate", "kiwimate-mini-1-0")
     config.set_default_mode("plan")
     config.set_sampling({"temperature": 0.2, "reasoning_effort": "medium"})
     config.set_output_style("concise")

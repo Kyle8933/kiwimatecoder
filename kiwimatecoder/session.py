@@ -15,7 +15,7 @@ from kiwimatecoder.checkpoints import Checkpoint, CheckpointStore
 from kiwimatecoder.config import (
     ensure_config_dir,
     get_provider_config,
-    resolve_default_model,
+    resolve_model,
 )
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.pricing import estimate_messages_tokens
@@ -40,7 +40,8 @@ class Session:
     context_files: list[str] = field(default_factory=list)
     always_allowed: set[str] = field(default_factory=set)
     active_provider_ids: list[str] = field(default_factory=list)
-    # Per-provider model overrides; empty value means "use the provider default".
+    # Per-provider model overrides for fallbacks; without one, a fallback uses
+    # the model the user chose for it in config (see ``model_for``).
     models: dict[str, str] = field(default_factory=dict)
     # Output style name and a user-supplied system-prompt addition.
     output_style: str = "default"
@@ -105,11 +106,12 @@ class Session:
         return providers or [self.provider]
 
     def model_for(self, provider_id: str) -> str:
-        """Return the model to use for ``provider_id``.
+        """Return the model to use for ``provider_id``, or ``""`` if none was chosen.
 
         The primary provider uses ``session.model``; fallback providers use any
-        per-provider override, otherwise their default model (resolved live for
-        local servers).
+        per-provider override, otherwise the model the user chose for them
+        (resolved live for local servers). There are no default models, so an
+        unconfigured fallback yields ``""`` and the agent skips it.
         """
         if provider_id == self.provider_id:
             return self.model
@@ -117,7 +119,7 @@ class Session:
         if override:
             return override
         provider = get_provider_config(provider_id)
-        return resolve_default_model(provider)
+        return resolve_model(provider)
 
     @property
     def total_tokens(self) -> int:
@@ -128,14 +130,15 @@ class Session:
         return estimate_messages_tokens(self.messages)
 
     def set_provider(self, provider_id: str, model: str | None = None) -> None:
-        """Switch provider; reset to the provider default model unless given.
+        """Switch provider, using ``model`` or the model chosen for it.
 
-        Local providers have no static default — their model is resolved from
-        the running server's catalog (see ``config.resolve_default_model``).
+        The model is ``""`` when none was ever chosen for the provider (local
+        servers resolve theirs live, see ``config.resolve_model``); interactive
+        callers then offer the model picker.
         """
         provider = get_provider_config(provider_id)
         self.provider_id = provider_id
-        self.model = model or resolve_default_model(provider)
+        self.model = model or resolve_model(provider)
         # Tool approvals are persisted user preferences, so they survive both
         # provider switches and restarts.
 
@@ -144,7 +147,7 @@ class Session:
 
         ``provider_ids`` must be a non-empty list of known providers. The
         primary's model is resolved (or kept when unchanged), and fallback
-        providers fall back to their default models.
+        providers use the models chosen for them (see ``model_for``).
         """
         if not provider_ids:
             raise ValueError("At least one active provider is required.")

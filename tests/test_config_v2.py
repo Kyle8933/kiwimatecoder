@@ -5,6 +5,7 @@ import json
 import pytest
 
 from kiwimatecoder import config
+from kiwimatecoder.providers import REGISTRY
 
 
 @pytest.fixture(autouse=True)
@@ -13,7 +14,14 @@ def isolate_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
     return tmp_path
+
+
+def _write_raw_config(data):
+    """Write a config file exactly as given (no version stamping)."""
+    config.CONFIG_FILE.write_text(json.dumps(data))
 
 
 def test_load_config_sets_version_and_new_defaults():
@@ -32,6 +40,14 @@ def test_save_config_stamps_version():
 
     stored = json.loads(config.CONFIG_FILE.read_text())
     assert stored["version"] == config.CONFIG_VERSION
+
+
+def test_config_version_is_3_with_an_empty_provider_models_map():
+    cfg = config.load_config()
+
+    assert config.CONFIG_VERSION == 3
+    assert cfg["provider_models"] == {}
+    assert cfg["selected_model"] is None
 
 
 def test_project_config_overrides_global(tmp_path):
@@ -545,3 +561,535 @@ def test_legacy_custom_provider_without_auth_fields_gets_defaults():
     assert provider.key_header == "Authorization"
     assert provider.key_prefix == "Bearer "
     assert provider.api_version == ""
+
+
+# ---------------------------------------------------------------------------
+# Version 2 -> 3 migration: model choices move into provider_models
+# ---------------------------------------------------------------------------
+
+
+def test_v2_custom_default_model_moves_into_provider_models():
+    _write_raw_config(
+        {
+            "version": 2,
+            "providers": {
+                "local": {
+                    "name": "Local",
+                    "base_url": "http://localhost:1234/v1",
+                    "default_model": "local-code",
+                    "key_env": "LOCAL_API_KEY",
+                    "compat": "openai",
+                },
+                "blank": {
+                    "name": "Blank",
+                    "base_url": "https://blank.example/v1",
+                    "default_model": "",
+                    "key_env": "BLANK_API_KEY",
+                },
+            },
+            "selected_provider": "openrouter",
+            "active_providers": ["openrouter"],
+            "selected_model": None,
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert cfg["version"] == 3
+    assert cfg["provider_models"] == {"local": "local-code"}
+    assert "default_model" not in cfg["providers"]["local"]
+    assert "default_model" not in cfg["providers"]["blank"]
+    # Everything else about the provider is kept.
+    assert cfg["providers"]["local"]["key_env"] == "LOCAL_API_KEY"
+    assert config.get_provider_config("local", cfg).base_url == (
+        "http://localhost:1234/v1"
+    )
+    assert config.get_provider_model("local", cfg) == "local-code"
+    assert config.get_provider_model("blank", cfg) == ""
+
+
+def test_v2_selected_model_moves_to_the_primary_provider():
+    _write_raw_config(
+        {
+            "version": 2,
+            "selected_provider": "openai",
+            "active_providers": ["openai", "openrouter"],
+            "selected_model": "gpt-picked",
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert cfg["selected_model"] is None
+    assert cfg["provider_models"] == {"openai": "gpt-picked"}
+    assert config.get_provider_model("openai", cfg) == "gpt-picked"
+    assert config.get_provider_model("openrouter", cfg) == ""
+
+
+def test_v2_selected_model_wins_over_a_custom_primarys_default_model():
+    """In version 2 the session used selected_model ahead of default_model."""
+    _write_raw_config(
+        {
+            "version": 2,
+            "providers": {
+                "local": {
+                    "name": "Local",
+                    "base_url": "http://localhost:1234/v1",
+                    "default_model": "provider-default",
+                    "key_env": "LOCAL_API_KEY",
+                },
+            },
+            "selected_provider": "local",
+            "active_providers": ["local"],
+            "selected_model": "user-picked",
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert cfg["provider_models"] == {"local": "user-picked"}
+    assert cfg["selected_model"] is None
+    assert "default_model" not in cfg["providers"]["local"]
+
+
+def test_unversioned_config_is_migrated_too():
+    _write_raw_config(
+        {
+            "selected_provider": "deepseek",
+            "active_providers": ["deepseek"],
+            "selected_model": "ds-picked",
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert cfg["provider_models"] == {"deepseek": "ds-picked"}
+    assert cfg["selected_model"] is None
+
+
+def test_migrated_v2_config_is_written_back_as_version_3():
+    _write_raw_config(
+        {
+            "version": 2,
+            "providers": {
+                "local": {
+                    "name": "Local",
+                    "base_url": "http://localhost:1234/v1",
+                    "default_model": "local-code",
+                    "key_env": "LOCAL_API_KEY",
+                },
+            },
+            "selected_provider": "openai",
+            "active_providers": ["openai"],
+            "selected_model": "gpt-picked",
+        }
+    )
+
+    config.set_default_mode("plan")  # any write persists the migration
+
+    stored = json.loads(config.CONFIG_FILE.read_text())
+    assert stored["version"] == 3
+    assert stored["selected_model"] is None
+    assert stored["provider_models"] == {"local": "local-code", "openai": "gpt-picked"}
+    assert "default_model" not in stored["providers"]["local"]
+    # Reloading the written file is stable.
+    assert config.load_config()["provider_models"] == stored["provider_models"]
+
+
+def test_version_3_config_is_not_re_migrated():
+    _write_raw_config(
+        {
+            "version": 3,
+            "providers": {
+                "local": {
+                    "name": "Local",
+                    "base_url": "http://localhost:1234/v1",
+                    "default_model": "stale",
+                    "key_env": "LOCAL_API_KEY",
+                },
+            },
+            "selected_provider": "openai",
+            "active_providers": ["openai"],
+            "selected_model": "pinned-by-profile",
+            "provider_models": {"openai": "gpt-chosen"},
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert cfg["selected_model"] == "pinned-by-profile"
+    assert cfg["provider_models"] == {"openai": "gpt-chosen"}
+    # A stray default_model in a version-3 file is not a model choice.
+    assert cfg["providers"]["local"]["default_model"] == "stale"
+    assert config.get_provider_model("local", cfg) == ""
+    assert config.get_provider_model("openai", cfg) == "pinned-by-profile"
+
+
+def test_migration_does_not_pull_project_values_into_the_global_map(tmp_path):
+    _write_raw_config(
+        {
+            "version": 2,
+            "selected_provider": "openrouter",
+            "active_providers": ["openrouter"],
+            "selected_model": "global-pick",
+        }
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / config.PROJECT_CONFIG_NAME).write_text(
+        json.dumps({"selected_provider": "openai", "selected_model": "project-pin"})
+    )
+
+    cfg = config.load_config(project_root=project)
+
+    # Only the global choice (for the global primary) is migrated.
+    assert cfg["provider_models"] == {"openrouter": "global-pick"}
+    # The project's pin stays a pin for the project's primary.
+    assert cfg["selected_model"] == "project-pin"
+    assert config.get_active_provider_ids(cfg) == ["openai"]
+    assert config.get_provider_model("openai", cfg) == "project-pin"
+    assert config.get_provider_model("openrouter", cfg) == "global-pick"
+
+
+def test_project_config_without_a_pin_leaves_the_migrated_choice(tmp_path):
+    _write_raw_config(
+        {
+            "version": 2,
+            "selected_provider": "openai",
+            "active_providers": ["openai"],
+            "selected_model": "gpt-picked",
+        }
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / config.PROJECT_CONFIG_NAME).write_text(
+        json.dumps({"default_mode": "plan"})
+    )
+
+    cfg = config.load_config(project_root=project)
+
+    assert cfg["provider_models"] == {"openai": "gpt-picked"}
+    assert cfg["selected_model"] is None
+    assert config.get_provider_model("openai", cfg) == "gpt-picked"
+
+
+def test_project_provider_models_merge_per_provider(tmp_path):
+    config.set_provider_model("openai", "global-gpt")
+    config.set_provider_model("deepseek", "global-ds")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / config.PROJECT_CONFIG_NAME).write_text(
+        json.dumps({"provider_models": {"openai": "project-gpt"}})
+    )
+
+    cfg = config.load_config(project_root=project)
+
+    assert cfg["provider_models"] == {
+        "openai": "project-gpt",
+        "deepseek": "global-ds",
+    }
+    assert config.get_provider_model("openai", cfg) == "project-gpt"
+    # The global file is not rewritten by reading a project overlay.
+    assert config.load_config()["provider_models"] == {
+        "openai": "global-gpt",
+        "deepseek": "global-ds",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Custom providers shadowed by a new built-in (KiwiMate)
+# ---------------------------------------------------------------------------
+
+
+def test_custom_kiwimate_provider_is_renamed_away_from_the_builtin():
+    _write_raw_config(
+        {
+            "version": 2,
+            "providers": {
+                "kiwimate": {
+                    "name": "My KiwiMate",
+                    "base_url": "https://my-kiwi.example/v1",
+                    "default_model": "km-own",
+                    "key_env": "MY_KIWI_API_KEY",
+                },
+            },
+            "keys": {"kiwimate": "sk-mine", "openai": "sk-openai"},
+            "model_filters": {"kiwimate": {"mode": "allow", "models": ["km-own"]}},
+            "selected_provider": "kiwimate",
+            "active_providers": ["kiwimate", "openai"],
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert "kiwimate" not in cfg["providers"]
+    assert cfg["providers"]["kiwimate-custom"]["base_url"] == (
+        "https://my-kiwi.example/v1"
+    )
+    assert cfg["keys"] == {"kiwimate-custom": "sk-mine", "openai": "sk-openai"}
+    assert cfg["model_filters"] == {
+        "kiwimate-custom": {"mode": "allow", "models": ["km-own"]}
+    }
+    assert cfg["provider_models"] == {"kiwimate-custom": "km-own"}
+    assert cfg["active_providers"] == ["kiwimate-custom", "openai"]
+    assert cfg["selected_provider"] == "kiwimate-custom"
+    assert config.get_provider_config("kiwimate-custom", cfg).name == "My KiwiMate"
+    # The id "kiwimate" now always means the built-in, which the old key and
+    # model never reach.
+    assert config.get_provider_config("kiwimate", cfg) is REGISTRY["kiwimate"]
+    assert config.get_provider_model("kiwimate", cfg) == ""
+
+
+def test_v2_selected_model_of_a_shadowed_custom_primary_follows_the_rename():
+    """A v2 pick for a hand-made "kiwimate" must never land on the built-in."""
+    _write_raw_config(
+        {
+            "version": 2,
+            "providers": {
+                "kiwimate": {
+                    "name": "My KiwiMate",
+                    "base_url": "https://my-kiwi.example/v1",
+                    "default_model": "km-default",
+                },
+            },
+            "selected_provider": "kiwimate",
+            "active_providers": ["kiwimate"],
+            "selected_model": "km-picked",
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert cfg["provider_models"] == {"kiwimate-custom": "km-picked"}
+    assert cfg["selected_model"] is None
+    assert config.get_selected_provider_id(cfg) == "kiwimate-custom"
+    assert config.get_provider_model("kiwimate-custom", cfg) == "km-picked"
+    assert config.get_provider_model("kiwimate", cfg) == ""
+
+
+def test_version_3_files_never_rename_a_shadowed_custom_provider():
+    # Only the v2 -> v3 migration renames. A custom entry with a built-in id
+    # in a v3 file (hand-edited, or leaked from a project config) stays inert:
+    # it is never listed and never takes over the built-in's key.
+    _write_raw_config(
+        {
+            "version": 3,
+            "providers": {
+                "kiwimate": {
+                    "name": "My KiwiMate",
+                    "base_url": "https://my-kiwi.example/v1",
+                    "key_env": "MY_KIWI_API_KEY",
+                },
+            },
+            "keys": {"kiwimate": "sk-km-real"},
+            "provider_models": {"kiwimate": "kiwimate-large-1-0"},
+            "selected_provider": "kiwimate",
+            "active_providers": ["kiwimate"],
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert set(cfg["providers"]) == {"kiwimate"}
+    assert cfg["keys"] == {"kiwimate": "sk-km-real"}
+    assert cfg["active_providers"] == ["kiwimate"]
+    assert config.get_provider_config("kiwimate", cfg) is REGISTRY["kiwimate"]
+    assert config.get_provider_model("kiwimate", cfg) == "kiwimate-large-1-0"
+    assert [p.id for p in config.list_provider_configs(cfg)].count("kiwimate") == 1
+
+
+def test_migration_does_not_revive_a_custom_entry_shadowing_an_older_builtin():
+    # E.g. a project config's "anthropic" override leaked into the global file
+    # by an old release. Renaming it would hand it the stored Anthropic key.
+    _write_raw_config(
+        {
+            "version": 2,
+            "providers": {
+                "anthropic": {
+                    "name": "Collector",
+                    "base_url": "https://collector.example/v1",
+                    "default_model": "claude-sonnet-5",
+                },
+            },
+            "keys": {"anthropic": "sk-ant-real"},
+            "selected_provider": "anthropic",
+            "active_providers": ["anthropic"],
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert "anthropic-custom" not in cfg["providers"]
+    assert cfg["keys"] == {"anthropic": "sk-ant-real"}
+    assert cfg["active_providers"] == ["anthropic"]
+    assert config.get_provider_config("anthropic", cfg) is REGISTRY["anthropic"]
+    assert config.get_provider_config("anthropic", cfg).base_url == (
+        "https://api.anthropic.com/v1"
+    )
+
+
+def test_rename_moves_every_reference_and_frees_the_builtin_key_variable():
+    _write_raw_config(
+        {
+            "version": 2,
+            "providers": {
+                "kiwimate": {
+                    "name": "My KiwiMate",
+                    "base_url": "https://my-kiwi.example/v1",
+                    "default_model": "km-own",
+                    "key_env": "KIWIMATE_API_KEY",
+                },
+            },
+            "profiles": {
+                "home": {"provider": "kiwimate", "model": "km-own"},
+                "work": {"provider": "openai"},
+            },
+            "media": {"provider": "kiwimate"},
+            "index": {"embeddings": {"provider": "kiwimate", "model": "km-embed"}},
+        }
+    )
+    cache = config.load_model_cache()
+    cache["providers"]["kiwimate"] = {"fetched_at": 1.0, "models": ["km-own"]}
+    config.save_model_cache(cache)
+
+    cfg = config.load_config()
+
+    renamed = cfg["providers"]["kiwimate-custom"]
+    # Sharing KIWIMATE_API_KEY would send one key to both hosts.
+    assert renamed["key_env"] == "KIWIMATE_CUSTOM_API_KEY"
+    assert cfg["profiles"]["home"]["provider"] == "kiwimate-custom"
+    assert cfg["profiles"]["work"]["provider"] == "openai"
+    assert cfg["media"]["provider"] == "kiwimate-custom"
+    assert cfg["index"]["embeddings"]["provider"] == "kiwimate-custom"
+    # The cached listing came from the old host, not the built-in.
+    assert "kiwimate" not in config.load_model_cache()["providers"]
+
+
+def test_shadowed_custom_provider_rename_avoids_existing_ids():
+    _write_raw_config(
+        {
+            "version": 2,
+            "providers": {
+                "kiwimate": {"name": "Shadow", "base_url": "https://shadow.example/v1"},
+                "kiwimate-custom": {
+                    "name": "Taken",
+                    "base_url": "https://taken.example/v1",
+                },
+            },
+        }
+    )
+
+    cfg = config.load_config()
+
+    assert set(cfg["providers"]) == {"kiwimate-custom", "kiwimate-custom-2"}
+    assert cfg["providers"]["kiwimate-custom"]["name"] == "Taken"
+    assert cfg["providers"]["kiwimate-custom-2"]["name"] == "Shadow"
+
+
+def test_list_provider_configs_never_lists_a_shadowed_custom_provider():
+    cfg = config.load_config()
+    cfg["providers"]["kiwimate"] = {
+        "name": "Shadow",
+        "base_url": "https://shadow.example/v1",
+    }
+
+    providers = config.list_provider_configs(cfg)
+    ids = [provider.id for provider in providers]
+
+    assert ids.count("kiwimate") == 1
+    assert ids[0] == "kiwimate"
+    assert providers[0] is REGISTRY["kiwimate"]
+
+
+def test_list_provider_configs_after_loading_a_shadowed_custom_provider():
+    _write_raw_config(
+        {
+            "version": 2,
+            "providers": {
+                "kiwimate": {
+                    "name": "My KiwiMate",
+                    "base_url": "https://my-kiwi.example/v1",
+                    "default_model": "km-own",
+                },
+            },
+        }
+    )
+
+    ids = [provider.id for provider in config.list_provider_configs()]
+
+    assert ids.count("kiwimate") == 1
+    assert ids.count("kiwimate-custom") == 1
+    assert len(ids) == len(set(ids))
+
+
+# ---------------------------------------------------------------------------
+# Validation of custom providers and provider_models
+# ---------------------------------------------------------------------------
+
+
+def test_validate_custom_provider_needs_name_and_base_url_but_no_model():
+    cfg = config.load_config()
+    cfg["providers"] = {
+        "no-url": {"name": "No URL"},
+        "no-name": {"base_url": "https://x.example/v1"},
+        "ok-without-model": {"name": "OK", "base_url": "https://ok.example/v1"},
+    }
+
+    issues = config.validate_config(cfg)
+    by_key = {issue["key"]: issue for issue in issues}
+
+    for key in ("providers.no-url", "providers.no-name"):
+        assert by_key[key]["level"] == "error"
+        assert by_key[key]["message"] == "Provider needs non-empty name and base_url."
+    assert "providers.ok-without-model" not in by_key
+
+
+def test_validate_flags_bad_provider_models_entries():
+    cfg = config.load_config()
+    cfg["provider_models"] = {
+        "openai": "gpt-chosen",
+        "deepseek": "   ",
+        "mistral": 5,
+        "ghost": "m",
+    }
+
+    issues = config.validate_config(cfg)
+    by_key = {issue["key"]: issue for issue in issues}
+
+    assert "provider_models.openai" not in by_key
+    assert by_key["provider_models.deepseek"]["level"] == "error"
+    assert by_key["provider_models.mistral"]["level"] == "error"
+    assert by_key["provider_models.ghost"]["level"] == "warning"
+    assert "ghost" in by_key["provider_models.ghost"]["message"]
+
+
+def test_validate_flags_non_object_provider_models():
+    cfg = config.load_config()
+    cfg["provider_models"] = ["gpt-chosen"]
+
+    issues = config.validate_config(cfg)
+
+    assert {
+        "level": "error",
+        "key": "provider_models",
+        "message": "'provider_models' must be an object.",
+    } in issues
+
+
+def test_validate_warns_about_a_stored_model_for_an_unknown_provider():
+    _write_raw_config(
+        {"version": config.CONFIG_VERSION, "provider_models": {"ghost": "m"}}
+    )
+
+    issues = config.validate_config()
+
+    assert [issue["key"] for issue in issues] == ["provider_models.ghost"]
+    assert issues[0]["level"] == "warning"
+
+
+def test_validate_accepts_chosen_models_for_builtin_and_custom_providers():
+    config.add_provider("custom", "Custom", "https://custom.example/v1", "custom-model")
+    config.set_provider_model("kiwimate", "kiwimate-mini-1-0")
+    config.set_provider_model("openai", "gpt-chosen")
+
+    assert config.validate_config() == []

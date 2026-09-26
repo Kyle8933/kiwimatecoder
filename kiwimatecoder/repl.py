@@ -60,6 +60,7 @@ from rich.syntax import Syntax
 from kiwimatecoder import __version__, browser, events, hooks, images, lsp, mcp, notify, plugins, ui
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
+    CommandOption,
     CommandResult,
     MultiSelectionPrompt,
     SelectionPrompt,
@@ -72,6 +73,7 @@ from kiwimatecoder.config import get_ui, get_vision
 from kiwimatecoder.hunks import Hunk, parse_hunk_selection, split_hunks
 from kiwimatecoder.i18n import apply_config_locale, t
 from kiwimatecoder.permissions import ApprovalResult, ConfirmFn
+from kiwimatecoder.pickers import OptionGroup, grouped_checkbox_choice, grouped_choice
 from kiwimatecoder.redaction import redact
 from kiwimatecoder.session import Session
 from kiwimatecoder.shell import close_shell
@@ -220,8 +222,10 @@ def _banner(session: Session) -> Panel:
     dry_badge = f" · [yellow]{t('banner.dry_run')}[/yellow]" if session.dry_run else ""
 
     active = session.active_providers
+    experimental = " [yellow](experimental)[/yellow]" if session.provider.experimental else ""
     provider_summary = (
-        f"[bold cyan]{session.provider.name}[/bold cyan] ([dim]{session.model}[/dim])"
+        f"[bold cyan]{session.provider.name}[/bold cyan]{experimental} "
+        f"([dim]{session.model or 'no model chosen — use /model'}[/dim])"
     )
     if len(active) > 1:
         fallback_names = ", ".join(p.name for p in active[1:])
@@ -249,7 +253,7 @@ def _prompt_text(session: Session) -> HTML:
         if session.mode.value == "ask"
         else "ansigreen"
     )
-    provider_display = f"{session.provider_id}:{session.model}"
+    provider_display = f"{session.provider_id}:{session.model or 'no model'}"
     if len(session.active_provider_ids) > 1:
         provider_display += f" +{len(session.active_provider_ids) - 1}"
     return HTML(
@@ -259,9 +263,32 @@ def _prompt_text(session: Session) -> HTML:
     )
 
 
+def _option_groups(options: Sequence[CommandOption]) -> list[OptionGroup[str]]:
+    """Split options into titled boxes (in first-seen order) above the rest."""
+    titled: dict[str, list[tuple[str, AnyFormattedText]]] = {}
+    rest: list[tuple[str, AnyFormattedText]] = []
+    for option in options:
+        if option.group:
+            titled.setdefault(option.group, []).append((option.value, option.label))
+        else:
+            rest.append((option.value, option.label))
+    return [*titled.items(), (None, rest)]
+
+
 def _select_command_option(prompt: SelectionPrompt) -> str | None:
-    """Render a keyboard-driven selector for a choice-based slash command."""
+    """Render a keyboard-driven selector for a choice-based slash command.
+
+    Grouped options (experimental providers) get their own box on top.
+    """
     try:
+        if any(option.group for option in prompt.options):
+            return grouped_choice(
+                message=f"{prompt.title}\n{prompt.text}",
+                groups=_option_groups(prompt.options),
+                default=prompt.selected,
+                show_frame=True,
+                bottom_toolbar="↑/↓ move • Enter select • Ctrl-C cancel",
+            )
         return choice(
             message=f"{prompt.title}\n{prompt.text}",
             options=[(option.value, option.label) for option in prompt.options],
@@ -446,6 +473,14 @@ def checkbox_choice(
 def _select_command_options(prompt: MultiSelectionPrompt) -> list[str] | None:
     """Render a keyboard-driven checklist for multi-select slash commands."""
     try:
+        if any(option.group for option in prompt.options):
+            return grouped_checkbox_choice(
+                message=f"{prompt.title}\n{prompt.text}",
+                groups=_option_groups(prompt.options),
+                default_values=prompt.selected,
+                show_frame=True,
+                bottom_toolbar="↑/↓ move • Space toggle • Enter confirm • Ctrl-C cancel",
+            )
         return checkbox_choice(
             message=f"{prompt.title}\n{prompt.text}",
             options=[(option.value, option.label) for option in prompt.options],

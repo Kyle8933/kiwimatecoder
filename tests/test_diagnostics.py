@@ -6,6 +6,7 @@ import pytest
 from rich.console import Console
 
 from kiwimatecoder import config, diagnostics
+from kiwimatecoder.providers import REGISTRY
 from kiwimatecoder.session import Session
 
 
@@ -15,7 +16,13 @@ def isolate_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
     return tmp_path
+
+
+def _check(checks, name):
+    return next(check for check in checks if check.name == name)
 
 
 def test_run_checks_reports_core_checks(tmp_path):
@@ -97,3 +104,36 @@ def test_team_policy_check_reports_missing_and_valid(tmp_path):
     policy = next(check for check in checks if check.name == "Team policy")
     assert policy.status == diagnostics.OK
     assert "enforced" in policy.detail
+
+
+def test_current_model_check_warns_when_none_chosen(tmp_path):
+    session = Session(provider_id="openrouter", model="", workspace_root=tmp_path)
+
+    checks = diagnostics.run_checks(session)
+
+    current = _check(checks, "Current model")
+    assert current.status == diagnostics.WARN
+    assert current.detail.startswith("none chosen")
+    assert "/model" in current.detail
+    assert "config model set <model> --provider openrouter" in current.detail
+
+
+def test_current_model_check_ok_for_a_listed_model(tmp_path):
+    model = REGISTRY["openrouter"].models[0]
+    session = Session(provider_id="openrouter", model=model, workspace_root=tmp_path)
+
+    current = _check(diagnostics.run_checks(session), "Current model")
+
+    assert current.status == diagnostics.OK
+    assert current.detail == model
+
+
+def test_current_model_check_warns_for_an_unlisted_model(tmp_path):
+    session = Session(
+        provider_id="openrouter", model="vendor/unlisted", workspace_root=tmp_path
+    )
+
+    current = _check(diagnostics.run_checks(session), "Current model")
+
+    assert current.status == diagnostics.WARN
+    assert "not in the current catalog" in current.detail

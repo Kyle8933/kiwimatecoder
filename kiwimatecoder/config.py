@@ -8,6 +8,7 @@ Configuration lives in ``~/.kiwimatecoder/config.json`` with this shape::
         "model_filters": {"openai": {"mode": "allow", "models": ["gpt-5"]}},
         "selected_provider": "openrouter",
         "active_providers": ["openrouter", "openai"],
+        "provider_models": {"openrouter": "anthropic/claude-sonnet-5"},
         "selected_model": null,
         "default_mode": "ask",
         "hooks": {"post_tool": ["echo ran $KIWI_TOOL_NAME"]},
@@ -29,6 +30,11 @@ the legacy file is never deleted.
 
 API keys can also come from environment variables (each provider's ``key_env``),
 which take precedence over stored keys so a shell can override config per run.
+
+There are no default models. ``provider_models`` records the model the user
+chose for each provider when they added it; ``selected_model`` survives only as
+a primary-provider pin that project configs, team policies, and profiles can
+set. Version 2 files are migrated on load (see :func:`_migrate_v2_models`).
 """
 
 from __future__ import annotations
@@ -63,7 +69,7 @@ PROJECT_CONFIG_NAME = ".kiwimatecoder.json"
 PROJECT_CONFIG_ENV = "KIWIMATECODER_PROJECT_CONFIG"
 
 DEFAULT_MODE = "ask"
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 MODEL_CACHE_VERSION = 1
 
 
@@ -92,6 +98,7 @@ def _empty_config() -> dict[str, Any]:
         "output_style": "default",
         "selected_provider": DEFAULT_PROVIDER_ID,
         "active_providers": [DEFAULT_PROVIDER_ID],
+        "provider_models": {},
         "selected_model": None,
         "default_mode": DEFAULT_MODE,
         "trusted_workspace": False,
@@ -304,6 +311,7 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg.setdefault("output_style", "default")
     cfg.setdefault("selected_provider", DEFAULT_PROVIDER_ID)
     cfg.setdefault("active_providers", [DEFAULT_PROVIDER_ID])
+    cfg.setdefault("provider_models", {})
     cfg.setdefault("selected_model", None)
     cfg.setdefault("default_mode", DEFAULT_MODE)
     cfg.setdefault("trusted_workspace", False)
@@ -336,6 +344,11 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
     cfg["active_providers"] = _normalized_active_providers(
         stored, str(cfg.get("selected_provider") or DEFAULT_PROVIDER_ID)
     )
+    if stored and _stored_version(stored) < 3:
+        # A hand-made provider whose id is now built in (e.g. "kiwimate") is
+        # renamed so its key and settings never reach the built-in's host.
+        _rename_shadowed_custom_providers(cfg)
+        _migrate_v2_models(cfg)
     # Project overlay: values win over global config, secrets excluded.
     project = load_project_config(project_root)
     global_cfg = copy.deepcopy(cfg) if project else None
@@ -380,6 +393,109 @@ def _normalized_active_providers(stored: dict[str, Any], selected: str) -> list[
     return [selected or DEFAULT_PROVIDER_ID]
 
 
+def _normalized_provider_models(raw: object) -> dict[str, str]:
+    """Keep only ``provider id -> non-empty model id`` string pairs.
+
+    ``provider_models`` is stored raw so :func:`validate_config` can report bad
+    entries; every reader and writer goes through here instead.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    models: dict[str, str] = {}
+    for provider_id, model in raw.items():
+        if not isinstance(provider_id, str) or not isinstance(model, str):
+            continue
+        if provider_id.strip() and model.strip():
+            models[provider_id.strip()] = model.strip()
+    return models
+
+
+def _stored_version(stored: dict[str, Any]) -> int:
+    try:
+        return int(stored.get("version") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+# Built-in provider ids added in config version 3. Only these are renamed on
+# migration: any other custom entry with a built-in id predates it and was
+# already ignored, and must not be revived (it may have leaked in from a
+# project config, and renaming would hand it the user's stored key).
+_BUILTINS_ADDED_IN_V3 = ("kiwimate",)
+
+
+def _rename_shadowed_custom_providers(cfg: dict[str, Any]) -> None:
+    """Move custom providers whose id became built-in in v3 to ``<id>-custom``.
+
+    ``get_provider_config`` always prefers the built-in, so without this the
+    old entry's stored key, model, filter, profiles, and key variable would
+    silently be used against the built-in provider's endpoint. Runs only when
+    migrating a version-2 file.
+    """
+    shadowed = [pid for pid in _BUILTINS_ADDED_IN_V3 if pid in cfg["providers"]]
+    for provider_id in shadowed:
+        new_id = f"{provider_id}-custom"
+        suffix = 2
+        while new_id in cfg["providers"] or new_id in REGISTRY:
+            new_id = f"{provider_id}-custom-{suffix}"
+            suffix += 1
+        data = cfg["providers"].pop(provider_id)
+        if isinstance(data, dict) and data.get("key_env") == REGISTRY[provider_id].key_env:
+            # Sharing the built-in's variable would send one key to both hosts.
+            data = {**data, "key_env": _default_key_env(new_id)}
+        cfg["providers"][new_id] = data
+        for section in ("keys", "model_filters"):
+            if provider_id in cfg[section]:
+                cfg[section][new_id] = cfg[section].pop(provider_id)
+        models = _normalized_provider_models(cfg.get("provider_models"))
+        if provider_id in models:
+            models[new_id] = models.pop(provider_id)
+            cfg["provider_models"] = models
+        cfg["active_providers"] = [
+            new_id if pid == provider_id else pid for pid in cfg["active_providers"]
+        ]
+        if cfg.get("selected_provider") == provider_id:
+            cfg["selected_provider"] = new_id
+        profiles = cfg.get("profiles")
+        if isinstance(profiles, dict):
+            for values in profiles.values():
+                if isinstance(values, dict) and values.get("provider") == provider_id:
+                    values["provider"] = new_id
+        embeddings = (cfg.get("index") or {}).get("embeddings")
+        for settings in (cfg.get("media"), embeddings):
+            if isinstance(settings, dict) and settings.get("provider") == provider_id:
+                settings["provider"] = new_id
+        # The cached catalog came from the old host.
+        clear_model_cache(provider_id)
+
+
+def _migrate_v2_models(cfg: dict[str, Any]) -> None:
+    """Carry version-2 model choices into ``provider_models`` (version 3).
+
+    Custom providers stored their model as ``default_model`` and the primary's
+    choice lived in the global ``selected_model``; both become per-provider
+    choices. Built-in providers used to ship defaults, which are gone: a user
+    who never picked a model is asked to choose one.
+    """
+    models = _normalized_provider_models(cfg.get("provider_models"))
+    cfg["provider_models"] = models
+    # The primary's selected_model overrode its default_model in version 2,
+    # so it is recorded first.
+    selected = str(cfg.get("selected_model") or "").strip()
+    if selected:
+        models.setdefault(get_active_provider_ids(cfg)[0], selected)
+    cfg["selected_model"] = None
+    for provider_id, data in list(cfg["providers"].items()):
+        if not isinstance(data, dict) or "default_model" not in data:
+            continue
+        legacy = str(data.get("default_model") or "").strip()
+        if legacy:
+            models.setdefault(provider_id, legacy)
+        cfg["providers"][provider_id] = {
+            key: value for key, value in data.items() if key != "default_model"
+        }
+
+
 def save_config(cfg: dict[str, Any]) -> None:
     """Persist configuration to the JSON config file.
 
@@ -406,10 +522,9 @@ def _provider_from_config(provider_id: str, data: object) -> ProviderConfig | No
     try:
         name = str(data["name"]).strip()
         base_url = str(data["base_url"]).strip()
-        default_model = str(data["default_model"]).strip()
     except (KeyError, TypeError):
         return None
-    if not name or not base_url or not default_model:
+    if not name or not base_url:
         return None
 
     key_env = str(data.get("key_env") or _default_key_env(provider_id)).strip()
@@ -436,7 +551,6 @@ def _provider_from_config(provider_id: str, data: object) -> ProviderConfig | No
         id=provider_id,
         name=name,
         base_url=base_url.rstrip("/"),
-        default_model=default_model,
         key_env=key_env,
         compat=compat,
         extra_headers={str(k): str(v) for k, v in extra_headers.items()},
@@ -476,6 +590,8 @@ def list_provider_configs(cfg: dict[str, Any] | None = None) -> list[ProviderCon
     cfg = cfg or load_config()
     providers = list(REGISTRY.values())
     for provider_id in sorted(cfg.get("providers", {})):
+        if provider_id in REGISTRY:
+            continue  # the built-in always wins (see get_provider_config)
         provider = _provider_from_config(provider_id, cfg["providers"][provider_id])
         if provider is not None:
             providers.append(provider)
@@ -486,7 +602,7 @@ def add_provider(
     provider_id: str,
     name: str,
     base_url: str,
-    default_model: str,
+    model: str | None = None,
     key_env: str | None = None,
     compat: str = "openai",
     key_header: str | None = None,
@@ -495,6 +611,8 @@ def add_provider(
 ) -> ProviderConfig:
     """Persist a user-defined provider and return its config.
 
+    ``model`` is the model the user chose for the provider; it is stored in
+    ``provider_models`` like every other provider's choice.
     ``key_header``/``key_prefix`` follow the OpenAI auth scheme (defaults:
     ``Authorization``/``Bearer ``); Azure-style endpoints use
     ``key_header="api-key"``, ``key_prefix=""``, and an ``api_version`` that is
@@ -511,8 +629,8 @@ def add_provider(
         raise ValueError("Provider name is required.")
     if not base_url.strip():
         raise ValueError("Provider base_url is required.")
-    if not default_model.strip():
-        raise ValueError("Provider default_model is required.")
+    if model is not None and not model.strip():
+        raise ValueError("Provider model cannot be empty.")
     compat = compat.strip().lower()
     if compat not in {"openai", "anthropic"}:
         raise ValueError("Provider compat must be 'openai' or 'anthropic'.")
@@ -520,7 +638,6 @@ def add_provider(
     data: dict[str, Any] = {
         "name": name.strip(),
         "base_url": base_url.strip().rstrip("/"),
-        "default_model": default_model.strip(),
         "key_env": (key_env or _default_key_env(provider_id)).strip(),
         "compat": compat,
     }
@@ -535,6 +652,10 @@ def add_provider(
 
     cfg = load_config()
     cfg["providers"][provider_id] = data
+    if model is not None:
+        models = _normalized_provider_models(cfg.get("provider_models"))
+        models[provider_id] = model.strip()
+        cfg["provider_models"] = models
     save_config(cfg)
     return get_provider_config(provider_id, cfg)
 
@@ -550,6 +671,9 @@ def remove_provider(provider_id: str) -> None:
     del cfg["providers"][provider_id]
     cfg["keys"].pop(provider_id, None)
     cfg["model_filters"].pop(provider_id, None)
+    models = _normalized_provider_models(cfg.get("provider_models"))
+    models.pop(provider_id, None)
+    cfg["provider_models"] = models
     # Drop the provider from the active roster; the first remaining id becomes
     # the primary. selected_provider stays aligned with that roster.
     active = [
@@ -575,7 +699,7 @@ def update_provider(
     *,
     name: str | None = None,
     base_url: str | None = None,
-    default_model: str | None = None,
+    model: str | None = None,
     key_env: str | None = None,
     compat: str | None = None,
     key_header: str | None = None,
@@ -585,9 +709,10 @@ def update_provider(
     """Update fields of a user-defined provider and return its config.
 
     Only fields given are changed; None leaves the current value alone.
-    ``name``, ``base_url``, and ``default_model`` must stay non-empty when
-    changed. ``compat`` must be 'openai' or 'anthropic'. ``key_prefix`` may be
-    cleared with an empty string, and ``api_version`` with an empty string.
+    ``name``, ``base_url``, and ``model`` (the chosen model, stored in
+    ``provider_models``) must stay non-empty when changed. ``compat`` must be
+    'openai' or 'anthropic'. ``key_prefix`` may be cleared with an empty
+    string, and ``api_version`` with an empty string.
     Built-in providers cannot be edited (their config lives in the registry).
     """
     if provider_id in REGISTRY:
@@ -606,10 +731,14 @@ def update_provider(
         if not base_url.strip():
             raise ValueError("Provider base_url is required.")
         data["base_url"] = base_url.strip().rstrip("/")
-    if default_model is not None:
-        if not default_model.strip():
-            raise ValueError("Provider default_model is required.")
-        data["default_model"] = default_model.strip()
+    if model is not None:
+        if not model.strip():
+            raise ValueError("Provider model cannot be empty.")
+        models = _normalized_provider_models(cfg.get("provider_models"))
+        models[provider_id] = model.strip()
+        cfg["provider_models"] = models
+        if provider_id == get_selected_provider_id(cfg):
+            cfg["selected_model"] = None  # a stale pin would hide the edit
     if key_env is not None:
         if not key_env.strip():
             raise ValueError("Provider key_env is required.")
@@ -755,11 +884,42 @@ def set_selected_provider(provider_id: str) -> None:
     set_active_providers([provider_id])
 
 
-def set_selected_model(model: str | None) -> None:
-    """Persist the default model (None falls back to the provider default)."""
+def get_provider_model(provider_id: str, cfg: dict[str, Any] | None = None) -> str:
+    """Return the model the user chose for ``provider_id``, or ``""``.
+
+    A ``selected_model`` pinned by a project config, team policy, or profile
+    applies to the primary provider only and wins over the stored choice.
+    """
+    cfg = cfg or load_config()
+    pinned = str(cfg.get("selected_model") or "").strip()
+    if pinned and provider_id == get_selected_provider_id(cfg):
+        return pinned
+    return _normalized_provider_models(cfg.get("provider_models")).get(provider_id, "")
+
+
+def set_provider_model(provider_id: str, model: str | None) -> None:
+    """Persist the model chosen for ``provider_id`` (None or "" forgets it).
+
+    Choosing for the primary also drops a stale ``selected_model`` pin so the
+    new choice is what the next session starts with.
+    """
     cfg = load_config()
-    cfg["selected_model"] = model
+    get_provider_config(provider_id, cfg)  # raises UnknownProviderError
+    models = _normalized_provider_models(cfg.get("provider_models"))
+    cleaned = (model or "").strip()
+    if cleaned:
+        models[provider_id] = cleaned
+    else:
+        models.pop(provider_id, None)
+    cfg["provider_models"] = models
+    if provider_id == get_selected_provider_id(cfg):
+        cfg["selected_model"] = None
     save_config(cfg)
+
+
+def set_selected_model(model: str | None) -> None:
+    """Persist the primary provider's chosen model (None forgets the choice)."""
+    set_provider_model(get_selected_provider_id(), model)
 
 
 def get_default_mode(cfg: dict[str, Any] | None = None) -> str:
@@ -841,8 +1001,8 @@ def set_active_providers(provider_ids: Sequence[str]) -> list[str]:
     ``provider_ids`` must be a non-empty sequence of known provider ids (order
     is significant: the first is the primary). The single ``selected_provider``
     is kept in sync with the primary for backward compatibility. Changing the
-    primary clears ``selected_model`` so the next session uses the new
-    provider's default until a model is chosen again.
+    primary clears the ``selected_model`` pin so the next session uses the
+    model chosen for the new primary (see :func:`get_provider_model`).
     """
     if not provider_ids:
         raise ValueError("At least one active provider is required.")
@@ -3397,9 +3557,9 @@ def _capture_profile_values(cfg: dict[str, Any]) -> dict[str, Any]:
         "provider": get_selected_provider_id(cfg),
         "mode": get_default_mode(cfg),
     }
-    model = cfg.get("selected_model")
+    model = get_provider_model(captured["provider"], cfg)
     if model:
-        captured["model"] = str(model)
+        captured["model"] = model
     sampling = get_sampling(cfg)
     if sampling:
         captured["sampling"] = sampling
@@ -3469,8 +3629,10 @@ def _apply_profile_values(cfg: dict[str, Any], profile: dict[str, Any]) -> None:
         provider_id = str(profile["provider"])
         cfg["selected_provider"] = provider_id
         # A profile pins a single primary provider; clear per-provider state
-        # that would otherwise point at the previous vendor.
+        # that would otherwise point at the previous vendor. Without a model
+        # of its own, the provider's chosen model applies.
         cfg["active_providers"] = [provider_id]
+        cfg["selected_model"] = None
     if "model" in profile:
         cfg["selected_model"] = profile["model"]
     if "mode" in profile:
@@ -3646,7 +3808,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                 add(
                     "error",
                     f"providers.{provider_id}",
-                    "Provider needs non-empty name, base_url, and default_model.",
+                    "Provider needs non-empty name and base_url.",
                 )
 
     filters = cfg.get("model_filters")
@@ -4442,6 +4604,28 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
         except KeyError:
             add("warning", "selected_provider", f"Unknown provider '{selected}'.")
 
+    chosen_models = cfg.get("provider_models")
+    if chosen_models is not None:
+        if not isinstance(chosen_models, dict):
+            add("error", "provider_models", "'provider_models' must be an object.")
+        else:
+            for provider_id, model in chosen_models.items():
+                if not isinstance(model, str) or not model.strip():
+                    add(
+                        "error",
+                        f"provider_models.{provider_id}",
+                        "Model must be a non-empty string.",
+                    )
+                    continue
+                try:
+                    get_provider_config(str(provider_id), cfg)
+                except KeyError:
+                    add(
+                        "warning",
+                        f"provider_models.{provider_id}",
+                        f"Unknown provider '{provider_id}'; this model is ignored.",
+                    )
+
     team_section = cfg.get("team")
     if team_section is not None:
         if not isinstance(team_section, dict):
@@ -4509,7 +4693,7 @@ def clear_model_cache(provider_id: str | None = None) -> None:
 
 
 def _curated_models(provider: ProviderConfig) -> list[str]:
-    return list(dict.fromkeys(m for m in (provider.default_model, *provider.models) if m))
+    return list(dict.fromkeys(m for m in provider.models if m))
 
 
 def _can_fetch_models(provider: ProviderConfig) -> bool:
@@ -4669,19 +4853,59 @@ def search_model_catalog(
     return catalog.search_models(visible, query)
 
 
-def resolve_default_model(provider: ProviderConfig, *, timeout: float = 2.0) -> str:
-    """Return the model to start with for ``provider`` when none was chosen.
+class ModelNotChosenError(ValueError):
+    """No model was chosen for a provider and none was passed explicitly."""
 
-    Cloud providers ship a curated ``default_model``. Local providers serve
-    whatever is currently loaded, so the model is resolved from the server's
-    catalog (via the TTL cache, falling back to the curated tuple when the
-    server is offline). A short timeout keeps provider switching snappy against
-    a hung local server.
+
+def no_model_message(provider: ProviderConfig) -> str:
+    """How to fix a missing model choice, for non-interactive callers."""
+    return (
+        f"No model chosen for {provider.name}. Choose one with "
+        f"`kiwimatecoder config model set <model> --provider {provider.id}` "
+        "(or /model in a session), or pass --model."
+    )
+
+
+def resolve_model(
+    provider: ProviderConfig,
+    cfg: dict[str, Any] | None = None,
+    *,
+    timeout: float = 2.0,
+) -> str:
+    """Return the model to use with ``provider``, or ``""`` when none was chosen.
+
+    There are no default models: this is the model the user chose for the
+    provider (:func:`get_provider_model`). Local servers are the one exception
+    — with nothing chosen, the session uses the first model the running server
+    lists (live or cached, never the suggested tuple, which would amount to a
+    hidden default). A short timeout keeps provider switching snappy against a
+    hung local server. Callers prompt (interactive) or error (headless) on
+    ``""``.
     """
-    if provider.default_model:
-        return provider.default_model
-    models = get_model_catalog(provider.id, refresh=True, timeout=timeout).models
-    return models[0] if models else ""
+    chosen = get_provider_model(provider.id, cfg)
+    if chosen or not provider.is_local:
+        return chosen
+    model_catalog = get_model_catalog(provider.id, refresh=True, timeout=timeout, cfg=cfg)
+    if model_catalog.source == "curated" or not model_catalog.models:
+        return ""
+    return model_catalog.models[0]
+
+
+def require_model(
+    provider: ProviderConfig,
+    cfg: dict[str, Any] | None = None,
+    *,
+    override: str | None = None,
+) -> str:
+    """Return ``override`` or the provider's model, raising when there is none.
+
+    Raises :class:`ModelNotChosenError` (a ``ValueError``) whose message says
+    how to choose a model, for headless paths that cannot prompt.
+    """
+    model = (override or "").strip() or resolve_model(provider, cfg)
+    if not model:
+        raise ModelNotChosenError(no_model_message(provider))
+    return model
 
 
 # ---------------------------------------------------------------------------

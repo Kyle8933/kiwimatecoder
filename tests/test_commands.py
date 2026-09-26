@@ -5,6 +5,7 @@ from rich.console import Console
 
 from kiwimatecoder import catalog, config, ui
 from kiwimatecoder.commands import (
+    EXPERIMENTAL_GROUP,
     CommandResult,
     MultiSelectionPrompt,
     SelectionPrompt,
@@ -16,8 +17,8 @@ from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import REGISTRY
 
 
-def _console():
-    return Console(file=io.StringIO(), force_terminal=False, width=120)
+def _console(width: int = 120):
+    return Console(file=io.StringIO(), force_terminal=False, width=width)
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +29,14 @@ def isolate_config(tmp_path, monkeypatch):
     for provider in REGISTRY.values():
         monkeypatch.delenv(provider.key_env, raising=False)
     monkeypatch.delenv("LOCAL_API_KEY", raising=False)
+    monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
+
+
+def _pin_selected_model(model: str) -> None:
+    """Write a raw ``selected_model`` pin, as a profile or team policy would."""
+    cfg = config.load_config()
+    cfg["selected_model"] = model
+    config.save_config(cfg)
 
 
 def test_context_add_lists_and_deduplicates(session):
@@ -82,6 +91,8 @@ def test_slash_command_completions_include_core_commands():
 
 def test_bare_model_command_selects_from_current_provider(session):
     config.set_model_filter("openrouter", "allow", ["model-a", "model-b"])
+    # Choosing with /model replaces a stale pin rather than being shadowed by it.
+    _pin_selected_model("stale-pin")
     prompts: list[SelectionPrompt] = []
 
     def select(prompt: SelectionPrompt) -> str:
@@ -92,7 +103,9 @@ def test_bare_model_command_selects_from_current_provider(session):
 
     assert result == CommandResult.CONTINUE
     assert session.model == "model-b"
-    assert config.load_config().get("selected_model") == "model-b"
+    # The choice is remembered for the provider, not as a global pin.
+    assert config.get_provider_model("openrouter") == "model-b"
+    assert config.load_config().get("selected_model") is None
     assert prompts[0].title == "Select model"
     assert [option.value for option in prompts[0].options] == ["model-a", "model-b"]
     assert "openrouter" in prompts[0].text
@@ -109,7 +122,8 @@ def test_bare_model_command_offers_full_catalog_without_filter(session):
 
     offered = [option.value for option in prompts[0].options]
     provider = REGISTRY["openrouter"]
-    assert offered[0] == provider.default_model
+    # No default model is pinned first: the suggestions keep their own order.
+    assert offered[0] == provider.models[0]
     assert set(provider.models) <= set(offered)
     assert len(offered) > 1
 
@@ -121,16 +135,18 @@ def test_cancelled_model_selection_leaves_model_unchanged(session):
     assert session.model == "test-model"
 
 
-def test_cancelled_model_selection_does_not_change_saved_default(session):
+def test_cancelled_model_selection_does_not_change_saved_choice(session):
     config.set_selected_model("already-saved")
 
     dispatch("/model", session, _console(), selector=lambda prompt: None)
 
     assert session.model == "test-model"
-    assert config.load_config().get("selected_model") == "already-saved"
+    assert config.get_provider_model("openrouter") == "already-saved"
 
 
 def test_bare_provider_and_mode_commands_are_interactive(session):
+    config.set_provider_model("openai", "gpt-chosen")
+
     def select(prompt: SelectionPrompt) -> str:
         if prompt.title == "Select provider":
             return "openai"
@@ -140,7 +156,7 @@ def test_bare_provider_and_mode_commands_are_interactive(session):
     dispatch("/mode", session, _console(), selector=select)
 
     assert session.provider_id == "openai"
-    assert session.model == REGISTRY["openai"].default_model
+    assert session.model == "gpt-chosen"
     assert session.mode is PermissionMode.PLAN
 
 
@@ -151,11 +167,16 @@ def test_explicit_choice_does_not_open_selector(session):
     dispatch("/model custom-model", session, _console(), selector=fail_if_called)
 
     assert session.model == "custom-model"
-    assert config.load_config().get("selected_model") == "custom-model"
+    assert config.get_provider_model("openrouter") == "custom-model"
 
 
 def test_bare_provider_command_opens_multi_checklist(session):
-    config.set_selected_model("stale-from-openrouter")
+    config.set_selected_model("openrouter-choice")
+    config.set_provider_model("openai", "gpt-chosen")
+    config.set_provider_model("deepseek", "deepseek-chosen")
+    # A raw pin (profile/team policy) on the old primary must not survive the
+    # primary switch, nor leak onto the new primary.
+    _pin_selected_model("stale-from-openrouter")
     prompts: list[MultiSelectionPrompt] = []
 
     def select(prompt: MultiSelectionPrompt) -> list[str]:
@@ -168,10 +189,13 @@ def test_bare_provider_command_opens_multi_checklist(session):
     assert prompts[0].title == "Select active providers"
     assert "openrouter" in {option.value for option in prompts[0].options}
     assert session.provider_id == "openai"
-    assert session.model == REGISTRY["openai"].default_model
+    # The new primary uses the model chosen for it, never the old primary's.
+    assert session.model == "gpt-chosen"
+    assert session.model_for("deepseek") == "deepseek-chosen"
     assert session.active_provider_ids == ["openai", "deepseek"]
     assert config.get_active_provider_ids() == ["openai", "deepseek"]
     assert config.load_config().get("selected_model") is None
+    assert config.get_provider_model("openrouter") == "openrouter-choice"
 
 
 def test_bare_provider_checklist_marks_current_selection(session):
@@ -201,13 +225,16 @@ def test_bare_provider_checklist_rejects_empty_selection(session):
 def test_provider_command_with_id_resets_roster_to_single(session):
     console = _console()
     config.set_active_providers(["openrouter", "openai"])
-    config.set_selected_model("stale-from-openrouter")
+    _pin_selected_model("stale-from-openrouter")
 
     dispatch("/provider deepseek", session, console)
 
     assert session.provider_id == "deepseek"
     assert config.get_active_provider_ids() == ["deepseek"]
     assert config.load_config().get("selected_model") is None
+    # The old primary's pin never leaks onto the new primary.
+    assert session.model == ""
+    assert config.get_provider_model("deepseek") == ""
 
 
 def test_explicit_provider_id_does_not_open_checklist(session):
@@ -223,11 +250,12 @@ def test_reapplying_provider_checklist_keeps_current_model(session):
     session.model = "my-custom-model"
     config.set_selected_model("my-custom-model")
     session.allow_always("run_bash")
+    console = _console()
 
     dispatch(
         "/provider",
         session,
-        _console(),
+        console,
         multi_selector=lambda prompt: ["openrouter", "openai"],
     )
 
@@ -235,7 +263,10 @@ def test_reapplying_provider_checklist_keeps_current_model(session):
     assert session.model == "my-custom-model"
     assert session.is_always_allowed("run_bash")
     assert session.active_provider_ids == ["openrouter", "openai"]
-    assert config.load_config().get("selected_model") == "my-custom-model"
+    assert config.get_provider_model("openrouter") == "my-custom-model"
+    # The new fallback has no model and there is no selector to ask with.
+    assert "No model chosen for OpenAI" in _output(console)
+    assert "No model chosen for OpenRouter" not in _output(console)
 
 
 def test_provider_checklist_lists_current_roster_first(session):
@@ -255,17 +286,423 @@ def test_provider_checklist_lists_current_roster_first(session):
     assert "fallback" in prompts[0].options[1].label.lower()
 
 
+# ---------------------------------------------------------------------------
+# Choosing a model when a provider is added (there are no default models)
+# ---------------------------------------------------------------------------
+
+
+def test_provider_with_id_asks_for_a_model_when_none_chosen(session, monkeypatch):
+    _forbid_fetch(monkeypatch)
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        prompts.append(prompt)
+        return "gpt-5.5"
+
+    console = _console()
+    dispatch("/provider openai", session, console, selector=select)
+
+    assert [prompt.title for prompt in prompts] == ["Choose a model for OpenAI"]
+    assert [option.value for option in prompts[0].options] == list(
+        REGISTRY["openai"].models
+    )
+    assert "Current model: (none chosen)" in prompts[0].text
+    assert session.provider_id == "openai"
+    assert session.model == "gpt-5.5"
+    assert config.get_provider_model("openai") == "gpt-5.5"
+    assert "No model chosen" not in _output(console)
+
+
+def test_provider_model_prompt_offers_the_live_listing(session, monkeypatch):
+    config.set_key("openai", "sk-test")
+    calls: list[str] = []
+    _install_fetch(monkeypatch, ["gpt-live-2", "gpt-live-1"], calls)
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        prompts.append(prompt)
+        return "gpt-live-1"
+
+    dispatch("/provider openai", session, _console(), selector=select)
+
+    assert calls == ["openai"]
+    assert [option.value for option in prompts[0].options] == [
+        "gpt-live-2",
+        "gpt-live-1",
+    ]
+    assert session.model == "gpt-live-1"
+    assert config.get_provider_model("openai") == "gpt-live-1"
+
+
+def test_provider_with_id_keeps_an_already_chosen_model(session):
+    config.set_provider_model("openai", "gpt-chosen")
+
+    def fail_if_called(prompt: SelectionPrompt) -> str:
+        raise AssertionError("no model prompt for a provider with a chosen model")
+
+    dispatch("/provider openai", session, _console(), selector=fail_if_called)
+
+    assert session.model == "gpt-chosen"
+
+
+def test_provider_with_id_without_selector_prints_model_hint(session):
+    console = _console()
+
+    dispatch("/provider openai", session, console)
+
+    assert session.provider_id == "openai"
+    assert session.model == ""
+    assert config.get_provider_model("openai") == ""
+    output = _output(console)
+    assert "No model chosen for OpenAI — choose one with /model." in output
+    assert "(none chosen)" in output
+
+
+@pytest.mark.parametrize("reply", [None, "not-an-offered-model"])
+def test_provider_with_id_cancelled_model_prompt_prints_hint(session, reply):
+    console = _console()
+
+    dispatch("/provider openai", session, console, selector=lambda prompt: reply)
+
+    assert session.provider_id == "openai"
+    assert session.model == ""
+    assert config.get_provider_model("openai") == ""
+    assert "No model chosen for OpenAI — choose one with /model." in _output(console)
+
+
+def test_provider_checklist_asks_for_each_new_provider_without_a_model(
+    session, monkeypatch
+):
+    _forbid_fetch(monkeypatch)
+    config.set_provider_model("deepseek", "deepseek-chosen")
+    answers = {
+        "Choose a model for OpenAI": "gpt-5.5",
+        "Choose a model for Anthropic": "claude-haiku-4-5",
+    }
+    titles: list[str] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        titles.append(prompt.title)
+        return answers[prompt.title]
+
+    console = _console()
+    dispatch(
+        "/provider",
+        session,
+        console,
+        selector=select,
+        multi_selector=lambda prompt: ["openai", "anthropic", "deepseek"],
+    )
+
+    # Asked in roster order, and only for providers without a model.
+    assert titles == ["Choose a model for OpenAI", "Choose a model for Anthropic"]
+    assert session.provider_id == "openai"
+    assert session.model == "gpt-5.5"
+    assert config.get_provider_model("openai") == "gpt-5.5"
+    assert config.get_provider_model("anthropic") == "claude-haiku-4-5"
+    assert session.model_for("anthropic") == "claude-haiku-4-5"
+    assert session.model_for("deepseek") == "deepseek-chosen"
+    assert config.get_provider_model("deepseek") == "deepseek-chosen"
+    assert "No model chosen" not in _output(console)
+
+
+def test_provider_checklist_skips_providers_that_already_have_a_model(session):
+    config.set_provider_model("openai", "gpt-chosen")
+
+    def fail_if_called(prompt: SelectionPrompt) -> str:
+        raise AssertionError("no model prompt when every provider has a model")
+
+    dispatch(
+        "/provider",
+        session,
+        _console(),
+        selector=fail_if_called,
+        multi_selector=lambda prompt: ["openrouter", "openai"],
+    )
+
+    assert session.model == "test-model"
+    assert session.model_for("openai") == "gpt-chosen"
+
+
+def test_provider_checklist_cancelled_model_prompts_print_hints(session):
+    console = _console()
+
+    dispatch(
+        "/provider",
+        session,
+        console,
+        selector=lambda prompt: None,
+        multi_selector=lambda prompt: ["openai", "anthropic"],
+    )
+
+    assert session.provider_id == "openai"
+    assert session.model == ""
+    assert session.model_for("anthropic") == ""
+    assert config.get_provider_model("openai") == ""
+    assert config.get_provider_model("anthropic") == ""
+    output = _output(console)
+    assert "No model chosen for OpenAI — choose one with /model." in output
+    assert (
+        "No model chosen for Anthropic — choose one with "
+        "/config model set <model> anthropic." in output
+    )
+    assert "model: (none chosen)" in output
+
+
+def test_model_command_reports_none_chosen(session):
+    session.model = ""
+    console = _console()
+
+    dispatch("/model", session, console)
+    dispatch("/config model show", session, console)
+
+    output = _output(console)
+    assert "Current model: (none chosen)" in output
+    assert output.count("(none chosen)") == 2
+
+
+def test_bare_model_command_without_a_model_offers_suggestions(session, monkeypatch):
+    _forbid_fetch(monkeypatch)
+    session.model = ""
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        prompts.append(prompt)
+        return prompt.options[0].value
+
+    console = _console()
+    dispatch("/model", session, console, selector=select)
+
+    assert "Current model: (none chosen)" in prompts[0].text
+    assert prompts[0].selected is None
+    assert session.model == REGISTRY["openrouter"].models[0]
+    assert config.get_provider_model("openrouter") == session.model
+    # With nothing chosen there is no "current model retired" warning.
+    assert "no longer offered" not in _output(console)
+
+
+def test_config_model_set_and_reset_for_a_fallback_provider(session):
+    session.set_active_providers(["openrouter", "openai"])
+    # A stale per-session override (e.g. from /load) must not shadow the choice.
+    session.models["openai"] = "loaded-override"
+    console = _console()
+
+    dispatch("/config model set gpt-5.5 openai", session, console)
+
+    assert config.get_provider_model("openai") == "gpt-5.5"
+    assert "openai" not in session.models
+    assert session.model_for("openai") == "gpt-5.5"
+    assert session.model == "test-model"
+    assert "Model for OpenAI set to gpt-5.5." in _output(console)
+
+    reset = _console()
+    dispatch("/config model reset openai", session, reset)
+
+    assert config.get_provider_model("openai") == ""
+    assert "openai" not in session.models
+    assert session.model_for("openai") == ""
+    assert session.model == "test-model"
+    assert "Model choice for OpenAI cleared." in _output(reset)
+
+
+def test_config_model_set_rejects_unknown_provider(session):
+    console = _console()
+
+    dispatch("/config model set some-model nope", session, console)
+
+    assert "nope" in _output(console)
+    assert session.model == "test-model"
+    assert "nope" not in config.load_config()["provider_models"]
+
+
+def test_config_model_reset_rejects_unknown_provider(session):
+    config.set_provider_model("openrouter", "or-chosen")
+    console = _console()
+
+    dispatch("/config model reset nope", session, console)
+
+    assert "nope" in _output(console)
+    assert "cleared" not in _output(console)
+    assert session.model == "test-model"
+    assert config.get_provider_model("openrouter") == "or-chosen"
+
+
+def test_provider_with_every_model_hidden_skips_the_prompt(session, monkeypatch):
+    _forbid_fetch(monkeypatch)
+    config.set_model_filter("openai", "deny", list(REGISTRY["openai"].models))
+
+    def fail_if_called(prompt: SelectionPrompt) -> str:
+        raise AssertionError("an empty model prompt must not be shown")
+
+    console = _console()
+    dispatch("/provider openai", session, console, selector=fail_if_called)
+
+    assert session.provider_id == "openai"
+    assert session.model == ""
+    assert "No model chosen for OpenAI — choose one with /model." in _output(console)
+
+
+def test_config_model_reset_for_local_primary_uses_the_server_model(
+    session, monkeypatch
+):
+    _install_fetch(monkeypatch, ["qwen3:8b", "llama3.1:8b"])
+    config.set_provider_model("ollama", "llama3.1:8b")
+    dispatch("/provider ollama", session, _console())
+    assert session.model == "llama3.1:8b"
+    console = _console()
+
+    dispatch("/config model reset", session, console)
+
+    assert config.get_provider_model("ollama") == ""
+    assert session.model == "qwen3:8b"
+    assert "Model choice cleared. Using qwen3:8b" in _output(console)
+
+
+def test_config_provider_use_without_a_model_prints_hint(session):
+    console = _console()
+
+    dispatch("/config provider use openai", session, console)
+
+    assert session.provider_id == "openai"
+    assert session.model == ""
+    assert "No model chosen for OpenAI — choose one with /model." in _output(console)
+
+
+# ---------------------------------------------------------------------------
+# Experimental providers (KiwiMate) in the provider pickers
+# ---------------------------------------------------------------------------
+
+
+def test_provider_checklist_puts_experimental_kiwimate_in_its_own_group(session):
+    config.set_active_providers(["openrouter", "openai"])
+    session.set_active_providers(["openrouter", "openai"])
+    prompts: list[MultiSelectionPrompt] = []
+
+    def select(prompt: MultiSelectionPrompt) -> list[str]:
+        prompts.append(prompt)
+        return list(prompt.selected)
+
+    dispatch("/provider", session, _console(), multi_selector=select)
+
+    options = prompts[0].options
+    values = [option.value for option in options]
+    # Roster first; the renderer (not the order) puts grouped options on top.
+    assert values[:2] == ["openrouter", "openai"]
+    assert values[2] == "kiwimate"
+    kiwimate = options[2]
+    assert kiwimate.group == EXPERIMENTAL_GROUP == "Experimental"
+    assert kiwimate.label.startswith("KiwiMate — ")
+    assert "kiwimate.net" in kiwimate.label
+    assert all(option.group is None for option in options if option.value != "kiwimate")
+    assert "You choose a model for each newly added provider next." in prompts[0].text
+
+
+def test_provider_checklist_keeps_experimental_group_for_roster_members(session):
+    config.set_active_providers(["openai", "kiwimate"])
+    session.set_active_providers(["openai", "kiwimate"])
+    prompts: list[MultiSelectionPrompt] = []
+
+    def select(prompt: MultiSelectionPrompt) -> list[str]:
+        prompts.append(prompt)
+        return list(prompt.selected)
+
+    dispatch("/provider", session, _console(), multi_selector=select)
+
+    options = prompts[0].options
+    assert [option.value for option in options][:2] == ["openai", "kiwimate"]
+    assert options[1].group == "Experimental"
+    assert "(fallback 1)" in options[1].label
+    assert options[0].group is None
+    assert "(primary)" in options[0].label
+
+
+def test_provider_option_labels_show_the_chosen_model(session):
+    config.set_provider_model("openai", "gpt-chosen")
+    prompts: list[MultiSelectionPrompt] = []
+
+    def select(prompt: MultiSelectionPrompt) -> list[str]:
+        prompts.append(prompt)
+        return list(prompt.selected)
+
+    dispatch("/provider", session, _console(), multi_selector=select)
+
+    labels = {option.value: option.label for option in prompts[0].options}
+    assert labels["openai"] == "OpenAI — gpt-chosen"
+    assert labels["anthropic"] == "Anthropic — no model chosen"
+    assert labels["ollama"] == "Ollama (local) — no key needed (local)"
+    assert labels["unsloth"] == "Unsloth (local) — key required (local)"
+    assert labels["kiwimate"] == (
+        "KiwiMate — no model chosen · kiwimate.net · chat only, no tool use yet"
+    )
+
+
+def test_provider_selector_puts_experimental_kiwimate_in_its_own_group(session):
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> None:
+        prompts.append(prompt)
+        return None
+
+    dispatch("/provider", session, _console(), selector=select)
+
+    prompt = prompts[0]
+    assert prompt.title == "Select provider"
+    assert prompt.selected == "openrouter"
+    assert prompt.options[0].value == "kiwimate"
+    assert prompt.options[0].group == "Experimental"
+    assert "kiwimate.net" in prompt.options[0].label
+    assert all(option.group is None for option in prompt.options[1:])
+    assert session.provider_id == "openrouter"
+
+
+def test_choosing_experimental_kiwimate_asks_for_its_model(session, monkeypatch):
+    _forbid_fetch(monkeypatch)
+    titles: list[str] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        titles.append(prompt.title)
+        if prompt.title == "Select provider":
+            return "kiwimate"
+        return "kiwimate-small-1-0"
+
+    dispatch("/provider", session, _console(), selector=select)
+
+    assert titles == ["Select provider", "Choose a model for KiwiMate"]
+    assert session.provider_id == "kiwimate"
+    assert session.model == "kiwimate-small-1-0"
+    assert config.get_provider_model("kiwimate") == "kiwimate-small-1-0"
+
+
 def test_config_provider_remove_updates_session_fallback_roster(session):
     config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
     config.set_active_providers(["openrouter", "local"])
     session.set_active_providers(["openrouter", "local"])
     session.model = "keep-me"
+    console = _console()
 
-    dispatch("/config provider remove local", session, _console())
+    dispatch("/config provider remove local", session, console)
 
     assert session.provider_id == "openrouter"
     assert session.active_provider_ids == ["openrouter"]
     assert session.model == "keep-me"
+    assert config.load_config()["provider_models"].get("local") is None
+    assert "No model chosen" not in _output(console)
+
+
+def test_config_provider_remove_of_primary_prints_model_hint(session):
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    dispatch("/config provider use local", session, _console())
+    assert session.model == "local-code"
+    console = _console()
+
+    dispatch("/config provider remove local", session, console)
+
+    # The roster falls back to OpenRouter, which has no chosen model.
+    assert session.provider_id == "openrouter"
+    assert session.model == ""
+    output = _output(console)
+    assert "Removed provider" in output
+    assert "No model chosen for OpenRouter — choose one with /model." in output
 
 
 def test_config_show_uses_session_roster(session):
@@ -332,6 +769,15 @@ def _install_fetch(monkeypatch, model_ids, calls=None):
     monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
 
 
+def _forbid_fetch(monkeypatch):
+    """Fail the test if anything tries to list models over the network."""
+
+    def fail(provider, api_key=None, **kwargs):
+        raise AssertionError(f"unexpected model fetch for {provider.id}")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fail)
+
+
 def _output(console) -> str:
     return console.file.getvalue()
 
@@ -370,10 +816,31 @@ def test_model_refresh_reports_new_and_deprecated_models(session, monkeypatch):
     assert "anthropic/claude-opus-4-8" in output
     # The retired model is called out rather than silently left selected.
     assert "no longer offered" in output
+    # There is no provider default to reset to, so only /model is suggested.
+    assert "Pick another with /model." in output
+    assert "/config model reset" not in output
     assert config.list_visible_models("openrouter") == [
         "anthropic/claude-sonnet-5",
         "vendor/brand-new",
     ]
+
+
+def test_model_refresh_without_a_chosen_model_has_no_retired_warning(
+    session, monkeypatch
+):
+    config.set_key("openrouter", "sk-test")
+    session.model = ""
+    _install_fetch(monkeypatch, ["vendor/new", "vendor/stable"])
+    console = _console()
+
+    assert dispatch("/model refresh", session, console) == CommandResult.CONTINUE
+
+    output = _output(console)
+    assert "vendor/new" in output  # the live listing was reported
+    # An empty model is "none chosen", not a model the provider retired.
+    assert "no longer offered" not in output
+    assert "Current model" not in output
+    assert session.model == ""
 
 
 def test_model_refresh_survives_a_failing_provider(session, monkeypatch):
@@ -389,7 +856,8 @@ def test_model_refresh_survives_a_failing_provider(session, monkeypatch):
 
     output = _output(console)
     assert "connection refused" in output
-    assert REGISTRY["openrouter"].default_model in output
+    # The built-in suggestions are still listed.
+    assert REGISTRY["openrouter"].models[0] in output
 
 
 def test_model_list_uses_the_cache_without_fetching(session, monkeypatch):
@@ -407,6 +875,7 @@ def test_model_list_uses_the_cache_without_fetching(session, monkeypatch):
 
     assert "vendor/one" in _output(console)
     assert config.load_config().get("selected_model") is None
+    assert config.get_provider_model("openrouter") == ""
     assert session.model == "test-model"
 
 
@@ -421,7 +890,7 @@ def test_setting_a_model_by_name_still_works(session, monkeypatch):
     dispatch("/model some/unlisted-model", session, _console())
 
     assert session.model == "some/unlisted-model"
-    assert config.load_config().get("selected_model") == "some/unlisted-model"
+    assert config.get_provider_model("openrouter") == "some/unlisted-model"
 
 
 def test_config_models_refresh_updates_the_catalog(session, monkeypatch):
@@ -455,7 +924,7 @@ def test_model_search_offers_matches_and_selects(session, monkeypatch):
     dispatch("/model search vendor", session, _console(), selector=select)
 
     assert session.model == "vendor/bar"
-    assert config.load_config().get("selected_model") == "vendor/bar"
+    assert config.get_provider_model("openrouter") == "vendor/bar"
     assert prompts[0].title == "Search: vendor"
     assert [option.value for option in prompts[0].options] == [
         "vendor/foo",
@@ -543,6 +1012,7 @@ def test_config_provider_edit_updates_fields(session):
         console,
     )
 
+    # default_model= is still accepted as the older spelling of model=.
     dispatch(
         "/config provider edit local "
         'name="Local Models 2" default_model=local-fast',
@@ -552,9 +1022,74 @@ def test_config_provider_edit_updates_fields(session):
 
     provider = config.get_provider_config("local")
     assert provider.name == "Local Models 2"
-    assert provider.default_model == "local-fast"
+    assert not hasattr(provider, "default_model")
+    assert config.get_provider_model("local") == "local-fast"
     assert provider.base_url == "http://localhost:1234/v1"
     assert provider.key_env == "LOCAL_API_KEY"
+
+
+def test_config_provider_edit_accepts_model_field(session):
+    console = _console()
+    dispatch(
+        '/config provider add local "Local Models" http://localhost:1234/v1 local-code',
+        session,
+        console,
+    )
+    dispatch("/config provider use local", session, console)
+    assert session.model == "local-code"
+
+    dispatch("/config provider edit local model=local-fast", session, console)
+
+    assert config.get_provider_model("local") == "local-fast"
+    # Editing the primary's model switches the running session too.
+    assert session.model == "local-fast"
+    assert "Updated provider" in _output(console)
+
+
+def test_config_provider_edit_model_of_a_non_primary_keeps_session_model(session):
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    session.set_active_providers(["openrouter", "local"])
+    session.models["local"] = "loaded-override"
+    console = _console()
+
+    dispatch("/config provider edit local model=local-fast", session, console)
+
+    assert config.get_provider_model("local") == "local-fast"
+    assert session.provider_id == "openrouter"
+    assert session.model == "test-model"
+    # The edit is what failover uses, not a stale per-session override.
+    assert "local" not in session.models
+    assert session.model_for("local") == "local-fast"
+
+
+def test_config_provider_edit_rejects_empty_model(session):
+    config.add_provider("local", "Local", "http://localhost:1234/v1", "local-code")
+    console = _console()
+
+    dispatch("/config provider edit local model=", session, console)
+
+    assert "cannot be empty" in _output(console)
+    assert config.get_provider_model("local") == "local-code"
+
+
+def test_config_provider_add_requires_a_model(session):
+    usage = _console()
+
+    dispatch("/config provider add local Local http://localhost:1234/v1", session, usage)
+
+    assert "Usage: /config provider add <id> <name> <base_url> <model>" in _output(usage)
+    with pytest.raises(KeyError):
+        config.get_provider_config("local")
+
+    console = _console()
+    dispatch(
+        "/config provider add local Local http://localhost:1234/v1 local-code",
+        session,
+        console,
+    )
+
+    assert config.get_provider_model("local") == "local-code"
+    assert "with model local-code" in _output(console)
 
 
 def test_config_provider_edit_rejects_unknown_field(session, monkeypatch):
@@ -690,6 +1225,23 @@ def test_bare_config_interactive_key_set(session):
     assert "…-new" in _output(console)
 
 
+def test_bare_config_key_picker_puts_kiwimate_in_the_experimental_group(session):
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str | None:
+        prompts.append(prompt)
+        return "keys" if len(prompts) == 1 else None
+
+    dispatch("/config", session, _console(), selector=select)
+
+    provider_prompt = prompts[1]
+    assert provider_prompt.title == "Choose a provider"
+    groups = {option.value: option.group for option in provider_prompt.options}
+    assert groups["kiwimate"] == EXPERIMENTAL_GROUP
+    assert {pid for pid, group in groups.items() if group} == {"kiwimate"}
+    assert provider_prompt.selected == "openrouter"
+
+
 def test_bare_config_interactive_key_remove(session):
     config.set_key("openai", "sk-openai")
     selections = iter(["keys", "openai", "remove"])
@@ -742,20 +1294,47 @@ def test_switch_to_local_provider_without_key(session, monkeypatch):
     assert "qwen3:8b" in _output(console)
 
 
-def test_switch_to_offline_local_provider_uses_curated_fallback(session, monkeypatch):
+def _offline(monkeypatch):
     def fake_fetch(provider, api_key=None, **kwargs):
         raise catalog.CatalogFetchError("connection refused")
 
     monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+
+
+def test_switch_to_offline_local_provider_has_no_hidden_default(session, monkeypatch):
+    _offline(monkeypatch)
     console = _console()
 
     dispatch("/provider ollama", session, console)
 
     assert session.provider_id == "ollama"
-    assert session.model == REGISTRY["ollama"].models[0]
+    # The suggested tuple is never used as a hidden default model.
+    assert session.model == ""
+    assert config.get_provider_model("ollama") == ""
+    assert "No model chosen for Ollama (local) — choose one with /model" in _output(
+        console
+    )
+
+
+def test_switch_to_offline_local_provider_offers_suggestions(session, monkeypatch):
+    _offline(monkeypatch)
+    prompts: list[SelectionPrompt] = []
+
+    def select(prompt: SelectionPrompt) -> str:
+        prompts.append(prompt)
+        return prompt.options[1].value
+
+    dispatch("/provider ollama", session, _console(), selector=select)
+
+    suggested = REGISTRY["ollama"].models
+    assert prompts[0].title == "Choose a model for Ollama (local)"
+    assert [option.value for option in prompts[0].options] == list(suggested)
+    assert session.model == suggested[1]
+    assert config.get_provider_model("ollama") == suggested[1]
 
 
 def test_provider_table_shows_local_default_as_from_server(session):
+    config.set_provider_model("openai", "gpt-chosen")
     console = _console()
 
     dispatch("/provider", session, console)
@@ -763,6 +1342,9 @@ def test_provider_table_shows_local_default_as_from_server(session):
     output = _output(console)
     assert "Ollama (local)" in output
     assert "(from server)" in output
+    assert "KiwiMate (experimental)" in output
+    assert "gpt-chosen" in output
+    assert "default model" not in output
 
 
 def test_config_provider_list_marks_local_kind(session):
@@ -774,6 +1356,26 @@ def test_config_provider_list_marks_local_kind(session):
     assert "Ollama (local)" in output
     assert "LM Studio (local)" in output
     assert "local" in output  # the type column
+
+
+def test_config_provider_list_marks_experimental_kind(session):
+    config.set_provider_model("openai", "gpt-chosen")
+    console = _console(width=300)
+
+    dispatch("/config provider list", session, console)
+
+    rows = {
+        line.split("│")[1].strip(): line
+        for line in _output(console).splitlines()
+        if line.startswith("│")
+    }
+    assert "experimental" in rows["kiwimate"]
+    assert "KiwiMate" in rows["kiwimate"]
+    assert "built-in" in rows["openai"]
+    assert "gpt-chosen" in rows["openai"]
+    assert "experimental" not in rows["openai"]
+    assert "(from server)" in rows["ollama"]
+    assert "default model" not in _output(console)
 
 
 def test_doctor_command_reports_diagnostics(session):
@@ -1055,6 +1657,31 @@ def test_config_profile_save_list_show_use_remove(session):
 
     dispatch("/config profile remove work", session, console)
     assert config.get_profile("work") is None
+
+
+def test_config_profile_without_a_model_uses_the_providers_chosen_model(session):
+    config.set_active_providers(["openai"])  # primary with no chosen model
+
+    dispatch("/config profile save cloud", session, _console())
+
+    profile = config.get_profile("cloud")
+    assert profile["provider"] == "openai"
+    assert "model" not in profile  # nothing chosen, nothing captured
+    list_console = _console(width=200)
+    dispatch("/config profile list", session, list_console)
+    assert "(provider's chosen model)" in _output(list_console)
+
+    config.set_active_providers(["openrouter"])
+    _pin_selected_model("openrouter-pin")
+    config.set_provider_model("openai", "gpt-chosen")
+
+    dispatch("/config profile use cloud", session, _console())
+
+    # The profile's provider brings its own chosen model; the old pin is gone.
+    assert session.provider_id == "openai"
+    assert session.model == "gpt-chosen"
+    assert config.load_config()["selected_model"] is None
+    assert config.get_provider_model("openai") == "gpt-chosen"
 
 
 def test_config_profile_unknown_is_reported(session):

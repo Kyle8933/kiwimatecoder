@@ -36,13 +36,18 @@ jobs:
         run: |
           git diff "origin/${{ github.base_ref }}...HEAD" > review.diff
           kiwimatecoder -p "Review the staged diff for bugs" \
+            --model anthropic/claude-sonnet-5 \
             --output-format json --max-turns 10 > review.json
           cat review.json
 ```
 
+There are no default models, and a CI runner has no saved config, so pass
+`--model` (without it the run exits `1` with `No model chosen for <provider>…`).
 Swap `OPENROUTER_API_KEY` for the environment variable of whichever provider you
-use (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, ...). `pip
-install "kiwimatecoder[browser]"` adds the optional Playwright browser tool.
+use (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, ...) and add
+`--provider <id>` with a model id that provider serves, for example
+`--provider openai --model gpt-5.6-sol`. `pip install "kiwimatecoder[browser]"`
+adds the optional Playwright browser tool.
 
 The same step works with any shell: pipe a diff or file through stdin with
 `kiwimatecoder -p -`.
@@ -54,7 +59,7 @@ The same step works with any shell: pipe a diff or file through stdin with
 | Code | Meaning |
 | --- | --- |
 | `0` | Success: the run finished and produced a final answer. |
-| `1` | Runtime failure: missing/invalid API key, provider error, or the tool loop hit `--max-turns` without an answer. |
+| `1` | Runtime failure: missing/invalid API key, no model passed or chosen (`No model chosen for …`), provider error, or the tool loop hit `--max-turns` without an answer. |
 | `2` | Invalid usage: unknown `--output-format`/`--mode`/`--provider`, empty prompt, or a missing workspace. |
 
 A failed *review* is still exit `0` — the model answered. Use the JSON

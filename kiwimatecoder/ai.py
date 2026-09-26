@@ -1,9 +1,10 @@
 """One-shot streaming helper for the ``ask`` command.
 
 This is the simple, non-agentic path: send a single prompt and stream the
-answer to the console. It now runs on top of :class:`UnifiedClient` so it
-benefits from the full provider registry while keeping the original behavior
-(OpenRouter + the project's default model unless overridden).
+answer to the console. It runs on top of :class:`UnifiedClient` so it
+benefits from the full provider registry (OpenRouter unless overridden). There
+is no default model: the caller passes one, or the provider's chosen model is
+used.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Any
 from rich.console import Console
 
 from kiwimatecoder.client import ProviderError, TextDelta, UnifiedClient
-from kiwimatecoder.config import get_prompt_cache, get_sampling
+from kiwimatecoder.config import get_prompt_cache, get_sampling, no_model_message, resolve_model
 from kiwimatecoder.providers import ProviderConfig, default_provider
 
 console = Console()
@@ -32,7 +33,10 @@ async def stream_response(
 ) -> None:
     """Stream a single answer to the console."""
     provider = provider or default_provider()
-    model = model or provider.default_model
+    model = model or resolve_model(provider)
+    if not model:
+        console.print(f"[red]{no_model_message(provider)}[/red]")
+        return
     client = UnifiedClient(
         provider,
         api_key,

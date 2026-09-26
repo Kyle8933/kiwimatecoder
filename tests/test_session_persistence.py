@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from kiwimatecoder import catalog, config
 from kiwimatecoder.permissions import PermissionMode
+from kiwimatecoder.providers import REGISTRY
 from kiwimatecoder.session import (
     AUTOSAVE_NAME,
     Session,
@@ -11,6 +15,24 @@ from kiwimatecoder.session import (
     save_autosave,
     save_session,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_config(tmp_path, monkeypatch):
+    """Provider switches read the chosen models from config; keep it hermetic."""
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
+    monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
+
+
+def _forbid_fetch(monkeypatch):
+    def fail(provider, api_key=None, **kwargs):
+        raise AssertionError(f"unexpected model fetch for {provider.id}")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fail)
 
 
 def test_session_serialization_roundtrip(tmp_path):
@@ -99,14 +121,82 @@ def test_set_active_providers_keeps_model_when_primary_unchanged():
 
 
 def test_set_active_providers_switches_model_when_primary_changes():
+    config.set_provider_model("openai", "gpt-chosen")
     sess = Session(provider_id="openrouter", model="my-custom-model")
     sess.allow_always("run_bash")
 
     sess.set_active_providers(["openai", "openrouter"])
 
     assert sess.provider_id == "openai"
-    assert sess.model != "my-custom-model"
+    assert sess.model == "gpt-chosen"
     assert sess.is_always_allowed("run_bash")
+
+
+def test_set_active_providers_leaves_model_empty_when_none_chosen(monkeypatch):
+    _forbid_fetch(monkeypatch)
+    sess = Session(provider_id="openrouter", model="my-custom-model")
+
+    sess.set_active_providers(["anthropic", "openrouter"])
+
+    assert sess.provider_id == "anthropic"
+    # No default model: the old primary's model never carries over either.
+    assert sess.model == ""
+
+
+def test_set_provider_explicit_model_wins_over_chosen_one():
+    config.set_provider_model("openai", "gpt-chosen")
+    sess = Session(provider_id="openrouter", model="m")
+
+    sess.set_provider("openai", "gpt-explicit")
+
+    assert sess.model == "gpt-explicit"
+
+
+def test_model_for_fallback_uses_override_then_chosen_model(monkeypatch):
+    _forbid_fetch(monkeypatch)
+    config.set_provider_model("openai", "gpt-chosen")
+    sess = Session(
+        provider_id="openrouter",
+        model="primary-model",
+        active_provider_ids=["openrouter", "openai", "anthropic"],
+    )
+
+    assert sess.model_for("openrouter") == "primary-model"
+    assert sess.model_for("openai") == "gpt-chosen"
+    # A fallback nobody chose a model for yields "" (the agent skips it).
+    assert sess.model_for("anthropic") == ""
+
+    sess.models["openai"] = "gpt-override"
+    assert sess.model_for("openai") == "gpt-override"
+
+
+def test_model_for_local_fallback_reads_the_server_listing(monkeypatch):
+    def fake_fetch(provider, api_key=None, **kwargs):
+        return [catalog.RemoteModel("qwen3:8b", 2.0), catalog.RemoteModel("llama3.1:8b", 1.0)]
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+    sess = Session(
+        provider_id="openrouter",
+        model="primary-model",
+        active_provider_ids=["openrouter", "ollama"],
+    )
+
+    assert sess.model_for("ollama") == "qwen3:8b"
+
+
+def test_model_for_offline_local_fallback_has_no_hidden_default(monkeypatch):
+    def fake_fetch(provider, api_key=None, **kwargs):
+        raise catalog.CatalogFetchError("connection refused")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+    sess = Session(
+        provider_id="openrouter",
+        model="primary-model",
+        active_provider_ids=["openrouter", "ollama"],
+    )
+
+    # The suggested tuple is only for pickers, never a stand-in model.
+    assert sess.model_for("ollama") == ""
 
 
 def test_session_save_and_load(tmp_path, monkeypatch):

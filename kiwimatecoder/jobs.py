@@ -27,7 +27,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from kiwimatecoder.config import ensure_config_dir, get_provider_config
+from kiwimatecoder.config import (
+    ensure_config_dir,
+    get_provider_config,
+    get_selected_provider_id,
+    load_config,
+    require_model,
+)
 from kiwimatecoder.permissions import PermissionMode
 
 JOB_STATUSES = ("running", "succeeded", "failed", "cancelled")
@@ -295,8 +301,9 @@ def start_job(
     ``mode`` defaults to ``auto-accept`` so the job can act unattended; pass
     ``mode="ask"`` or ``mode="plan"`` to override (an unattended ``ask`` job
     simply has its approvals denied). Raises ``ValueError`` for an empty prompt,
-    a missing workspace, or an unknown mode; ``KeyError`` for an unknown
-    provider; and ``JobError`` when the process cannot be started.
+    a missing workspace, an unknown mode, or when no model was passed or chosen
+    for the provider; ``KeyError`` for an unknown provider; and ``JobError``
+    when the process cannot be started.
     """
     cleaned_prompt = str(prompt).strip()
     if not cleaned_prompt:
@@ -308,6 +315,14 @@ def start_job(
     resolved_mode = permission.value
     if provider is not None:
         get_provider_config(provider)  # raises UnknownProviderError (a KeyError)
+    # Fail now rather than in the detached run: there are no default models.
+    # The run starts in the workspace, so its project config decides.
+    cfg = load_config(workspace_path)
+    require_model(
+        get_provider_config(provider or get_selected_provider_id(cfg), cfg),
+        cfg,
+        override=model,
+    )
 
     job_id = uuid.uuid4().hex[:12]
     output_path = _output_path(job_id)
@@ -531,11 +546,17 @@ def schedule_job(
     return record
 
 
-def run_due_jobs(*, now: float | None = None) -> list[JobRecord]:
+def run_due_jobs(
+    *,
+    now: float | None = None,
+    skipped: list[tuple[JobRecord, str]] | None = None,
+) -> list[JobRecord]:
     """Start a new run for every scheduled job whose interval has elapsed.
 
     A job that is still running is skipped (runs never overlap); a finished job
     hands the schedule to the fresh run. Returns the newly started records.
+    Due jobs that could not start (e.g. no model chosen) are appended to
+    ``skipped`` with the reason, when given.
     """
     current = time.time() if now is None else now
     started: list[JobRecord] = []
@@ -555,9 +576,11 @@ def run_due_jobs(*, now: float | None = None) -> list[JobRecord]:
                 model=refreshed.model,
                 mode=refreshed.mode,
             )
-        except (ValueError, KeyError, JobError):
-            # A broken schedule (missing workspace, retired provider) is left
-            # alone so the caller can inspect and fix or cancel the record.
+        except (ValueError, KeyError, JobError) as exc:
+            # A broken schedule (missing workspace, retired provider, no model)
+            # is left alone so the caller can inspect and fix or cancel it.
+            if skipped is not None:
+                skipped.append((refreshed, str(exc)))
             continue
         fresh.interval = refreshed.interval
         fresh.next_run_at = datetime.datetime.fromtimestamp(

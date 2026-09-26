@@ -18,6 +18,7 @@ from kiwimatecoder import __version__, i18n, ui
 from kiwimatecoder.ai import stream_response
 from kiwimatecoder.catalog import probe, summarize_ids
 from kiwimatecoder.config import (
+    ModelNotChosenError,
     add_command_rule,
     add_provider,
     apply_model_filter,
@@ -49,6 +50,7 @@ from kiwimatecoder.config import (
     get_profiles,
     get_prompt_cache,
     get_provider_config,
+    get_provider_model,
     get_remote,
     get_sampling,
     get_sandbox,
@@ -73,8 +75,9 @@ from kiwimatecoder.config import (
     remove_provider,
     rename_profile,
     reset_default_mode,
+    require_model,
     reset_sampling,
-    resolve_default_model,
+    resolve_model,
     save_profile,
     set_acp,
     set_budget,
@@ -93,7 +96,7 @@ from kiwimatecoder.config import (
     set_remote,
     set_sampling,
     set_sandbox,
-    set_selected_model,
+    set_provider_model,
     set_selected_provider,
     set_shell_config,
     set_subagents,
@@ -135,7 +138,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config show[/cyan]               Show current settings")
     console.print("  [cyan]config key set <provider> <key>[/cyan]  Save an API key")
     console.print("  [cyan]config provider use <id>[/cyan]     Set the default provider")
-    console.print("  [cyan]config model set <id>[/cyan]       Set the default model")
+    console.print("  [cyan]config model set <id>[/cyan]       Choose the provider's model")
     console.print("  [cyan]config mode set <ask|auto-accept|plan>[/cyan]  Set default mode")
     console.print("  [cyan]config models show[/cyan]         List the models offered")
     console.print(
@@ -191,7 +194,7 @@ config_app.add_typer(key_app, name="key")
 provider_app = typer.Typer(help="List or manage providers.")
 config_app.add_typer(provider_app, name="provider")
 
-model_app = typer.Typer(help="Set or reset the default model.")
+model_app = typer.Typer(help="Choose or forget the model used with a provider.")
 config_app.add_typer(model_app, name="model")
 
 mode_app = typer.Typer(help="Set or reset the default permission mode.")
@@ -300,7 +303,7 @@ def provider_list() -> None:
     table = Table(title="Providers", show_header=True)
     table.add_column("id", style="cyan")
     table.add_column("name")
-    table.add_column("default model")
+    table.add_column("model")
     table.add_column("auth")
     for provider in list_provider_configs():
         auth = provider.key_header
@@ -308,8 +311,9 @@ def provider_list() -> None:
             auth += f": {provider.key_prefix.strip()}"
         table.add_row(
             provider.id,
-            provider.name,
-            provider.default_model or "(from server)",
+            f"{provider.name} (experimental)" if provider.experimental else provider.name,
+            get_provider_model(provider.id)
+            or ("(from server)" if provider.is_local else "—"),
             auth,
         )
     console.print(table)
@@ -320,7 +324,7 @@ def provider_add(
     provider_id: Annotated[str, typer.Argument(help="Unique id (no spaces)")],
     name: Annotated[str, typer.Argument(help="Display name")],
     base_url: Annotated[str, typer.Argument(help="Base URL including /v1")],
-    default_model: Annotated[str, typer.Argument(help="Default model id")],
+    model: Annotated[str, typer.Argument(help="Model to use with this provider")],
     key_env: Annotated[
         str | None,
         typer.Option(
@@ -356,7 +360,7 @@ def provider_add(
             provider_id,
             name,
             base_url,
-            default_model,
+            model,
             key_env,
             key_header=key_header,
             key_prefix=key_prefix,
@@ -366,7 +370,8 @@ def provider_add(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} Added provider[/green] [cyan]{provider.id}[/cyan] ({provider.name})."
+        f"[green]{_check()} Added provider[/green] [cyan]{provider.id}[/cyan] "
+        + f"({provider.name}) with model [cyan]{model}[/cyan]."
     )
 
 
@@ -386,8 +391,9 @@ def provider_edit(
     provider: Annotated[str, typer.Argument(help="Provider id")],
     name: Annotated[str | None, typer.Option("--name", help="New display name")] = None,
     base_url: Annotated[str | None, typer.Option("--base-url", help="New base URL")] = None,
-    default_model: Annotated[
-        str | None, typer.Option("--default-model", help="New default model")
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "--default-model", help="New model to use with it"),
     ] = None,
     key_env: Annotated[
         str | None, typer.Option("--key-env", help="New key environment variable")
@@ -420,7 +426,7 @@ def provider_edit(
             provider,
             name=name,
             base_url=base_url,
-            default_model=default_model,
+            model=model,
             key_env=key_env,
             compat=compat,
             key_header=key_header,
@@ -436,18 +442,51 @@ def provider_edit(
 # --- canonical `config model ...` -------------------------------------------
 
 
+_MODEL_PROVIDER_OPTION = typer.Option(
+    "--provider", "-p", help="Provider id (default: the active provider)"
+)
+
+
 @model_app.command("set")
-def model_set(model: Annotated[str, typer.Argument(help="Model id")]) -> None:
-    """Set the default model (overrides the provider default)."""
-    set_selected_model(model)
-    console.print(f"[green]{_check()} Default model set to [cyan]{model}[/cyan].[/green]")
+def model_set(
+    model: Annotated[str, typer.Argument(help="Model id")],
+    provider: Annotated[str | None, _MODEL_PROVIDER_OPTION] = None,
+) -> None:
+    """Choose the model to use with a provider."""
+    provider_id = provider or get_selected_provider_id()
+    try:
+        provider_cfg = get_provider_config(provider_id)
+        set_provider_model(provider_id, model)
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Model for {provider_cfg.name} set to "
+        + f"[cyan]{model}[/cyan].[/green]"
+    )
 
 
 @model_app.command("reset")
-def model_reset() -> None:
-    """Use the provider's default model again."""
-    set_selected_model(None)
-    console.print(f"[green]{_check()} Default model reset (using provider default).[/green]")
+def model_reset(
+    provider: Annotated[str | None, _MODEL_PROVIDER_OPTION] = None,
+) -> None:
+    """Forget the model chosen for a provider."""
+    provider_id = provider or get_selected_provider_id()
+    try:
+        provider_cfg = get_provider_config(provider_id)
+        set_provider_model(provider_id, None)
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    follow_up = (
+        "Sessions use the first model the server lists."
+        if provider_cfg.is_local
+        else "You will be asked to choose one next time."
+    )
+    console.print(
+        f"[green]{_check()} Model choice for {provider_cfg.name} cleared.[/green] "
+        + follow_up
+    )
 
 
 # --- canonical `config mode ...` --------------------------------------------
@@ -2211,7 +2250,7 @@ def profile_list() -> None:
         table.add_row(
             name,
             str(values.get("provider") or ""),
-            str(values.get("model") or "(provider default)"),
+            str(values.get("model") or "(provider's chosen model)"),
             str(values.get("mode") or ""),
         )
     console.print(table)
@@ -2257,7 +2296,7 @@ def profile_use(name: Annotated[str, typer.Argument(help="Profile name")]) -> No
     console.print(
         f"[green]{_check()} Applied profile [cyan]{name}[/cyan][/green] — "
         f"provider: [cyan]{provider_id}[/cyan], "
-        f"model: [cyan]{cfg.get('selected_model') or '(provider default)'}[/cyan], "
+        f"model: [cyan]{get_provider_model(provider_id, cfg) or '(none chosen)'}[/cyan], "
         f"mode: [cyan]{get_default_mode(cfg)}[/cyan]."
     )
 
@@ -2328,7 +2367,12 @@ def config_show() -> None:
     console.print(
         f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
         + f"Active providers: [cyan]{active_line}[/cyan]\n"
-        + f"Model: [cyan]{cfg.get('selected_model') or provider.default_model or '(from server)'}[/cyan]\n"
+        + "Model: [cyan]"
+        + (
+            get_provider_model(provider_id, cfg)
+            or ("(from server)" if provider.is_local else "(none chosen)")
+        )
+        + "[/cyan]\n"
         + f"Mode: [cyan]{get_default_mode(cfg)}[/cyan]\n"
         + f"Key: [cyan]{describe_key(provider_id)}[/cyan] ({provider.key_env})\n"
         + f"Model visibility: [cyan]{get_model_filter(provider_id)['mode']}[/cyan]"
@@ -2647,6 +2691,41 @@ def _headless_error(message: str) -> None:
     sys.stderr.write(f"error: {message}\n")
 
 
+def _write_headless_result(output_format: str, payload: dict[str, Any]) -> None:
+    """Write the final record for json/stream-json output (a newline for text)."""
+    if output_format == "json":
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), default=str) + "\n")
+    elif output_format == "stream-json":
+        record: dict[str, Any] = {"type": "result"}
+        record.update(payload)
+        sys.stdout.write(json.dumps(record, separators=(",", ":"), default=str) + "\n")
+    else:
+        sys.stdout.write("\n")
+
+
+def _headless_model_missing(
+    exc: ModelNotChosenError, output_format: str, provider_id: str, mode: str
+) -> int:
+    """Report a missing model like other runtime failures: exit 1 with a record."""
+    _headless_error(str(exc))
+    if output_format != "text":
+        _write_headless_result(
+            output_format,
+            {
+                "result": "",
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                "cost_usd": 0.0,
+                "provider": provider_id,
+                "model": None,
+                "mode": mode,
+                "tools_used": [],
+                "messages": 0,
+                "success": False,
+            },
+        )
+    return 1
+
+
 def _run_headless(
     prompt: str,
     *,
@@ -2699,6 +2778,16 @@ def _run_headless(
         _headless_error(f"Workspace is not a directory: {workspace_root}")
         return 2
 
+    # There are no default models. After the usage checks (exit 2), fail fast
+    # (exit 1, like a missing key) when no model was passed or chosen.
+    cfg = load_config()
+    provider_id = provider or get_selected_provider_id(cfg)
+    run_mode = resolved_mode.value if resolved_mode is not None else get_default_mode(cfg)
+    try:
+        require_model(get_provider_config(provider_id, cfg), cfg, override=model)
+    except ModelNotChosenError as exc:
+        return _headless_model_missing(exc, output_format, provider_id, run_mode)
+
     from kiwimatecoder import headless
 
     stderr_console = Console(file=sys.stderr, no_color=True, highlight=False)
@@ -2737,21 +2826,24 @@ def _run_headless(
         )
         return False
 
-    outcome = asyncio.run(
-        headless.run_agent_once(
-            prompt,
-            workspace=workspace_root,
-            provider=provider,
-            model=model,
-            mode=resolved_mode,
-            confirm=deny,
-            on_event=on_event,
-            max_turns=max_turns,
-            console=console,
-            render_text=False,
-            output_mode="compact" if quiet and output_format == "text" else None,
+    try:
+        outcome = asyncio.run(
+            headless.run_agent_once(
+                prompt,
+                workspace=workspace_root,
+                provider=provider,
+                model=model,
+                mode=resolved_mode,
+                confirm=deny,
+                on_event=on_event,
+                max_turns=max_turns,
+                console=console,
+                render_text=False,
+                output_mode="compact" if quiet and output_format == "text" else None,
+            )
         )
-    )
+    except ModelNotChosenError as exc:
+        return _headless_model_missing(exc, output_format, provider_id, run_mode)
 
     payload = {
         "result": outcome.text,
@@ -2764,18 +2856,7 @@ def _run_headless(
         "messages": outcome.messages,
         "success": outcome.success,
     }
-    if output_format == "json":
-        sys.stdout.write(
-            json.dumps(payload, separators=(",", ":"), default=str) + "\n"
-        )
-    elif output_format == "stream-json":
-        record: dict[str, Any] = {"type": "result"}
-        record.update(payload)
-        sys.stdout.write(
-            json.dumps(record, separators=(",", ":"), default=str) + "\n"
-        )
-    else:
-        sys.stdout.write("\n")
+    _write_headless_result(output_format, payload)
     if outcome.error and output_format != "text":
         sys.stderr.write(f"error: {outcome.error}\n")
     return 0 if outcome.success else 1
@@ -2964,12 +3045,6 @@ def main(
         cfg = load_config()
         provider_id = get_selected_provider_id(cfg)
         provider = get_provider_config(provider_id, cfg)
-        model = str(cfg.get("selected_model") or "") or resolve_default_model(provider)
-
-        try:
-            mode = PermissionMode.from_str(str(cfg.get("default_mode", "ask")))
-        except ValueError:
-            mode = PermissionMode.ASK
 
         if not get_key(provider_id) and provider.needs_key:
             console.print(
@@ -2982,6 +3057,14 @@ def main(
             )
             if _stdin_is_tty() and _prompt_yes_no("Run setup now?"):
                 _run_setup(provider_id, key=None)
+                # Setup may have saved a model and reset the roster.
+                cfg = load_config()
+
+        model = resolve_model(provider, cfg)
+        try:
+            mode = PermissionMode.from_str(str(cfg.get("default_mode", "ask")))
+        except ValueError:
+            mode = PermissionMode.ASK
 
         session = Session(
             provider_id=provider_id,
@@ -3030,6 +3113,10 @@ def main(
         sys.stderr.write(t("cli.no_tty") + "\n")
         raise typer.Exit(2)
 
+    if not session.model:
+        _ensure_session_model(session)
+    _ensure_fallback_models(session)
+
     # repl.run loads user (and opted-in project) plugins before the agent is
     # constructed, turning any failure into a dim warning rather than a crash.
     repl.run(session)
@@ -3058,10 +3145,16 @@ def _interactive_select_provider(
     selected: str,
     local_status: dict[str, bool] | None = None,
 ) -> str | None:
-    """Keyboard-driven provider picker, matching the REPL's selector style."""
-    from prompt_toolkit.shortcuts import choice
+    """Keyboard-driven provider picker, matching the REPL's selector style.
+
+    Experimental providers (KiwiMate) sit in their own "Experimental" box at
+    the top.
+    """
+    from kiwimatecoder.pickers import grouped_choice
 
     def _label(p: ProviderConfig) -> str:
+        # Status first: a narrow terminal truncates the description instead.
+        details: list[str] = []
         if p.is_local:
             status = (local_status or {}).get(p.id)
             if status is None:
@@ -3070,19 +3163,140 @@ def _interactive_select_provider(
                 note = "running"
             else:
                 note = "not detected"
-            return f"{p.name} — {note} ({p.base_url})"
-        return f"{p.name} — {p.default_model}"
+            details.append(f"{note} ({p.base_url})")
+        else:
+            details.append("key set" if get_key(p.id) else "needs an API key")
+        chosen = get_provider_model(p.id)
+        if chosen:
+            details.append(chosen)
+        if p.description:
+            details.append(p.description)
+        return f"{p.name} — {' · '.join(details)}"
 
     try:
-        return choice(
+        return grouped_choice(
             message="Choose a provider to configure",
-            options=[(p.id, _label(p)) for p in providers],
+            groups=[
+                ("Experimental", [(p.id, _label(p)) for p in providers if p.experimental]),
+                (None, [(p.id, _label(p)) for p in providers if not p.experimental]),
+            ],
             default=selected,
             show_frame=True,
             bottom_toolbar="↑/↓ move • Enter select • Ctrl-C cancel",
         )
     except (EOFError, KeyboardInterrupt):
         return None
+
+
+# Picker value for "the model I want is not listed".
+_TYPE_MODEL_ID = "\0type-model-id"
+
+
+def _interactive_select_model(provider: ProviderConfig, current: str = "") -> str | None:
+    """Ask which model to use with ``provider``; None when cancelled.
+
+    Offers the provider's live listing (refetched now that a key may have just
+    been saved, falling back to its suggested models) plus a way to type any
+    other id.
+    """
+    from prompt_toolkit.shortcuts import choice
+
+    from kiwimatecoder.commands import model_selection_prompt
+
+    prompt = model_selection_prompt(provider, current, console, force=True)
+    # First, so an unlisted id is one keypress away even with a long listing.
+    options = [(_TYPE_MODEL_ID, "Type a model id…")]
+    options.extend((option.value, option.label) for option in prompt.options)
+    try:
+        picked = choice(
+            message=f"{prompt.title}\n{prompt.text}",
+            options=options,
+            # Start on the current model, else the top of the listing.
+            default=prompt.selected or (options[1][0] if len(options) > 1 else None),
+            show_frame=True,
+            bottom_toolbar="↑/↓ move • Enter select • Ctrl-C cancel",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if picked != _TYPE_MODEL_ID:
+        return picked
+    try:
+        typed = console.input("model> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return None
+    return typed or None
+
+
+def _setup_model(
+    provider: ProviderConfig, model: str | None, *, interactive: bool = True
+) -> None:
+    """Record the model to use with ``provider`` — the last step of setup.
+
+    There are no default models: ``--model`` wins, otherwise the user picks
+    from the provider's list (an earlier choice is kept if they cancel).
+    Without a terminal, say how to choose one later.
+    """
+    current = get_provider_model(provider.id)
+    chosen = (model or "").strip() or None
+    if chosen is None and interactive and _stdin_is_tty():
+        chosen = _interactive_select_model(provider, current)
+    if chosen:
+        set_provider_model(provider.id, chosen)
+        console.print(f"[green]{_check()} Model set to[/green] [cyan]{chosen}[/cyan].")
+    elif current:
+        console.print(f"Keeping model [cyan]{current}[/cyan].")
+    elif provider.is_local:
+        console.print(
+            "[dim]No model chosen — sessions use the first model the server lists.[/dim]"
+        )
+    else:
+        console.print(
+            "[yellow]No model chosen yet.[/yellow] Pick one when the session "
+            + "starts, or run "
+            + f"[cyan]kiwimatecoder config model set <model> --provider {provider.id}[/cyan]."
+        )
+    if provider.experimental:
+        note = (
+            " It is chat only for now: it cannot read or edit files or run commands."
+            if not provider.supports_tools
+            else ""
+        )
+        console.print(f"[yellow]{provider.name} is experimental.{note}[/yellow]")
+
+
+def _ensure_session_model(session: Session) -> None:
+    """Ask for a model at launch when the session's provider has none chosen."""
+    provider = session.provider
+    console.print(f"[yellow]No model chosen for {provider.name} yet.[/yellow]")
+    chosen = _interactive_select_model(provider)
+    if chosen:
+        set_provider_model(provider.id, chosen)
+        session.model = chosen
+        return
+    console.print("[yellow]Choose a model with /model before chatting.[/yellow]")
+
+
+def _ensure_fallback_models(session: Session) -> None:
+    """Ask at launch for each fallback provider that has no chosen model.
+
+    Failover skips a fallback without a model, so an upgraded roster (or one
+    edited by hand) would otherwise fail silently when the primary goes down.
+    """
+    for provider in session.active_providers[1:]:
+        if session.model_for(provider.id):
+            continue
+        console.print(
+            f"[yellow]No model chosen for {provider.name} (fallback).[/yellow]"
+        )
+        chosen = _interactive_select_model(provider)
+        if chosen:
+            set_provider_model(provider.id, chosen)
+            continue
+        console.print(
+            f"[yellow]{provider.name} is skipped during failover until you choose "
+            + f"one with /config model set <model> {provider.id}.[/yellow]"
+        )
 
 
 def _interactive_api_key() -> str | None:
@@ -3095,11 +3309,13 @@ def _interactive_api_key() -> str | None:
         return None
 
 
-def _run_setup(provider_id: str, key: str | None) -> bool:
-    """Store an API key for a provider and switch to it (the setup wizard body).
+def _run_setup(provider_id: str, key: str | None, model: str | None = None) -> bool:
+    """Store an API key for a provider, switch to it, and choose its model.
 
-    Returns True on success and False when the provider is unknown or the key
-    entry was cancelled/empty. Callers decide how to treat a failure.
+    This is the setup wizard body. Returns True on success and False when the
+    provider is unknown or the key entry was cancelled/empty. Callers decide
+    how to treat a failure. Cancelling the model choice is not a failure: the
+    session asks again at launch.
     """
     try:
         provider = get_provider_config(provider_id)
@@ -3108,19 +3324,21 @@ def _run_setup(provider_id: str, key: str | None) -> bool:
         return False
     if key is None and provider.is_local and not provider.requires_key:
         # Keyless local servers (Ollama, LM Studio) — just select the provider
-        # and let the session model resolve from whatever the server has loaded.
-        # Key-enforcing locals (Unsloth) fall through to the normal key prompt.
+        # and offer the models the server has loaded. Key-enforcing locals
+        # (Unsloth) fall through to the normal key prompt.
         set_selected_provider(provider_id)
-        set_selected_model(None)  # don't carry a stale model across providers
         console.print(
             f"[green]{_check()} {provider.name} needs no API key[/green] — "
             + f"models are read from the server at {provider.base_url}."
         )
-        if not probe(provider):
+        running = probe(provider)
+        if not running:
             console.print(
                 f"[yellow]No server answered at {provider.base_url} — "
                 + "start it before chatting.[/yellow]"
             )
+        # A stopped server has nothing real to list, so only --model applies.
+        _setup_model(provider, model, interactive=running)
         console.print("Ready to go. Run [cyan]kiwimatecoder[/cyan] to start a session.")
         return True
     if key is None:
@@ -3143,6 +3361,7 @@ def _run_setup(provider_id: str, key: str | None) -> bool:
     )
     if warning:
         console.print(f"[yellow]{warning}[/yellow]")
+    _setup_model(provider, model)
     console.print("Ready to go. Run [cyan]kiwimatecoder[/cyan] to start a session.")
     return True
 
@@ -3159,8 +3378,12 @@ def setup(
         str | None,
         typer.Option("--key", "-k", help="API key (skips the interactive prompt)"),
     ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="Model to use (skips the model picker)"),
+    ] = None,
 ) -> None:
-    """Choose a provider and save its API key — the quick-start guide."""
+    """Choose a provider, save its API key, and pick its model."""
     cfg = load_config()
     provider_id = provider or get_selected_provider_id(cfg)
     if provider is None and key is None and _stdin_is_tty():
@@ -3177,7 +3400,7 @@ def setup(
             console.print("[yellow]Setup cancelled.[/yellow]")
             raise typer.Exit(1)
         provider_id = chosen
-    if not _run_setup(provider_id, key):
+    if not _run_setup(provider_id, key, model):
         raise typer.Exit(1)
 
 
@@ -3188,7 +3411,8 @@ def ask(
         Path | None, typer.Option("--file", "-f", help="Path to a code file to include")
     ] = None,
     model: Annotated[
-        str | None, typer.Option("--model", "-m", help="Override the default model")
+        str | None,
+        typer.Option("--model", "-m", help="Model to use (default: the provider's choice)"),
     ] = None,
     provider: Annotated[
         str | None,
@@ -3221,13 +3445,17 @@ def ask(
             raise typer.Exit(1)
         full_prompt = f"{prompt}\n\n```\n{file.read_text()}\n```"
 
+    try:
+        resolved_model = require_model(provider_cfg, cfg, override=model)
+    except ModelNotChosenError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
     asyncio.run(
         stream_response(
             full_prompt,
             api_key or "",
-            model=model
-            or str(cfg.get("selected_model") or "")
-            or resolve_default_model(provider_cfg),
+            model=resolved_model,
             provider=provider_cfg,
         )
     )
@@ -3457,8 +3685,9 @@ def jobs_tick() -> None:
     """Start every scheduled job whose interval has elapsed."""
     from kiwimatecoder import jobs as jobs_module
 
-    started = jobs_module.run_due_jobs()
-    if not started:
+    skipped: list[tuple[Any, str]] = []
+    started = jobs_module.run_due_jobs(skipped=skipped)
+    if not started and not skipped:
         console.print("[dim]No jobs are due.[/dim]")
         return
     for record in started:
@@ -3466,6 +3695,12 @@ def jobs_tick() -> None:
             f"[green]{_check()} Started[/green] [cyan]{record.id}[/cyan] "
             f"([dim]{_short_prompt(record.prompt)}[/dim])"
         )
+    for record, reason in skipped:
+        console.print(
+            f"[yellow]Skipped[/yellow] [cyan]{record.id}[/cyan]: {escape(reason)}"
+        )
+    if skipped:
+        raise typer.Exit(1)
 
 
 @app.command("acp")
@@ -3492,7 +3727,7 @@ def doctor_cmd() -> None:
     cfg = load_config()
     provider_id = get_selected_provider_id(cfg)
     provider = get_provider_config(provider_id, cfg)
-    model = str(cfg.get("selected_model") or "") or resolve_default_model(provider)
+    model = resolve_model(provider, cfg)
     try:
         mode = PermissionMode.from_str(str(cfg.get("default_mode", "ask")))
     except ValueError:

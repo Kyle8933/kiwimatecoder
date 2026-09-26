@@ -1,7 +1,22 @@
+import pytest
+
+from kiwimatecoder import config
 from kiwimatecoder.permissions import ApprovalResult, PermissionMode, gate
+from kiwimatecoder.providers import REGISTRY
 from kiwimatecoder.tools.read_file import read_file_tool
 from kiwimatecoder.tools.run_bash import run_bash_tool
 from kiwimatecoder.tools.write_file import write_file_tool
+
+
+@pytest.fixture(autouse=True)
+def isolate_config(tmp_path, monkeypatch):
+    """Provider switches read the chosen models from config; keep it hermetic."""
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "cfg" / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "cfg" / "config")
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
+    monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
 
 
 def _always(summary, preview):
@@ -86,10 +101,20 @@ def test_plain_bool_confirm_leaves_selection_unset(session):
 
 def test_provider_switch_keeps_always_allowed(session):
     """Approvals are persisted user preferences, so they survive a switch."""
+    config.set_provider_model("openai", "gpt-5.6-sol")
     session.allow_always("run_bash")
     session.set_provider("openai")
     assert session.is_always_allowed("run_bash")
     assert session.model == "gpt-5.6-sol"
+
+
+def test_provider_switch_without_chosen_model_keeps_always_allowed(session):
+    """Switching to a provider with no chosen model still keeps approvals."""
+    session.allow_always("run_bash")
+    session.set_provider("anthropic")
+    assert session.is_always_allowed("run_bash")
+    assert session.provider_id == "anthropic"
+    assert session.model == ""
 
 
 def test_mode_from_str_aliases():
