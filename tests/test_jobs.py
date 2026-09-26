@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import sys
 import time
@@ -12,6 +13,7 @@ from typer.testing import CliRunner
 
 from kiwimatecoder import config, jobs, main
 from kiwimatecoder.commands import dispatch
+from kiwimatecoder.providers import REGISTRY
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +23,8 @@ def isolate_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config" / "config.json")
     monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config" / "legacy")
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
     jobs._PROCESSES.clear()
     yield
     jobs._PROCESSES.clear()
@@ -233,8 +236,69 @@ def test_start_job_validates_input(tmp_path):
         jobs.start_job("x", workspace=tmp_path / "missing")
     with pytest.raises(ValueError):
         jobs.start_job("x", workspace=tmp_path, mode="nonsense")
+    # No model is chosen either, but the unknown provider is reported first.
     with pytest.raises(KeyError):
         jobs.start_job("x", workspace=tmp_path, provider="ghost")
+
+
+def _forbid_popen(monkeypatch):
+    def fake_popen(argv, **kwargs):
+        raise AssertionError("no process may start without a model")
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", fake_popen)
+
+
+def test_start_job_without_a_chosen_model_raises(tmp_path, monkeypatch):
+    _forbid_popen(monkeypatch)
+
+    with pytest.raises(config.ModelNotChosenError, match="No model chosen for OpenRouter"):
+        jobs.start_job("x", workspace=tmp_path)
+    # A ValueError, like the other input errors.
+    with pytest.raises(ValueError, match="No model chosen for OpenAI"):
+        jobs.start_job("x", workspace=tmp_path, provider="openai")
+
+    assert jobs.list_jobs() == []
+
+
+def test_start_job_uses_the_chosen_model_without_a_model_flag(tmp_path, monkeypatch):
+    calls = {}
+
+    def fake_popen(argv, **kwargs):
+        calls["argv"] = list(argv)
+        return FakeProcess(pid=1234)
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", fake_popen)
+    config.set_provider_model("openrouter", "chosen-model")
+
+    record = jobs.start_job("x", workspace=tmp_path)
+
+    assert record.status == "running"
+    # The child run resolves the same chosen model from config.
+    assert "--model" not in calls["argv"]
+
+
+def test_start_job_checks_the_model_with_the_workspace_project_config(
+    tmp_path, monkeypatch
+):
+    # The run starts in the workspace, so a model its project config pins
+    # counts even when the caller's directory has none.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / config.PROJECT_CONFIG_NAME).write_text(
+        json.dumps({"provider_models": {"openrouter": "project-model"}})
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(
+        jobs.subprocess, "Popen", lambda argv, **kwargs: FakeProcess(pid=77)
+    )
+
+    record = jobs.start_job("x", workspace=workspace)
+
+    assert record.status == "running"
+    with pytest.raises(config.ModelNotChosenError):
+        jobs.start_job("x", workspace=elsewhere)
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +412,32 @@ def test_run_due_jobs_skips_broken_schedule(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "start_job", boom)
 
     assert jobs.run_due_jobs() == []
+    skipped: list = []
+    assert jobs.run_due_jobs(skipped=skipped) == []
+    assert [(item.id, reason) for item, reason in skipped] == [
+        ("bad", "workspace is gone")
+    ]
+
+
+def test_jobs_tick_reports_a_schedule_without_a_model(tmp_path, monkeypatch, session):
+    # E.g. a schedule created before models had to be chosen: it must not be
+    # skipped silently behind "No jobs are due".
+    record = _record("nomodel", tmp_path, status="succeeded")
+    record.interval = 60
+    record.next_run_at = "2000-01-01T00:00:00"
+    jobs.save_job(record)
+    _forbid_popen(monkeypatch)
+
+    result = CliRunner().invoke(main.app, ["jobs", "tick"])
+
+    assert result.exit_code == 1
+    output = " ".join(result.output.split())
+    assert "No jobs are due" not in output
+    assert "Skipped nomodel: No model chosen for OpenRouter" in output
+
+    console = _console()
+    dispatch("/jobs tick", session, console)
+    assert "Skipped nomodel" in _output(console)
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +463,17 @@ def test_slash_jobs_list_shows_running_job(session):
     output = _output(console)
     assert "run1" in output
     assert "running" in output
+
+
+def test_slash_jobs_run_without_a_model_reports_the_error(session, monkeypatch):
+    _forbid_popen(monkeypatch)
+    session.model = ""
+    console = _console()
+
+    dispatch("/jobs run fix the bug", session, console)
+
+    assert "No model chosen for OpenRouter" in " ".join(_output(console).split())
+    assert jobs.list_jobs() == []
 
 
 def test_slash_jobs_unknown_and_usage(session):
@@ -420,6 +521,15 @@ def test_jobs_run_cli_with_mocked_start_job(tmp_path, monkeypatch):
         "model": None,
         "mode": "auto-accept",
     }
+
+
+def test_jobs_run_cli_without_a_model_exits_1(monkeypatch):
+    _forbid_popen(monkeypatch)
+
+    result = CliRunner().invoke(main.app, ["jobs", "run", "fix the tests"])
+
+    assert result.exit_code == 1
+    assert "No model chosen for OpenRouter" in " ".join(result.output.split())
 
 
 def test_jobs_list_cli_empty():

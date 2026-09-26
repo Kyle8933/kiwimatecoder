@@ -172,7 +172,16 @@ def _provider_checks(session: Session) -> list[Check]:
                 detail,
             )
         )
-        if session.model and model_catalog.models:
+        if not session.model:
+            checks.append(
+                Check(
+                    "Current model",
+                    WARN,
+                    "none chosen — pick one with /model or "
+                    f"`kiwimatecoder config model set <model> --provider {provider.id}`",
+                )
+            )
+        elif model_catalog.models:
             if session.model in model_catalog.models:
                 checks.append(Check("Current model", OK, session.model))
             else:
@@ -185,6 +194,17 @@ def _provider_checks(session: Session) -> list[Check]:
                 )
     except Exception as exc:  # pragma: no cover - defensive
         checks.append(Check("Model catalog", FAIL, str(exc)))
+
+    for fallback in session.active_providers[1:]:
+        if not session.model_for(fallback.id):
+            checks.append(
+                Check(
+                    "Fallback model",
+                    WARN,
+                    f"none chosen for {fallback.id}, so failover skips it — run "
+                    f"`kiwimatecoder config model set <model> --provider {fallback.id}`",
+                )
+            )
     return checks
 
 

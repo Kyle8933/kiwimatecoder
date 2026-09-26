@@ -5,30 +5,57 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from kiwimatecoder import config, main
+from kiwimatecoder import catalog, config, headless, main
 from kiwimatecoder.client import Done, TextDelta, ToolCallDelta, Usage
+from kiwimatecoder.providers import REGISTRY
 
 STREAM_CHAT = "kiwimatecoder.client.UnifiedClient.stream_chat"
 
 
 @pytest.fixture(autouse=True)
 def isolate_config(tmp_path, monkeypatch):
-    """Point config storage at a temp dir and clear provider env vars."""
+    """Point config storage at a temp dir and clear provider env vars.
+
+    There are no default models, so the primary provider gets an explicit
+    model choice; tests about a missing model clear it again.
+    """
     monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
-    for name in (
-        "OPENROUTER_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "DEEPSEEK_API_KEY",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
+    config.set_provider_model("openrouter", "test-model")
 
 
 def _key(monkeypatch, value: str = "test-key") -> None:
     monkeypatch.setattr(config, "get_key", lambda provider_id: value)
+
+
+def _install_fetch(monkeypatch, model_ids):
+    """Patch the network fetch to return ``model_ids`` newest-first."""
+
+    def fake_fetch(provider, api_key=None, **kwargs):
+        return [
+            catalog.RemoteModel(model_id, float(len(model_ids) - index))
+            for index, model_id in enumerate(model_ids)
+        ]
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+
+
+def _forbid_fetch(monkeypatch):
+    def fake_fetch(provider, api_key=None, **kwargs):
+        raise AssertionError("the network must not be touched here")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
+
+
+def _offline_fetch(monkeypatch):
+    def fake_fetch(provider, api_key=None, **kwargs):
+        raise catalog.CatalogFetchError("connection refused")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", fake_fetch)
 
 
 def _scripted_stream(rounds, calls=None):
@@ -103,7 +130,7 @@ def test_quiet_suppresses_tool_progress(tmp_path, monkeypatch):
 def test_json_output_shape_and_values(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _key(monkeypatch)
-    config.set_selected_model("test-model")
+    config.set_selected_model("json-model")
     events = [
         TextDelta(text="Hi "),
         TextDelta(text="there"),
@@ -124,7 +151,7 @@ def test_json_output_shape_and_values(tmp_path, monkeypatch):
         "usage": {"prompt_tokens": 11, "completion_tokens": 7},
         "cost_usd": None,
         "provider": "openrouter",
-        "model": "test-model",
+        "model": "json-model",
         "mode": "ask",
         "tools_used": [],
         "messages": 2,
@@ -357,3 +384,239 @@ def test_missing_workspace_exits_2(tmp_path):
 
     assert result.exit_code == 2
     assert "not a directory" in result.stderr
+
+
+def test_usage_errors_win_over_a_missing_model(tmp_path):
+    # Invalid usage (exit 2) is reported before the runtime model check (exit 1).
+    config.set_provider_model("openrouter", None)
+
+    result = CliRunner().invoke(
+        main.app, ["-p", "hi", "--workspace", str(tmp_path / "nope")]
+    )
+
+    assert result.exit_code == 2
+    assert "not a directory" in result.stderr
+    assert "No model chosen" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Model choice (there are no default models)
+# ---------------------------------------------------------------------------
+
+
+def test_print_without_a_chosen_model_exits_1_before_any_network(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    _key(monkeypatch)
+    _forbid_fetch(monkeypatch)
+    config.set_provider_model("openrouter", None)  # undo the fixture's choice
+    streamed: list[object] = []
+
+    async def stream(*args, **kwargs):
+        streamed.append(args)
+        yield Done(finish_reason="stop")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(STREAM_CHAT, stream)
+        result = CliRunner().invoke(
+            main.app, ["-p", "hello", "--output-format", "json"]
+        )
+
+    assert result.exit_code == 1
+    assert "error: No model chosen for OpenRouter" in result.stderr
+    assert "--model" in result.stderr
+    # Like other runtime failures (e.g. a missing key), JSON consumers still
+    # get a result record.
+    record = json.loads(result.stdout)
+    assert record == {
+        "result": "",
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+        "cost_usd": 0.0,
+        "provider": "openrouter",
+        "model": None,
+        "mode": "ask",
+        "tools_used": [],
+        "messages": 0,
+        "success": False,
+    }
+    assert streamed == []
+
+
+def test_print_without_a_model_stream_json_and_text_outputs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _key(monkeypatch)
+    _forbid_fetch(monkeypatch)
+    config.set_provider_model("openrouter", None)
+
+    streamed = CliRunner().invoke(
+        main.app,
+        ["-p", "hello", "--output-format", "stream-json", "--mode", "plan"],
+    )
+    text = CliRunner().invoke(main.app, ["-p", "hello"])
+
+    assert streamed.exit_code == 1
+    (line,) = streamed.stdout.splitlines()
+    record = json.loads(line)
+    assert record["type"] == "result"
+    assert record["success"] is False
+    assert record["mode"] == "plan"
+    assert text.exit_code == 1
+    assert text.stdout == ""
+    assert "No model chosen for OpenRouter" in text.stderr
+
+
+def test_print_model_flag_supplies_the_missing_model(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _key(monkeypatch)
+    config.set_provider_model("openrouter", None)
+    models: list[str] = []
+
+    async def stream(self, messages, tools, model):
+        models.append(model)
+        yield TextDelta(text="ok")
+        yield Done(finish_reason="stop")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(STREAM_CHAT, stream)
+        result = CliRunner().invoke(main.app, ["-p", "hello", "--model", "flag-model"])
+
+    assert result.exit_code == 0
+    assert models == ["flag-model"]
+
+
+def test_print_provider_override_needs_a_model_for_that_provider(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    _key(monkeypatch)
+    _forbid_fetch(monkeypatch)
+
+    # openrouter (the configured primary) has a model; deepseek does not.
+    result = CliRunner().invoke(main.app, ["-p", "hello", "--provider", "deepseek"])
+
+    assert result.exit_code == 1
+    assert "No model chosen for DeepSeek" in result.stderr
+
+
+def test_print_with_a_stopped_local_server_and_no_model_exits_1(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    _offline_fetch(monkeypatch)
+    streamed: list[object] = []
+
+    async def stream(*args, **kwargs):
+        streamed.append(args)
+        yield Done(finish_reason="stop")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(STREAM_CHAT, stream)
+        result = CliRunner().invoke(main.app, ["-p", "hello", "--provider", "ollama"])
+
+    # Nothing chosen and nothing listed: the suggested models are not a fallback.
+    assert result.exit_code == 1
+    assert "No model chosen for Ollama (local)" in result.stderr
+    assert streamed == []
+
+
+def test_print_provider_and_model_flags_make_that_provider_primary(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    _key(monkeypatch)
+    config.set_active_providers(["openrouter", "openai"])
+    config.set_provider_model("openrouter", "or-model")
+    config.set_provider_model("openai", "openai-model")
+    attempts: list[tuple[str, str]] = []
+
+    async def stream(self, messages, tools, model):
+        attempts.append((self.provider.id, model))
+        yield TextDelta(text="ok")
+        yield Done(finish_reason="stop")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(STREAM_CHAT, stream)
+        result = CliRunner().invoke(
+            main.app,
+            [
+                "-p",
+                "hello",
+                "--provider",
+                "deepseek",
+                "--model",
+                "ds-model",
+                "--output-format",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["provider"] == "deepseek"
+    assert payload["model"] == "ds-model"
+    assert attempts == [("deepseek", "ds-model")]
+    # Nothing is persisted by a per-run override.
+    assert config.get_active_provider_ids() == ["openrouter", "openai"]
+
+
+def test_build_session_puts_an_overriding_provider_first(tmp_path):
+    config.set_active_providers(["openrouter", "openai"])
+    config.set_provider_model("openrouter", "or-model")
+
+    session = headless.build_session(
+        workspace=tmp_path, provider="deepseek", model="ds-model"
+    )
+
+    assert session.provider_id == "deepseek"
+    assert session.model == "ds-model"
+    assert session.active_provider_ids == ["deepseek", "openrouter", "openai"]
+
+    # A provider already in the roster moves to the front, not duplicated.
+    config.set_provider_model("openai", "openai-model")
+    session = headless.build_session(workspace=tmp_path, provider="openai")
+
+    assert session.active_provider_ids == ["openai", "openrouter"]
+    assert session.model == "openai-model"
+
+
+def test_build_session_uses_the_configured_roster_without_override(tmp_path):
+    config.set_active_providers(["openrouter", "openai"])
+    config.set_provider_model("openrouter", "or-model")
+
+    session = headless.build_session(workspace=tmp_path)
+
+    assert session.provider_id == "openrouter"
+    assert session.model == "or-model"
+    assert session.active_provider_ids == ["openrouter", "openai"]
+
+
+def test_build_session_raises_model_not_chosen(tmp_path, monkeypatch):
+    _forbid_fetch(monkeypatch)
+    config.set_provider_model("openrouter", None)
+
+    with pytest.raises(config.ModelNotChosenError, match="No model chosen for OpenRouter"):
+        headless.build_session(workspace=tmp_path)
+    # A ValueError, so callers that already catch ValueError keep working.
+    with pytest.raises(ValueError):
+        headless.build_session(workspace=tmp_path, provider="openai")
+
+    assert headless.build_session(workspace=tmp_path, model="m").model == "m"
+
+
+def test_build_session_uses_a_local_servers_first_model(tmp_path, monkeypatch):
+    _install_fetch(monkeypatch, ["qwen3:8b", "llama3.1:8b"])
+
+    session = headless.build_session(workspace=tmp_path, provider="ollama")
+
+    assert session.model == "qwen3:8b"
+
+
+def test_build_session_never_falls_back_to_suggested_local_models(
+    tmp_path, monkeypatch
+):
+    # Offline: the suggested tuple would be a hidden default, so it is not used.
+    _offline_fetch(monkeypatch)
+
+    with pytest.raises(config.ModelNotChosenError, match="Ollama"):
+        headless.build_session(workspace=tmp_path, provider="ollama")

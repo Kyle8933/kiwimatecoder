@@ -411,8 +411,9 @@ class Agent:
 
         Tries each active provider in order (primary first); when a provider
         fails with a :class:`ProviderError`, the next active provider is tried
-        with its own default model. Only when every active provider fails is the
-        error surfaced.
+        with the model chosen for it. A provider with no chosen model is
+        skipped (there are no default models). Only when every active provider
+        fails is the error surfaced.
 
         ``model_override`` (per-turn model routing) applies to the primary
         provider only; fallback providers keep their own model.
@@ -428,12 +429,21 @@ class Agent:
                 errors.append(exc)
                 self._announce_failover(provider.name, exc, providers[index + 1 :])
                 continue
-            model = self.session.model_for(provider.id)
-            if model_override and provider.id == self.session.provider_id:
-                if model_override != model:
-                    self.console.print(f"[dim]routed to {model_override}[/dim]")
-                model = model_override
             try:
+                model = self.session.model_for(provider.id)
+                if model_override and provider.id == self.session.provider_id:
+                    if model_override != model:
+                        self.console.print(f"[dim]routed to {model_override}[/dim]")
+                    model = model_override
+                if not model:
+                    raise ProviderError(
+                        f"no model chosen for {provider.name}; choose one with "
+                        + (
+                            "/model"
+                            if provider.id == self.session.provider_id
+                            else f"/config model set <model> {provider.id}"
+                        )
+                    )
                 return await self._stream_from(client, schemas, model)
             except ProviderError as exc:
                 errors.append(exc)
@@ -470,6 +480,7 @@ class Agent:
         text_parts: list[str] = []
         assembler = ToolCallAssembler()
         printed_any = False
+        finish_reason: str | None = None
         status: Any = (
             self.console.status("[dim]Thinking…[/dim]")
             if self.spinner_enabled
@@ -503,7 +514,7 @@ class Agent:
                         completion_tokens=event.completion_tokens,
                     )
                 elif isinstance(event, Done):
-                    pass
+                    finish_reason = event.finish_reason or finish_reason
         except BaseException:
             # Preserve the text the user already saw when a turn is interrupted
             # (Ctrl-C) or the stream fails partway through.
@@ -527,6 +538,12 @@ class Agent:
             self.console.print()
 
         calls = assembler.finalize()
+        if finish_reason == "length" and not calls and self.render_text:
+            # Some providers (KiwiMate caps replies at 1,024 tokens) stop
+            # mid-answer; say so rather than let the reply look complete.
+            self.console.print(
+                "[dim]The reply was cut off at the provider's output limit.[/dim]"
+            )
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts) or None}
         if calls:
             assistant_msg["tool_calls"] = [

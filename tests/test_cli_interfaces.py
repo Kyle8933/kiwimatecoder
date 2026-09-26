@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ from typer.testing import CliRunner
 
 from kiwimatecoder import config, main
 from kiwimatecoder.client import Done, TextDelta
+from kiwimatecoder.providers import REGISTRY
 
 ROOT = Path(__file__).resolve().parents[1]
 STREAM_CHAT = "kiwimatecoder.client.UnifiedClient.stream_chat"
@@ -23,8 +26,8 @@ def isolate_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
-    for name in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
-        monkeypatch.delenv(name, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +40,12 @@ def test_bare_invocation_without_tty_exits_2_with_guidance(monkeypatch):
 
     launched: list[object] = []
     monkeypatch.setattr(repl, "run", lambda session: launched.append(session))
+    # No model is chosen, but without a terminal the model picker must not run.
+    monkeypatch.setattr(
+        main,
+        "_interactive_select_model",
+        lambda *args, **kwargs: pytest.fail("no model picker without a TTY"),
+    )
 
     result = CliRunner().invoke(main.app, [])
 
@@ -66,6 +75,7 @@ def test_continue_without_tty_exits_2(tmp_path, monkeypatch):
 def test_print_dash_still_reads_stdin_without_tty(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(config, "get_key", lambda provider_id: "test-key")
+    config.set_provider_model("openrouter", "test-model")
     captured: list[list[dict[str, object]]] = []
 
     async def stream(*args, **kwargs):
@@ -136,6 +146,39 @@ def test_man_page_has_expected_sections_and_commands():
         assert f".SS \\fB{command}\\fP" in text
     assert r"\fB\-\-print\fP, \fB\-p\fP" in text
     assert "kiwimatecoder \\- agentic AI coding assistant CLI" in text
+
+
+def test_man_page_documents_model_choice_and_the_kiwimate_key():
+    text = (ROOT / "docs" / "kiwimatecoder.1").read_text(encoding="utf-8")
+
+    # setup picks the model; custom providers are added with one.
+    assert "Model to use (skips the model picker)" in text
+    assert "config provider add [OPTIONS] PROVIDER_ID NAME BASE_URL MODEL" in text
+    assert "DEFAULT_MODEL" not in text
+    assert r"\fBKIWIMATE_API_KEY\fP" in text
+    assert "KiwiMate API key (experimental provider)." in text
+    # A missing model is a runtime failure (exit 1), like a missing key.
+    assert "missing API key, no model chosen, or a provider error" in text
+
+
+def test_man_page_type_names_do_not_depend_on_the_click_version():
+    # typer 0.27+ vendors click and names its types "str"/"int" rather than
+    # "text"/"integer"; the generated page must not change with the version.
+    spec = importlib.util.spec_from_file_location(
+        "generate_man", ROOT / "scripts" / "generate_man.py"
+    )
+    assert spec is not None and spec.loader is not None
+    generate_man = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generate_man)
+
+    def metavar(type_name: str) -> str:
+        return generate_man._metavar(SimpleNamespace(type=SimpleNamespace(name=type_name)))
+
+    assert metavar("str") == metavar("text") == "TEXT"
+    assert metavar("int") == metavar("integer") == "INTEGER"
+    assert metavar("bool") == metavar("boolean") == "BOOLEAN"
+    assert metavar("float") == "FLOAT"
+    assert metavar("path") == "PATH"
 
 
 def test_committed_man_page_matches_the_generator():

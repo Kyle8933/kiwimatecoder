@@ -16,24 +16,25 @@ from kiwimatecoder.acp.protocol import decode_lines, encode
 from kiwimatecoder.acp.server import AcpServer, prompt_text
 from kiwimatecoder.client import Done, TextDelta, ToolCallDelta
 from kiwimatecoder.commands import CommandResult, dispatch
+from kiwimatecoder.providers import REGISTRY
 
 STREAM_CHAT = "kiwimatecoder.client.UnifiedClient.stream_chat"
 
 
 @pytest.fixture(autouse=True)
 def isolate_config(tmp_path, monkeypatch):
-    """Point config storage at a temp dir and clear provider env vars."""
+    """Point config storage at a temp dir and clear provider env vars.
+
+    There are no default models, so the primary provider gets an explicit
+    model choice; tests about a missing model clear it again.
+    """
     monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
-    for name in (
-        "OPENROUTER_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "DEEPSEEK_API_KEY",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
+    config.set_provider_model("openrouter", "test-model")
 
 
 def _scripted_stream(rounds: list[list[Any]], calls: list[Any] | None = None):
@@ -225,6 +226,25 @@ async def test_session_new_rejects_missing_workspace(make_harness, tmp_path):
 
     assert response["error"]["code"] == -32602
     assert "not a directory" in response["error"]["message"]
+
+
+async def test_session_new_without_a_chosen_model_is_invalid(make_harness, tmp_path):
+    config.set_provider_model("openrouter", None)  # undo the fixture's choice
+    harness = await make_harness()
+
+    response = await harness.request(3, "session/new", {"cwd": str(tmp_path)})
+
+    assert response["error"]["code"] == -32602
+    assert "No model chosen for OpenRouter" in response["error"]["message"]
+
+
+async def test_session_new_uses_the_chosen_model(make_harness, tmp_path):
+    config.set_provider_model("openrouter", "vendor/chosen")
+    harness = await make_harness()
+
+    session_id = await harness.new_session(cwd=tmp_path)
+
+    assert harness.server._sessions[session_id].session.model == "vendor/chosen"
 
 
 async def test_unknown_method_returns_method_not_found(make_harness):

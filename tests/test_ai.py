@@ -6,10 +6,22 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console
 
+from kiwimatecoder import config
 from kiwimatecoder.ai import stream_response
 from kiwimatecoder.client import Done, ProviderError, TextDelta
-from kiwimatecoder.providers import ProviderConfig
+from kiwimatecoder.providers import REGISTRY, ProviderConfig
 from tests.conftest import track_console
+
+
+@pytest.fixture(autouse=True)
+def isolate_config(tmp_path, monkeypatch):
+    """Point config storage at a temp dir and clear provider env vars."""
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
+    monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
 
 
 @pytest.mark.anyio
@@ -24,7 +36,6 @@ async def test_stream_response_success():
         id="test",
         name="Test",
         base_url="https://api.test.com/v1",
-        default_model="m1",
         key_env="TEST_KEY",
     )
 
@@ -46,7 +57,6 @@ async def test_stream_response_error_handled():
         id="test",
         name="Test",
         base_url="https://api.test.com/v1",
-        default_model="m1",
         key_env="TEST_KEY",
     )
 
@@ -70,7 +80,6 @@ async def test_stream_response_shows_thinking_until_first_text():
         id="test",
         name="Test",
         base_url="https://api.test.com/v1",
-        default_model="m1",
         key_env="TEST_KEY",
     )
     console = Console(file=io.StringIO(), force_terminal=False, width=120)
@@ -127,7 +136,6 @@ async def test_stream_response_stops_thinking_before_error():
         id="test",
         name="Test",
         base_url="https://api.test.com/v1",
-        default_model="m1",
         key_env="TEST_KEY",
     )
     console = Console(file=io.StringIO(), force_terminal=False, width=120)
@@ -164,12 +172,7 @@ async def test_stream_response_stops_thinking_before_error():
 
 
 @pytest.mark.anyio
-async def test_stream_response_passes_prompt_cache(tmp_path, monkeypatch):
-    from kiwimatecoder import config
-
-    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
-    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
+async def test_stream_response_passes_prompt_cache():
     config.set_prompt_cache(True)
 
     captured: dict = {}
@@ -185,7 +188,6 @@ async def test_stream_response_passes_prompt_cache(tmp_path, monkeypatch):
         id="test",
         name="Test",
         base_url="https://api.test.com/v1",
-        default_model="m1",
         key_env="TEST_KEY",
     )
 
@@ -193,3 +195,50 @@ async def test_stream_response_passes_prompt_cache(tmp_path, monkeypatch):
         await stream_response("Prompt", "key123", "m1", provider)
 
     assert captured["prompt_cache"] is True
+
+
+@pytest.mark.anyio
+async def test_stream_response_without_a_model_prints_how_to_choose_one(monkeypatch):
+    constructed: list[object] = []
+
+    class ForbiddenClient:
+        def __init__(self, *args, **kwargs):
+            constructed.append(args)
+            raise AssertionError("no client may be built without a model")
+
+    def forbid_fetch(provider, api_key=None, **kwargs):
+        raise AssertionError("the network must not be touched here")
+
+    monkeypatch.setattr(config.catalog, "fetch_models", forbid_fetch)
+    console = Console(file=io.StringIO(), force_terminal=False, width=400)
+
+    with (
+        patch("kiwimatecoder.ai.console", console),
+        patch("kiwimatecoder.ai.UnifiedClient", ForbiddenClient),
+    ):
+        await stream_response("Prompt", "key123", None, REGISTRY["openai"])
+
+    output = console.file.getvalue()
+    assert config.no_model_message(REGISTRY["openai"]) in output
+    assert "No model chosen for OpenAI" in output
+    assert constructed == []
+
+
+@pytest.mark.anyio
+async def test_stream_response_uses_the_chosen_model_when_none_is_passed():
+    config.set_provider_model("openai", "gpt-chosen")
+    models: list[str] = []
+
+    class FakeClient:
+        def __init__(self, provider, api_key, **kwargs):
+            pass
+
+        async def stream_chat(self, messages, tools, model):
+            models.append(model)
+            yield Done()
+
+    with patch("kiwimatecoder.ai.UnifiedClient", FakeClient):
+        await stream_response("Prompt", "key123", None, REGISTRY["openai"])
+        await stream_response("Prompt", "key123", "gpt-explicit", REGISTRY["openai"])
+
+    assert models == ["gpt-chosen", "gpt-explicit"]

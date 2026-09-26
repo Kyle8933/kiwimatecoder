@@ -3,6 +3,13 @@
 #   docker build -t kiwimatecoder .
 #   docker run --rm -it -v "$PWD:/workspace" \
 #     -e OPENROUTER_API_KEY kiwimatecoder
+#   docker run --rm -v "$PWD:/workspace" -e OPENROUTER_API_KEY kiwimatecoder \
+#     -p "Summarize this repository" --model anthropic/claude-sonnet-5
+#
+# There are no default models and a fresh container has no saved config, so
+# pass --model (or mount a config dir with a chosen model at
+# /home/kiwimate/.kiwimatecoder); otherwise a headless run exits 1 with
+# "No model chosen for ...".
 #
 # The workspace is /workspace and the agent runs as the non-root `kiwimate`
 # user, so bind-mounted projects need to be readable/writable by that user.

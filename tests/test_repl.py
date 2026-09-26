@@ -8,6 +8,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.input import create_pipe_input
+from rich.console import Console
 
 from kiwimatecoder import config
 from kiwimatecoder.commands import (
@@ -15,9 +16,11 @@ from kiwimatecoder.commands import (
     CommandResult,
     MultiSelectionPrompt,
     SelectionPrompt,
+    dispatch,
 )
 from kiwimatecoder.hunks import parse_hunk_selection
 from kiwimatecoder.permissions import ApprovalResult
+from kiwimatecoder.providers import REGISTRY
 from kiwimatecoder.repl import (
     MAX_MENTION_FILE_BYTES,
     MAX_MENTION_FILES,
@@ -30,6 +33,7 @@ from kiwimatecoder.repl import (
     _extract_image_mentions,
     _make_confirm,
     _notify_turn_finished,
+    _option_groups,
     _process_deferred_commands,
     _prompt_text,
     _resolve_slash_line,
@@ -79,6 +83,10 @@ def test_slash_completer_completes_config_actions():
     assert "models" in completions
 
 
+def _fail_grouped(**kwargs):
+    raise AssertionError("ungrouped options must use the plain picker")
+
+
 def test_command_selector_renders_prompt_options(monkeypatch):
     captured = {}
 
@@ -87,6 +95,7 @@ def test_command_selector_renders_prompt_options(monkeypatch):
         return "model-b"
 
     monkeypatch.setattr("kiwimatecoder.repl.choice", fake_choice)
+    monkeypatch.setattr("kiwimatecoder.repl.grouped_choice", _fail_grouped)
     prompt = SelectionPrompt(
         title="Select model",
         text="Choose one",
@@ -111,6 +120,7 @@ def test_command_multi_selector_renders_prompt_options(monkeypatch):
         return ["openrouter", "openai"]
 
     monkeypatch.setattr("kiwimatecoder.repl.checkbox_choice", fake_checkbox_choice)
+    monkeypatch.setattr("kiwimatecoder.repl.grouped_checkbox_choice", _fail_grouped)
     prompt = MultiSelectionPrompt(
         title="Select active providers",
         text="Check every provider you want",
@@ -146,6 +156,232 @@ def test_command_multi_selector_returns_none_on_interrupt(monkeypatch):
     )
 
     assert _select_command_options(prompt) is None
+
+
+def _fail_plain(**kwargs):
+    raise AssertionError("grouped options must use the grouped picker")
+
+
+_GROUPED_PROVIDER_OPTIONS = (
+    CommandOption("openrouter", "OpenRouter — no model chosen (primary)"),
+    CommandOption(
+        "kiwimate",
+        "KiwiMate — kiwimate.net · chat only, no tool use yet · no model chosen",
+        group="Experimental",
+    ),
+    CommandOption("openai", "OpenAI — gpt-5.5"),
+)
+
+
+def test_command_selector_routes_grouped_options_to_grouped_choice(monkeypatch):
+    captured = {}
+
+    def fake_grouped_choice(message, **kwargs):
+        captured.update(kwargs, message=message)
+        return "kiwimate"
+
+    monkeypatch.setattr("kiwimatecoder.repl.grouped_choice", fake_grouped_choice)
+    monkeypatch.setattr("kiwimatecoder.repl.choice", _fail_plain)
+    prompt = SelectionPrompt(
+        title="Select provider",
+        text="Choose the provider to use for this session.",
+        options=_GROUPED_PROVIDER_OPTIONS,
+        selected="openrouter",
+    )
+
+    assert _select_command_option(prompt) == "kiwimate"
+    assert captured["message"] == (
+        "Select provider\nChoose the provider to use for this session."
+    )
+    assert captured["groups"] == [
+        (
+            "Experimental",
+            [
+                (
+                    "kiwimate",
+                    "KiwiMate — kiwimate.net · chat only, no tool use yet · "
+                    "no model chosen",
+                )
+            ],
+        ),
+        (
+            None,
+            [
+                ("openrouter", "OpenRouter — no model chosen (primary)"),
+                ("openai", "OpenAI — gpt-5.5"),
+            ],
+        ),
+    ]
+    assert captured["default"] == "openrouter"
+    assert captured["show_frame"] is True
+    assert "Enter select" in captured["bottom_toolbar"]
+
+
+def test_command_selector_grouped_choice_interrupt_returns_none(monkeypatch):
+    def fake_grouped_choice(message, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("kiwimatecoder.repl.grouped_choice", fake_grouped_choice)
+    prompt = SelectionPrompt(
+        title="Select provider",
+        text="Choose",
+        options=_GROUPED_PROVIDER_OPTIONS,
+    )
+
+    assert _select_command_option(prompt) is None
+
+
+def test_command_multi_selector_routes_grouped_options_to_grouped_checklist(
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_grouped_checkbox_choice(message, **kwargs):
+        captured.update(kwargs, message=message)
+        return ["openrouter", "kiwimate"]
+
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.grouped_checkbox_choice", fake_grouped_checkbox_choice
+    )
+    monkeypatch.setattr("kiwimatecoder.repl.checkbox_choice", _fail_plain)
+    prompt = MultiSelectionPrompt(
+        title="Select active providers",
+        text="Check every provider you want",
+        options=_GROUPED_PROVIDER_OPTIONS,
+        selected=("openrouter",),
+    )
+
+    assert _select_command_options(prompt) == ["openrouter", "kiwimate"]
+    assert captured["message"] == "Select active providers\nCheck every provider you want"
+    groups = captured["groups"]
+    assert [title for title, _ in groups] == ["Experimental", None]
+    assert [value for value, _ in groups[0][1]] == ["kiwimate"]
+    # Ungrouped options keep their (roster-first) order in the plain box.
+    assert [value for value, _ in groups[1][1]] == ["openrouter", "openai"]
+    assert captured["default_values"] == ("openrouter",)
+    assert captured["show_frame"] is True
+    assert "Space toggle" in captured["bottom_toolbar"]
+
+
+def test_command_multi_selector_grouped_interrupt_returns_none(monkeypatch):
+    def fake_grouped_checkbox_choice(message, **kwargs):
+        raise EOFError
+
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.grouped_checkbox_choice", fake_grouped_checkbox_choice
+    )
+    prompt = MultiSelectionPrompt(
+        title="Select active providers",
+        text="Check providers",
+        options=_GROUPED_PROVIDER_OPTIONS,
+    )
+
+    assert _select_command_options(prompt) is None
+
+
+def _isolate_provider_config(session, monkeypatch):
+    """Point config at the temp workspace and hide real provider keys."""
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", session.workspace_root / "cfg.json")
+    monkeypatch.setattr(
+        config, "LEGACY_CONFIG_FILE", session.workspace_root / "legacy-config"
+    )
+    monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
+
+
+def test_provider_checklist_draws_kiwimate_in_the_experimental_box(session, monkeypatch):
+    _isolate_provider_config(session, monkeypatch)
+    captured = {}
+
+    def fake_grouped_checkbox_choice(message, **kwargs):
+        captured.update(kwargs)
+        return None  # cancelled
+
+    monkeypatch.setattr(
+        "kiwimatecoder.repl.grouped_checkbox_choice", fake_grouped_checkbox_choice
+    )
+    monkeypatch.setattr("kiwimatecoder.repl.checkbox_choice", _fail_plain)
+
+    dispatch(
+        "/provider",
+        session,
+        Console(file=io.StringIO(), force_terminal=False, width=120),
+        multi_selector=_select_command_options,
+    )
+
+    experimental, plain = captured["groups"]
+    assert experimental[0] == "Experimental"
+    assert [value for value, _ in experimental[1]] == ["kiwimate"]
+    assert "kiwimate.net" in experimental[1][0][1]
+    assert plain[0] is None
+    assert [value for value, _ in plain[1]][0] == "openrouter"  # roster first
+    assert "kiwimate" not in [value for value, _ in plain[1]]
+    assert captured["default_values"] == ("openrouter",)
+    assert session.provider_id == "openrouter"
+
+
+def test_provider_picker_draws_kiwimate_in_the_experimental_box(session, monkeypatch):
+    _isolate_provider_config(session, monkeypatch)
+    captured = {}
+
+    def fake_grouped_choice(message, **kwargs):
+        captured.update(kwargs, message=message)
+        return None  # cancelled
+
+    monkeypatch.setattr("kiwimatecoder.repl.grouped_choice", fake_grouped_choice)
+    monkeypatch.setattr("kiwimatecoder.repl.choice", _fail_plain)
+
+    dispatch(
+        "/provider",
+        session,
+        Console(file=io.StringIO(), force_terminal=False, width=120),
+        selector=_select_command_option,
+    )
+
+    assert captured["message"].startswith("Select provider")
+    experimental, plain = captured["groups"]
+    assert experimental[0] == "Experimental"
+    assert [value for value, _ in experimental[1]] == ["kiwimate"]
+    assert experimental[1][0][1] == (
+        "KiwiMate — no model chosen · kiwimate.net · chat only, no tool use yet"
+    )
+    assert plain[0] is None
+    plain_ids = [value for value, _ in plain[1]]
+    assert "kiwimate" not in plain_ids
+    assert {"openrouter", "openai", "ollama"} <= set(plain_ids)
+    assert captured["default"] == "openrouter"
+    assert session.provider_id == "openrouter"
+
+
+def test_option_groups_puts_titled_groups_first_in_first_seen_order():
+    options = (
+        CommandOption("a", "A"),
+        CommandOption("x1", "X1", group="Experimental"),
+        CommandOption("b", "B"),
+        CommandOption("y1", "Y1", group="Beta"),
+        CommandOption("x2", "X2", group="Experimental"),
+        CommandOption("c", "C"),
+    )
+
+    assert _option_groups(options) == [
+        ("Experimental", [("x1", "X1"), ("x2", "X2")]),
+        ("Beta", [("y1", "Y1")]),
+        (None, [("a", "A"), ("b", "B"), ("c", "C")]),
+    ]
+
+
+def test_option_groups_without_titles_is_one_plain_group():
+    options = (CommandOption("a", "A"), CommandOption("b", "B"))
+
+    assert _option_groups(options) == [(None, [("a", "A"), ("b", "B")])]
+
+
+def test_option_groups_all_grouped_leaves_plain_group_empty():
+    options = (CommandOption("x", "X", group="Experimental"),)
+
+    assert _option_groups(options) == [("Experimental", [("x", "X")]), (None, [])]
 
 
 def test_checkbox_choice_keyboard_interaction():
@@ -386,6 +622,26 @@ def test_banner_uses_folder_glyph_and_ascii_mode(session, monkeypatch):
     rendered = str(_banner(session).renderable)
     assert "📁" not in rendered
     assert session.workspace_root.name in rendered
+
+
+def test_banner_flags_experimental_providers_and_a_missing_model(session, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", session.workspace_root / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", session.workspace_root / "cfg.json")
+    monkeypatch.setattr(
+        config, "LEGACY_CONFIG_FILE", session.workspace_root / "legacy-config"
+    )
+
+    rendered = str(_banner(session).renderable)
+    assert "(experimental)" not in rendered
+    assert "test-model" in rendered
+
+    session.provider_id = "kiwimate"
+    session.model = ""
+    rendered = str(_banner(session).renderable)
+    assert "KiwiMate[/bold cyan] [yellow](experimental)[/yellow]" in rendered
+    assert "no model chosen — use /model" in rendered
+    prompt = "".join(fragment[1] for fragment in to_formatted_text(_prompt_text(session)))
+    assert "kiwimate:no model" in prompt
 
 
 def test_banner_and_prompt_use_theme_accent(session, monkeypatch):

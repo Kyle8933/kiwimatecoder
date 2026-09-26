@@ -6,17 +6,25 @@ import pytest
 
 from kiwimatecoder import config, sdk
 from kiwimatecoder.client import Done, TextDelta, ToolCallDelta, Usage
+from kiwimatecoder.permissions import PermissionMode
+from kiwimatecoder.providers import REGISTRY
+from kiwimatecoder.session import Session
 
 
 @pytest.fixture(autouse=True)
 def isolate_config(tmp_path, monkeypatch):
-    """Point config storage at a temp dir and clear provider env vars."""
+    """Point config storage at a temp dir and clear provider env vars.
+
+    There are no default models, so the primary provider gets an explicit
+    model choice; tests about a missing model clear it again.
+    """
     monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
-    for name in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
-        monkeypatch.delenv(name, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
+    config.set_provider_model("openrouter", "test-model")
 
 
 def _scripted(rounds):
@@ -74,6 +82,7 @@ async def test_run_agent_returns_text_usage_and_tools(tmp_path):
     assert result.success is True
     assert result.error is None
     assert result.provider == "openrouter"
+    assert result.model == "test-model"
     assert result.mode == "ask"
 
 
@@ -220,3 +229,77 @@ def test_run_agent_sync_works_outside_event_loop(tmp_path):
 async def test_run_agent_sync_refuses_inside_running_loop():
     with pytest.raises(RuntimeError, match="running event loop"):
         sdk.run_agent_sync("hi")
+
+
+# ---------------------------------------------------------------------------
+# Model choice (there are no default models)
+# ---------------------------------------------------------------------------
+
+
+def _unreachable_stream():
+    async def stream(*args, **kwargs):
+        raise AssertionError("no request may be sent without a model")
+        yield  # pragma: no cover - makes this an async generator
+
+    return stream
+
+
+@pytest.mark.anyio
+async def test_run_agent_without_a_chosen_model_raises(tmp_path):
+    config.set_provider_model("openrouter", None)  # undo the fixture's choice
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy-key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=_unreachable_stream(),
+        ),
+        pytest.raises(config.ModelNotChosenError, match="No model chosen for OpenRouter"),
+    ):
+        await sdk.run_agent("hi", workspace=tmp_path)
+
+
+@pytest.mark.anyio
+async def test_run_agent_provider_and_model_override(tmp_path):
+    rounds = [[TextDelta(text="ok"), Done(finish_reason="stop")]]
+
+    result = await _run(
+        rounds, prompt="hi", workspace=tmp_path, provider="openai", model="gpt-x"
+    )
+
+    assert result.provider == "openai"
+    assert result.model == "gpt-x"
+    assert result.success is True
+
+
+@pytest.mark.anyio
+async def test_run_agent_switching_session_provider_requires_a_model(tmp_path):
+    session = Session(
+        provider_id="openrouter",
+        model="test-model",
+        mode=PermissionMode.ASK,
+        workspace_root=tmp_path,
+        active_provider_ids=["openrouter", "openai"],
+    )
+
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy-key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat",
+            side_effect=_unreachable_stream(),
+        ),
+        pytest.raises(config.ModelNotChosenError, match="No model chosen for OpenAI"),
+    ):
+        await sdk.run_agent("hi", session=session, provider="openai")
+    # The failed switch changed nothing.
+    assert session.provider_id == "openrouter"
+    assert session.model == "test-model"
+    assert session.active_provider_ids == ["openrouter", "openai"]
+
+    config.set_provider_model("openai", "gpt-chosen")
+    rounds = [[TextDelta(text="ok"), Done(finish_reason="stop")]]
+    result = await _run(rounds, prompt="hi", session=session, provider="openai")
+
+    assert result.provider == "openai"
+    assert result.model == "gpt-chosen"
+    assert session.active_provider_ids == ["openai", "openrouter"]

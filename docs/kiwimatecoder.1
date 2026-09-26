@@ -73,7 +73,7 @@ Show this message and exit.
 .SH COMMANDS
 Commands may be nested (for example 'config key set'). Each command accepts --help.
 .SS \fBsetup\fP
-Choose a provider and save its API key —...
+Choose a provider, save its API key, and...
 .PP
 .nf
 kiwimatecoder setup [OPTIONS]
@@ -84,6 +84,9 @@ Provider id (default: configured provider)
 .TP
 \fB\-\-key\fP, \fB\-k\fP \fITEXT\fP
 API key (skips the interactive prompt)
+.TP
+\fB\-\-model\fP, \fB\-m\fP \fITEXT\fP
+Model to use (skips the model picker)
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.
@@ -101,7 +104,7 @@ Positional argument.
 Path to a code file to include
 .TP
 \fB\-\-model\fP, \fB\-m\fP \fITEXT\fP
-Override the default model
+Model to use (default: the provider's choice)
 .TP
 \fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
 Provider id (default: configured provider)
@@ -310,7 +313,7 @@ Show this command's help and exit.
 Add an OpenAI-compatible custom provider.
 .PP
 .nf
-kiwimatecoder config provider add [OPTIONS] PROVIDER_ID NAME BASE_URL DEFAULT_MODEL
+kiwimatecoder config provider add [OPTIONS] PROVIDER_ID NAME BASE_URL MODEL
 .fi
 .TP
 \fBPROVIDER_ID\fP
@@ -322,7 +325,7 @@ Positional argument.
 \fBBASE_URL\fP
 Positional argument.
 .TP
-\fBDEFAULT_MODEL\fP
+\fBMODEL\fP
 Positional argument.
 .TP
 \fB\-\-key\-env\fP \fITEXT\fP
@@ -367,8 +370,8 @@ New display name
 \fB\-\-base\-url\fP \fITEXT\fP
 New base URL
 .TP
-\fB\-\-default\-model\fP \fITEXT\fP
-New default model
+\fB\-\-model\fP, \fB\-\-default\-model\fP \fITEXT\fP
+New model to use with it
 .TP
 \fB\-\-key\-env\fP \fITEXT\fP
 New key environment variable
@@ -388,7 +391,7 @@ New ?api-version= value ('' clears it)
 \fB\-\-help\fP
 Show this command's help and exit.
 .SS \fBconfig model\fP
-Set or reset the default model.
+Choose or forget the model used with a...
 .PP
 .nf
 kiwimatecoder config model [OPTIONS]
@@ -397,7 +400,7 @@ kiwimatecoder config model [OPTIONS]
 \fB\-\-help\fP
 Show this command's help and exit.
 .SS \fBconfig model set\fP
-Set the default model (overrides the...
+Choose the model to use with a provider.
 .PP
 .nf
 kiwimatecoder config model set [OPTIONS] MODEL
@@ -406,14 +409,20 @@ kiwimatecoder config model set [OPTIONS] MODEL
 \fBMODEL\fP
 Positional argument.
 .TP
+\fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
+Provider id (default: the active provider)
+.TP
 \fB\-\-help\fP
 Show this command's help and exit.
 .SS \fBconfig model reset\fP
-Use the provider's default model again.
+Forget the model chosen for a provider.
 .PP
 .nf
 kiwimatecoder config model reset [OPTIONS]
 .fi
+.TP
+\fB\-\-provider\fP, \fB\-p\fP \fITEXT\fP
+Provider id (default: the active provider)
 .TP
 \fB\-\-help\fP
 Show this command's help and exit.
@@ -2064,6 +2073,9 @@ Anthropic API key.
 \fBDEEPSEEK_API_KEY\fP
 DeepSeek API key.
 .TP
+\fBKIWIMATE_API_KEY\fP
+KiwiMate API key (experimental provider).
+.TP
 \fBKIWIMATECODER_PROJECT_CONFIG\fP
 Path to a project config overlay.
 .TP
@@ -2078,7 +2090,7 @@ Disable ANSI color output when set.
 Success.
 .TP
 \fB1\fP
-Runtime failure (for example a missing API key or provider error).
+Runtime failure (for example a missing API key, no model chosen, or a provider error).
 .TP
 \fB2\fP
 Invalid usage, or an interactive session attempted without a TTY.

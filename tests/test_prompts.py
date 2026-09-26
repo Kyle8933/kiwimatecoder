@@ -1,8 +1,22 @@
 from pathlib import Path
 
+import pytest
+
+from kiwimatecoder import config
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.prompts import build_system_prompt
+from kiwimatecoder.providers import REGISTRY
 from kiwimatecoder.session import Session
+
+
+@pytest.fixture(autouse=True)
+def isolate_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "cfg")
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "cfg" / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "cfg" / "config")
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
+    monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
 
 
 def test_system_prompt_prefers_simple_plans_with_options():
@@ -22,10 +36,10 @@ def test_system_prompt_prefers_simple_plans_with_options():
 
 
 def test_system_prompt_lists_current_provider_and_fallback_ids(tmp_path, monkeypatch):
-    def boom(provider, **_kwargs):
+    def boom(provider, *_args, **_kwargs):
         raise AssertionError(f"should not resolve fallback model for {provider.id}")
 
-    monkeypatch.setattr("kiwimatecoder.session.resolve_default_model", boom)
+    monkeypatch.setattr("kiwimatecoder.session.resolve_model", boom)
     session = Session(
         provider_id="openrouter",
         model="test-model",

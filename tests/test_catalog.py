@@ -3,8 +3,24 @@ from typing import Any
 import httpx
 import pytest
 
-from kiwimatecoder import catalog
+from kiwimatecoder import catalog, config
 from kiwimatecoder.providers import REGISTRY, ProviderConfig
+
+
+@pytest.fixture(autouse=True)
+def isolate_config(tmp_path, monkeypatch):
+    """Keep network settings (offline mode, proxy) away from the real config.
+
+    ``fetch_models`` and ``probe`` read the network section of the active
+    config, so point it at a temp dir and clear provider env vars.
+    """
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
+    monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
+    return tmp_path
 
 
 def _transport(handler):
@@ -107,6 +123,54 @@ def test_parse_honors_provider_metadata():
     assert [model.id for model in models] == ["vendor/good"]
 
 
+def test_parse_without_require_tools_keeps_chat_models_lacking_tools():
+    """Chat-only providers keep models whose metadata lacks tool support."""
+    payload = {
+        "data": [
+            {"id": "vendor/good", "supported_parameters": ["tools", "temperature"]},
+            {"id": "vendor/no-tools", "supported_parameters": ["temperature"]},
+            {"id": "vendor/no-fc", "capabilities": {"function_calling": False}},
+            # Non-chat entries are still dropped either way.
+            {
+                "id": "vendor/painter",
+                "architecture": {"output_modalities": ["image"]},
+                "supported_parameters": ["temperature"],
+            },
+            {"id": "vendor/not-chat", "capabilities": {"completion_chat": False}},
+            {"id": "text-embedding-9"},
+        ]
+    }
+
+    chat_only = catalog.parse_models_response(payload, require_tools=False)
+    with_tools = catalog.parse_models_response(payload, require_tools=True)
+
+    assert [model.id for model in chat_only] == [
+        "vendor/good",
+        "vendor/no-tools",
+        "vendor/no-fc",
+    ]
+    assert [model.id for model in with_tools] == ["vendor/good"]
+    # Tools are required unless a caller says otherwise.
+    assert catalog.parse_models_response(payload) == with_tools
+
+
+def test_is_chat_model_require_tools_flag():
+    no_tools = {"supported_parameters": ["temperature"]}
+    no_function_calling = {"capabilities": {"function_calling": False}}
+    not_chat = {"capabilities": {"completion_chat": False}}
+
+    assert not catalog.is_chat_model(no_tools, "vendor/m")
+    assert not catalog.is_chat_model(no_tools, "vendor/m", require_tools=True)
+    assert catalog.is_chat_model(no_tools, "vendor/m", require_tools=False)
+
+    assert not catalog.is_chat_model(no_function_calling, "vendor/m")
+    assert catalog.is_chat_model(no_function_calling, "vendor/m", require_tools=False)
+
+    # Relaxing the tool requirement never admits a non-chat model.
+    assert not catalog.is_chat_model(not_chat, "vendor/m", require_tools=False)
+    assert not catalog.is_chat_model({}, "text-embedding-9", require_tools=False)
+
+
 def test_parse_ignores_unusable_payloads():
     assert catalog.parse_models_response({"error": "nope"}) == []
     assert catalog.parse_models_response("nonsense") == []
@@ -134,6 +198,40 @@ def test_fetch_models_uses_bearer_auth_and_models_endpoint():
     assert request.headers["Authorization"] == "Bearer sk-test"
     # Provider extra headers still ride along.
     assert request.headers["X-Title"] == "KiwiMateCoder"
+
+
+_NO_TOOLS_LISTING = {
+    "data": [
+        {"id": model_id, "created": 100 - index, "supported_parameters": ["temperature"]}
+        for index, model_id in enumerate(REGISTRY["kiwimate"].models)
+    ]
+}
+
+
+def test_fetch_models_for_chat_only_kiwimate_keeps_models_without_tools():
+    seen: list[httpx.Request] = []
+    kiwimate = REGISTRY["kiwimate"]
+
+    models = catalog.fetch_models(
+        kiwimate,
+        "sk-km-test",
+        transport=_json_transport(_NO_TOOLS_LISTING, seen=seen),
+    )
+
+    assert [model.id for model in models] == list(kiwimate.models)
+    request = seen[0]
+    assert str(request.url) == catalog.models_url(kiwimate)
+    assert request.headers["Authorization"] == "Bearer sk-km-test"
+
+
+def test_fetch_models_for_tool_provider_drops_models_without_tools():
+    """The same listing is unusable for a provider the agent drives with tools."""
+    with pytest.raises(catalog.CatalogFetchError, match="no usable chat models"):
+        catalog.fetch_models(
+            REGISTRY["openrouter"],
+            "sk-test",
+            transport=_json_transport(_NO_TOOLS_LISTING),
+        )
 
 
 def test_fetch_models_uses_anthropic_auth_scheme():
@@ -227,60 +325,66 @@ def _provider(**overrides: Any) -> ProviderConfig:
         "id": "demo",
         "name": "Demo",
         "base_url": "https://demo.test/v1",
-        "default_model": "demo-default",
         "key_env": "DEMO_API_KEY",
-        "models": ("demo-default", "demo-old"),
+        "models": ("demo-suggested", "demo-old"),
     }
     kwargs.update(overrides)
     return ProviderConfig(**kwargs)
 
 
-def test_merge_orders_default_first_then_newest():
+def test_merge_orders_newest_first_without_pinning_a_default():
+    """No suggested model is a default: the first suggestion is not pinned."""
     provider = _provider()
     remote = [
         catalog.RemoteModel("demo-mid", 200),
-        catalog.RemoteModel("demo-default", 100),
+        catalog.RemoteModel("demo-suggested", 100),
         catalog.RemoteModel("demo-new", 300),
     ]
 
     assert catalog.merge_catalog(provider, remote) == [
-        "demo-default",
         "demo-new",
         "demo-mid",
+        "demo-suggested",
     ]
 
 
 def test_merge_drops_models_the_provider_no_longer_lists():
     provider = _provider()
-    remote = [catalog.RemoteModel("demo-default", 1), catalog.RemoteModel("demo-new", 2)]
+    remote = [
+        catalog.RemoteModel("demo-suggested", 1),
+        catalog.RemoteModel("demo-new", 2),
+    ]
 
     merged = catalog.merge_catalog(provider, remote)
 
-    assert "demo-old" not in merged  # curated but deprecated upstream
-    assert merged == ["demo-default", "demo-new"]
+    assert "demo-old" not in merged  # suggested but deprecated upstream
+    assert merged == ["demo-new", "demo-suggested"]
 
 
-def test_merge_pins_kept_models_but_cannot_resurrect_retired_ones():
+def test_merge_pins_only_kept_models_but_cannot_resurrect_retired_ones():
     provider = _provider()
     remote = [
-        catalog.RemoteModel("demo-default", 1),
+        catalog.RemoteModel("demo-suggested", 1),
         catalog.RemoteModel("demo-current", 2),
         catalog.RemoteModel("demo-new", 3),
     ]
 
     merged = catalog.merge_catalog(provider, remote, keep=("demo-current", "gone-model"))
 
-    assert merged[:2] == ["demo-default", "demo-current"]
+    assert merged == ["demo-current", "demo-new", "demo-suggested"]
     assert "gone-model" not in merged
 
 
 def test_merge_respects_the_catalog_limit():
-    provider = _provider(default_model="m0", models=())
+    provider = _provider(models=("m0",))
     remote = [catalog.RemoteModel(f"m{i}", i) for i in range(10)]
 
-    merged = catalog.merge_catalog(provider, remote, limit=3)
-
-    assert merged == ["m0", "m9", "m8"]
+    assert catalog.merge_catalog(provider, remote, limit=3) == ["m9", "m8", "m7"]
+    assert catalog.merge_catalog(provider, remote, keep=("m0",), limit=3) == [
+        "m0",
+        "m9",
+        "m8",
+    ]
 
 
 def test_merge_of_empty_listing_is_empty():

@@ -112,6 +112,10 @@ def test_policy_keys_are_the_documented_set():
     assert "command_rules" in keys
     assert "mcp_servers" in keys
     assert "network" in keys
+    assert "selected_model" in keys
+    # Enforcement replaces a policy key wholesale, which would wipe every
+    # per-provider model choice; teams pin the primary with selected_model.
+    assert "provider_models" not in keys
     assert "team" not in keys
     assert "keys" not in keys
 
@@ -247,6 +251,47 @@ def test_project_cannot_disable_team_policy(isolate_config):
     assert cfg["default_mode"] == "plan"
 
 
+@pytest.mark.parametrize("enforce", [False, True])
+def test_policy_cannot_replace_per_provider_model_choices(isolate_config, enforce):
+    config.set_provider_model("openai", "my-gpt")
+    config.set_provider_model("openrouter", "my-router-model")
+    policy_file = _write(
+        isolate_config / "policy.json",
+        {"default_mode": "plan", "provider_models": {"openai": "team-gpt"}},
+    )
+    config.set_team(policy_path=policy_file, enforce=enforce)
+
+    cfg = config.load_config()
+
+    # Ignored (and reported), so an enforced policy cannot leave every other
+    # provider without a model or make the user's own choices ineffective.
+    assert cfg["default_mode"] == "plan"
+    assert cfg["provider_models"] == {
+        "openai": "my-gpt",
+        "openrouter": "my-router-model",
+    }
+    config.set_provider_model("deepseek", "my-ds")
+    assert config.get_provider_model("deepseek") == "my-ds"
+    messages = [issue["message"] for issue in team.policy_issues(cfg)]
+    assert "Unknown policy key 'provider_models' is ignored." in messages
+
+
+def test_project_provider_models_overlay_per_provider(isolate_config):
+    config.set_provider_model("openai", "my-gpt")
+    config.set_provider_model("openrouter", "my-router-model")
+    project = _project(
+        isolate_config, {"provider_models": {"openai": "project-gpt"}}
+    )
+
+    cfg = config.load_config(project_root=project)
+
+    assert cfg["provider_models"] == {
+        "openai": "project-gpt",
+        "openrouter": "my-router-model",
+    }
+    assert config.get_provider_model("openai", cfg) == "project-gpt"
+
+
 def test_policy_selected_provider_seeds_roster(isolate_config):
     policy_file = _write(
         isolate_config / "policy.json", {"selected_provider": "openai"}
@@ -256,6 +301,23 @@ def test_policy_selected_provider_seeds_roster(isolate_config):
     cfg = config.load_config()
 
     assert config.get_active_provider_ids(cfg) == ["openai"]
+
+
+def test_policy_selected_model_pins_only_the_primary(isolate_config):
+    config.set_active_providers(["openai", "deepseek"])
+    config.set_provider_model("openai", "my-gpt")
+    config.set_provider_model("deepseek", "my-ds")
+    policy_file = _write(
+        isolate_config / "policy.json", {"selected_model": "team-gpt"}
+    )
+    config.set_team(policy_path=policy_file)
+
+    cfg = config.load_config()
+
+    assert config.get_provider_model("openai", cfg) == "team-gpt"
+    assert config.get_provider_model("deepseek", cfg) == "my-ds"
+    # The pin does not rewrite the user's stored choice.
+    assert cfg["provider_models"]["openai"] == "my-gpt"
 
 
 def test_enforce_rolls_back_project_seeded_roster(isolate_config):

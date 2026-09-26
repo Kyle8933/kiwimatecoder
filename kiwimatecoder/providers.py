@@ -6,21 +6,27 @@ Most providers expose an OpenAI-compatible ``/chat/completions`` API so a single
 that way) are driven through the native Messages API with SSE streaming and
 tool-use support instead.
 
-Model ids drift fast — the defaults and ``models`` catalogs below were verified
-in July 2026. They are only the offline starting point: once a provider is in
-use, :mod:`kiwimatecoder.catalog` fetches its live ``/models`` listing so newly
-released ids are offered and retired ones disappear (see
-``config.get_model_catalog``). The user can still override the model for any
-provider at runtime with ``/model`` (typing any id works, listed or not) or
-persist a choice via ``config set-model``, and can reshape the offered list with
-``/config models allow|deny``.
+There are no default models. The user chooses a model when they add a
+provider (``kiwimatecoder setup``, ``/provider`` in the REPL, or
+``config provider add``), and that choice is persisted per provider (see
+``config.get_provider_model``). The ``models`` tuples below were verified in
+July 2026 and are only suggestions for the pickers when the live listing is
+unavailable: once a provider has a key, :mod:`kiwimatecoder.catalog` fetches
+its live ``/models`` listing so newly released ids are offered and retired
+ones disappear (see ``config.get_model_catalog``). Any id can still be set by
+name with ``/model`` or ``config model set``, and the offered list can be
+reshaped with ``/config models allow|deny``.
 
 Local providers (Ollama, LM Studio, Unsloth) serve whatever models are loaded,
-so they ship no static ``default_model`` — the session model is resolved live
-from the running server (see ``config.resolve_default_model``). Ollama and
-LM Studio need no API key; Unsloth enforces auth even locally
-(``requires_key=True``), so its ``sk-unsloth-…`` key must be configured before
-the server can be used.
+so when no model has been chosen the session model is read live from the
+running server (see ``config.resolve_model``). Ollama and LM Studio need no API
+key; Unsloth enforces auth even locally (``requires_key=True``), so its
+``sk-unsloth-…`` key must be configured before the server can be used.
+
+Experimental providers (``experimental=True``, currently KiwiMate) are listed
+first and drawn in their own "Experimental" box by the provider pickers.
+Providers with ``supports_tools=False`` are chat-only: the client sends them no
+tool schemas and flattens any tool traffic in the history into plain text.
 """
 
 from __future__ import annotations
@@ -41,15 +47,15 @@ class ProviderConfig:
     id: str
     name: str
     base_url: str  # includes /v1, never a trailing /chat/completions
-    default_model: str  # may be "" for local providers (resolved live)
     key_env: str
     # Set for local servers that enforce auth anyway (Unsloth's sk-unsloth-…
     # key). Keyless locals (Ollama, LM Studio) and custom providers leave it off.
     requires_key: bool = False
     compat: str = "openai"  # "openai" | "anthropic" (native Messages API)
     extra_headers: dict[str, str] = field(default_factory=dict)
-    # Curated catalog offered by /model; not exhaustive, and any id can still
-    # be set by name. The default model is always offered even if absent here.
+    # Suggested models offered by the pickers until a live listing is
+    # available; not exhaustive, and any id can still be set by name. None of
+    # them is a default: the user always chooses.
     models: tuple[str, ...] = ()
     # Auth header used for OpenAI-compatible requests. Cloud providers want
     # ``Authorization: Bearer <key>``; Azure OpenAI wants ``api-key: <key>``.
@@ -59,6 +65,17 @@ class ProviderConfig:
     # Azure-style API versioning: appended as ``?api-version=<value>`` to chat,
     # catalog, and embedding URLs when non-empty.
     api_version: str = ""
+    # Shown in its own "Experimental" box at the top of the provider pickers.
+    experimental: bool = False
+    # False for chat-only endpoints: no tool schemas are sent and tool calls /
+    # results already in the history are flattened into plain text.
+    supports_tools: bool = True
+    # Short note shown next to the provider in pickers and tables.
+    description: str = ""
+    # Per-message image limits enforced by the endpoint (0 = no limit). The
+    # client drops what would be rejected and says so in a text part.
+    max_images_per_message: int = 0
+    max_image_url_chars: int = 0
 
     @property
     def is_local(self) -> bool:
@@ -97,11 +114,33 @@ class UnknownProviderError(KeyError):
 
 
 REGISTRY: dict[str, ProviderConfig] = {
+    # Experimental: KiwiMate's own OpenAI-compatible API (kiwimate.net, keys
+    # start with sk-km-; see kiwimate.net/developers/docs). The endpoint is
+    # chat-only for now — it ignores tool schemas, rejects tool-role
+    # messages, drops system prompts, and caps replies at 1,024 tokens — so
+    # it runs with supports_tools=False and cannot edit files or run commands.
+    "kiwimate": ProviderConfig(
+        id="kiwimate",
+        name="KiwiMate",
+        base_url="https://gznrhppouxwpfihlfgpb.supabase.co/functions/v1/api-chat-completions",
+        key_env="KIWIMATE_API_KEY",
+        models=(
+            "kiwimate-mini-1-0",
+            "kiwimate-small-1-0",
+            "kiwimate-medium-1-0",
+            "kiwimate-large-1-0",
+        ),
+        experimental=True,
+        supports_tools=False,
+        description="kiwimate.net · chat only, no tool use yet",
+        # data: URLs only, at most 4 per message, each under 3,000,000 chars.
+        max_images_per_message=4,
+        max_image_url_chars=3_000_000,
+    ),
     "openai": ProviderConfig(
         id="openai",
         name="OpenAI",
         base_url="https://api.openai.com/v1",
-        default_model="gpt-5.6-sol",
         key_env="OPENAI_API_KEY",
         models=("gpt-5.6-sol", "gpt-5.5"),
     ),
@@ -109,7 +148,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="anthropic",
         name="Anthropic",
         base_url="https://api.anthropic.com/v1",
-        default_model="claude-sonnet-5",
         key_env="ANTHROPIC_API_KEY",
         compat="anthropic",
         models=("claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"),
@@ -118,7 +156,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="google",
         name="Google Gemini",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-        default_model="gemini-3.5-flash",
         key_env="GEMINI_API_KEY",
         models=("gemini-3.5-flash", "gemini-3.5-pro"),
     ),
@@ -126,7 +163,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="xai",
         name="xAI Grok",
         base_url="https://api.x.ai/v1",
-        default_model="grok-4.5",
         key_env="XAI_API_KEY",
         models=("grok-4.5", "grok-build-0.1"),
     ),
@@ -134,7 +170,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="mistral",
         name="Mistral",
         base_url="https://api.mistral.ai/v1",
-        default_model="mistral-medium-3.5",
         key_env="MISTRAL_API_KEY",
         models=("mistral-medium-3.5", "devstral-2512"),
     ),
@@ -142,7 +177,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="deepseek",
         name="DeepSeek",
         base_url="https://api.deepseek.com/v1",
-        default_model="deepseek-v4-pro",
         key_env="DEEPSEEK_API_KEY",
         models=("deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"),
     ),
@@ -150,7 +184,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="qwen",
         name="Qwen (Alibaba DashScope)",
         base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        default_model="qwen3.7-max",
         key_env="DASHSCOPE_API_KEY",
         models=("qwen3.7-max", "qwen-plus", "qwen-turbo"),
     ),
@@ -158,7 +191,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="moonshot",
         name="Moonshot (Kimi)",
         base_url="https://api.moonshot.ai/v1",
-        default_model="kimi-k2.7-code",
         key_env="MOONSHOT_API_KEY",
         models=("kimi-k2.7-code", "kimi-latest"),
     ),
@@ -166,7 +198,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="openrouter",
         name="OpenRouter",
         base_url="https://openrouter.ai/api/v1",
-        default_model="anthropic/claude-sonnet-5",
         key_env="OPENROUTER_API_KEY",
         extra_headers={
             "HTTP-Referer": "https://kiwimatecoder.com",
@@ -194,10 +225,9 @@ REGISTRY: dict[str, ProviderConfig] = {
         # ``config provider add my-azure "My Azure" \
         #   https://my-resource.openai.azure.com/openai/v1 my-deployment \
         #   --key-env AZURE_OPENAI_API_KEY --key-header api-key \
-        #   --key-prefix "" --api-version 2024-10-21``.
-        # Deployment names are user-defined, so set your own with /model.
+        #   --key-prefix "" --api-version 2024-10-21`` (the fourth argument is
+        # the model — your deployment name — to use with it).
         base_url="https://<resource>.openai.azure.com/openai/v1",
-        default_model="gpt-5.6-sol",
         key_env="AZURE_OPENAI_API_KEY",
         key_header="api-key",
         key_prefix="",
@@ -211,7 +241,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         # OpenAI-compatible runtime accepts a bearer token; SigV4/IAM signing is
         # out of scope (use a signing proxy or custom provider if you need it).
         base_url="https://bedrock-runtime.<region>.amazonaws.com/openai/v1",
-        default_model="openai.gpt-5.6-sol",
         key_env="AWS_BEARER_TOKEN_BEDROCK",
         models=("openai.gpt-5.6-sol", "mistral.devstral-2512"),
     ),
@@ -219,7 +248,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="groq",
         name="Groq",
         base_url="https://api.groq.com/openai/v1",
-        default_model="llama-4.1-70b-versatile",
         key_env="GROQ_API_KEY",
         models=("llama-4.1-70b-versatile", "qwen3.7-32b"),
     ),
@@ -227,7 +255,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="together",
         name="Together AI",
         base_url="https://api.together.xyz/v1",
-        default_model="meta-llama/Llama-4.1-70B-Instruct-Turbo",
         key_env="TOGETHER_API_KEY",
         models=(
             "meta-llama/Llama-4.1-70B-Instruct-Turbo",
@@ -238,7 +265,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="fireworks",
         name="Fireworks AI",
         base_url="https://api.fireworks.ai/inference/v1",
-        default_model="accounts/fireworks/models/llama-v4-70b-instruct",
         key_env="FIREWORKS_API_KEY",
         models=(
             "accounts/fireworks/models/llama-v4-70b-instruct",
@@ -249,7 +275,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="cerebras",
         name="Cerebras",
         base_url="https://api.cerebras.ai/v1",
-        default_model="llama-4.1-70b",
         key_env="CEREBRAS_API_KEY",
         models=("llama-4.1-70b", "qwen-3.7-32b"),
     ),
@@ -257,7 +282,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="deepinfra",
         name="DeepInfra",
         base_url="https://api.deepinfra.com/v1/openai",
-        default_model="meta-llama/Llama-4.1-70B-Instruct",
         key_env="DEEPINFRA_API_KEY",
         models=(
             "meta-llama/Llama-4.1-70B-Instruct",
@@ -268,9 +292,8 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="ollama",
         name="Ollama (local)",
         base_url="http://localhost:11434/v1",
-        # No static default: the model is resolved live from the running
-        # server. The curated tuple is only the offline fallback for /model.
-        default_model="",
+        # With no chosen model, the session uses whatever the running server
+        # lists first. The suggested tuple only fills the offline picker.
         key_env="OLLAMA_API_KEY",  # optional; only if the server enforces auth
         models=("llama3.1:8b", "qwen3:8b", "deepseek-r1:8b"),
     ),
@@ -278,7 +301,6 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="lmstudio",
         name="LM Studio (local)",
         base_url="http://localhost:1234/v1",
-        default_model="",
         key_env="LMSTUDIO_API_KEY",  # optional; only if the server enforces auth
         models=("qwen2.5-coder-7b-instruct", "llama-3.1-8b-instruct"),
     ),
@@ -286,9 +308,8 @@ REGISTRY: dict[str, ProviderConfig] = {
         id="unsloth",
         name="Unsloth (local)",
         base_url="http://localhost:8888/v1",
-        # No static default: the model is whatever GGUF is loaded in Unsloth
-        # Studio. The curated tuple is only the offline fallback for /model.
-        default_model="",
+        # With no chosen model, the session uses whatever GGUF is loaded in
+        # Unsloth Studio. The suggested tuple only fills the offline picker.
         # Required: Unsloth's local server enforces auth (Settings → API,
         # the key starts with sk-unsloth-).
         key_env="UNSLOTH_API_KEY",

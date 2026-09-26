@@ -27,6 +27,7 @@ def isolate_config(tmp_path, monkeypatch):
     for provider in REGISTRY.values():
         monkeypatch.delenv(provider.key_env, raising=False)
     monkeypatch.delenv("LOCAL_API_KEY", raising=False)
+    monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -166,17 +167,30 @@ def test_config_model_show_set_and_reset(session):
     dispatch("/config model show", session, console)
     assert "test-model" in _output(console)
 
-    dispatch("/config model set my-default", session, _console())
-    assert session.model == "my-default"
-    assert config.load_config().get("selected_model") == "my-default"
+    set_console = _console()
+    dispatch("/config model set my-choice", session, set_console)
+    assert session.model == "my-choice"
+    assert config.get_provider_model("openrouter") == "my-choice"
+    assert config.load_config().get("selected_model") is None
+    assert "Model for OpenRouter set to my-choice." in _output(set_console)
 
     usage = _console()
     dispatch("/config model set", session, usage)  # usage error path
     assert "Usage:" in _output(usage)
 
-    dispatch("/config model reset", session, _console())
-    assert session.model == session.provider.default_model
+    # A cloud provider has no default to fall back to: the model is cleared
+    # and the user is told how to choose one.
+    reset = _console()
+    dispatch("/config model reset", session, reset)
+    assert session.model == ""
+    assert config.get_provider_model("openrouter") == ""
     assert config.load_config().get("selected_model") is None
+    assert "Model choice for OpenRouter cleared." in _output(reset)
+    assert "Choose one with /model before chatting." in _output(reset)
+
+    show = _console()
+    dispatch("/config model show", session, show)
+    assert "Current model: (none chosen)" in _output(show)
 
 
 def test_config_model_unknown_action(session):
@@ -224,6 +238,38 @@ def test_save_load_and_sessions_roundtrip(session, tmp_path, monkeypatch):
     assert session.messages == [{"role": "user", "content": "remember this"}]
     assert session.prompt_tokens == 42
     assert "Loaded session" in _output(load_console)
+
+
+def test_load_session_without_a_model_prints_hint(session, tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+    session.model = ""
+    session.messages = [{"role": "user", "content": "no model yet"}]
+    dispatch("/save no-model", session, _console())
+    session.model = "test-model"
+    console = _console()
+
+    assert dispatch("/load no-model", session, console) == CommandResult.CONTINUE
+
+    assert session.model == ""
+    output = _output(console)
+    assert "Loaded session" in output
+    assert "No model chosen for OpenRouter — choose one with /model." in output
+
+
+def test_load_session_with_a_model_prints_no_hint(session, tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+    session.messages = [{"role": "user", "content": "has a model"}]
+    dispatch("/save with-model", session, _console())
+    console = _console()
+
+    dispatch("/load with-model", session, console)
+
+    assert session.model == "test-model"
+    assert "No model chosen" not in _output(console)
 
 
 def test_load_without_name_lists_sessions(session, tmp_path, monkeypatch):

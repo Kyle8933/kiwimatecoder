@@ -34,10 +34,14 @@ install a tag, branch, or commit, or set `KIWIMATECODER_REF`.
 ```bash
 docker build -t kiwimatecoder .
 docker run --rm -it -v "$PWD:/workspace" -e OPENROUTER_API_KEY kiwimatecoder
+docker run --rm -v "$PWD:/workspace" -e OPENROUTER_API_KEY kiwimatecoder \
+  -p "Summarize this repository" --model anthropic/claude-sonnet-5
 ```
 
 The image is `python:3.12-slim`, installs the package, and runs as the
-non-root `kiwimate` user with `/workspace` as the working directory.
+non-root `kiwimate` user with `/workspace` as the working directory. A fresh
+container has no saved config, so no model is chosen: pass `--model` (see
+[Choosing a model](#choosing-a-model)).
 
 **Homebrew:** `packaging/homebrew/kiwimatecoder.rb` is a virtualenv formula
 template pinned to a git tag. It is not published to a tap yet; fill in the
@@ -53,13 +57,23 @@ kiwimatecoder setup
 kiwimatecoder
 ```
 
-`kiwimatecoder setup` walks you through choosing a provider and saving its API
-key. You can also pass the arguments directly:
+`kiwimatecoder setup` walks you through choosing a provider, saving its API
+key, and choosing the model to use with it. There are no default models: after
+the key is saved, setup shows the provider's model list (plus **Type a model
+id…** for anything unlisted), and your pick is remembered for that provider.
+You can also pass the arguments directly:
 
 ```bash
 kiwimatecoder setup --provider openrouter
-kiwimatecoder setup --provider openai --key sk-...   # non-interactive
+kiwimatecoder setup --provider openai --key sk-... --model gpt-5.6-sol   # non-interactive
 ```
+
+Without a terminal (or if you cancel the picker) and no earlier choice, setup
+prints `No model chosen yet` (a local server instead uses the first model it
+lists); the REPL then asks for a model when it starts, or you can set one later
+with `kiwimatecoder config model set <id>`. At launch the REPL also asks about
+any fallback provider on the roster that has no model (failover skips those),
+and `kiwimatecoder doctor` warns about them.
 
 Running `kiwimatecoder` with no arguments opens the interactive REPL. It keeps
 running until you exit. Type a request in plain language and KiwiMateCoder will
@@ -89,14 +103,20 @@ kiwi (openrouter:anthropic/claude-sonnet-5 · ask) › add a docstring to main.p
 - Run `/model`, `/provider`, or `/mode` without an argument to open a
   keyboard-driven selector. `/provider` is a checklist: check every provider you
   want on the failover roster. The first checked provider is the primary; the
-  rest are tried in order if the primary fails. `/provider <id>` replaces the
-  roster with that single provider. Arrow keys move, Enter selects, and Ctrl-C
-  returns to the prompt without changing anything.
+  rest are tried in order if the primary fails. Experimental providers
+  (currently KiwiMate) appear in their own **Experimental** box at the top of
+  the list. After you confirm, you choose a model for every provider on the
+  roster that does not have one yet. `/provider <id>` replaces the roster with
+  that single provider (and asks for its model if none is chosen). Arrow keys
+  move, Enter selects, and Ctrl-C returns to the prompt without changing
+  anything.
 - Opening `/model` checks the provider for models released since you last looked,
   and drops any it has retired. `/model refresh` forces the check. The model you
-  pick is saved as the default for the next session (`/config model reset`
-  restores the provider default). Switching the primary provider with
-  `/provider` clears that saved model so a vendor-specific id cannot leak.
+  pick is saved as that provider's model for the next session. Each provider
+  remembers its own model, so switching the primary with `/provider` uses the
+  model chosen for the new primary instead of carrying a vendor-specific id
+  across providers. `/config model reset` forgets the choice: pick another with
+  `/model` (local servers fall back to the first model they list).
 - `/model search <term>` searches the provider's full catalog by name and opens
   the selector on the matches — useful when a model is older than the newest few
   that `/model` lists.
@@ -150,8 +170,8 @@ paths outside the workspace root; writes stay sandboxed.
 | `/help` | Show available commands. |
 | `/exit`, `/quit` | Leave the session. |
 | `/clear` | Clear the conversation history. |
-| `/model [name\|refresh\|list\|search <term>]` | Interactively choose a model (the list is refreshed from the provider), set one by name, refresh/show the list, or search the full catalog by name. The choice is remembered for the next session. |
-| `/provider [id]` | Choose a failover roster (checklist), or replace it with one provider by id. |
+| `/model [name\|refresh\|list\|search <term>]` | Interactively choose a model (the list is refreshed from the provider), set one by name, refresh/show the list, or search the full catalog by name. The choice is remembered for that provider. |
+| `/provider [id]` | Choose a failover roster (checklist; experimental providers sit in their own box at the top), or replace it with one provider by id. Asks for a model for each provider that has none. |
 | `/mode [ask\|auto-accept\|plan]` | Interactively choose, or directly set, the permission mode. |
 | `/dry-run [on\|off\|toggle]` | Preview mutating actions without running them. |
 | `/undo [count]`, `/checkpoints` | Restore files changed by recent tools, or list checkpoints. |
@@ -186,9 +206,11 @@ Config examples:
 ```text
 /config
 /config provider add local "Local Models" http://localhost:1234/v1 local-code LOCAL_API_KEY
-/config provider edit local name="Local Models 2" default_model=local-fast
+/config provider edit local name="Local Models 2" model=local-fast
 /config key set local <YOUR_KEY>
 /config provider use local
+/config model set anthropic/claude-sonnet-5 openrouter
+/config model reset openrouter
 /config models allow local-code local-fast
 /config models deny noisy-model
 /config models refresh
@@ -609,36 +631,85 @@ Malformed documents always return a clear message rather than raising.
 ## Providers
 
 KiwiMateCoder ships a built-in registry of providers. Switch live with `/provider`,
-or set persistent defaults from the shell with `config provider use <id>` and
-`config model set <id>`. An API key can be saved interactively with
-`kiwimatecoder setup`, directly with `config key set <provider> <key>`, or via the
-provider's environment variable. You can also add OpenAI-compatible custom
-providers with `config provider add`.
+or set the persistent primary from the shell with `config provider use <id>`. An
+API key can be saved interactively with `kiwimatecoder setup`, directly with
+`config key set <provider> <key>`, or via the provider's environment variable.
+You can also add OpenAI-compatible custom providers with `config provider add`.
 
-| Provider id | Default model | Key env var |
-|-------------|---------------|-------------|
-| `openai` | `gpt-5.6-sol` | `OPENAI_API_KEY` |
-| `anthropic` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
-| `google` | `gemini-3.5-flash` | `GEMINI_API_KEY` |
-| `xai` | `grok-4.5` | `XAI_API_KEY` |
-| `mistral` | `mistral-medium-3.5` | `MISTRAL_API_KEY` |
-| `deepseek` | `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
-| `qwen` | `qwen3.7-max` | `DASHSCOPE_API_KEY` |
-| `moonshot` | `kimi-k2.7-code` | `MOONSHOT_API_KEY` |
-| `openrouter` | `anthropic/claude-sonnet-5` | `OPENROUTER_API_KEY` |
-| `azure` | `gpt-5.6-sol` *(deployment)* | `AZURE_OPENAI_API_KEY` |
-| `bedrock` | `openai.gpt-5.6-sol` | `AWS_BEARER_TOKEN_BEDROCK` |
-| `groq` | `llama-4.1-70b-versatile` | `GROQ_API_KEY` |
-| `together` | `meta-llama/Llama-4.1-70B-Instruct-Turbo` | `TOGETHER_API_KEY` |
-| `fireworks` | `accounts/fireworks/models/llama-v4-70b-instruct` | `FIREWORKS_API_KEY` |
-| `cerebras` | `llama-4.1-70b` | `CEREBRAS_API_KEY` |
-| `deepinfra` | `meta-llama/Llama-4.1-70B-Instruct` | `DEEPINFRA_API_KEY` |
-| `ollama` | *(from server)* | `OLLAMA_API_KEY` (optional) |
-| `lmstudio` | *(from server)* | `LMSTUDIO_API_KEY` (optional) |
-| `unsloth` | *(from server)* | `UNSLOTH_API_KEY` (required) |
+| Provider id | Key env var | Notes |
+|-------------|-------------|-------|
+| `kiwimate` **(experimental)** | `KIWIMATE_API_KEY` | [kiwimate.net](https://kiwimate.net); keys start with `sk-km-`. Chat only — no tool use yet (see below). |
+| `openai` | `OPENAI_API_KEY` | |
+| `anthropic` | `ANTHROPIC_API_KEY` | Native Messages API. |
+| `google` | `GEMINI_API_KEY` | |
+| `xai` | `XAI_API_KEY` | |
+| `mistral` | `MISTRAL_API_KEY` | |
+| `deepseek` | `DEEPSEEK_API_KEY` | |
+| `qwen` | `DASHSCOPE_API_KEY` | |
+| `moonshot` | `MOONSHOT_API_KEY` | |
+| `openrouter` | `OPENROUTER_API_KEY` | The provider used until you pick another. |
+| `azure` | `AZURE_OPENAI_API_KEY` | Placeholder endpoint; the model is your deployment name. |
+| `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | Placeholder endpoint. |
+| `groq` | `GROQ_API_KEY` | |
+| `together` | `TOGETHER_API_KEY` | |
+| `fireworks` | `FIREWORKS_API_KEY` | |
+| `cerebras` | `CEREBRAS_API_KEY` | |
+| `deepinfra` | `DEEPINFRA_API_KEY` | |
+| `ollama` | `OLLAMA_API_KEY` (optional) | Local. |
+| `lmstudio` | `LMSTUDIO_API_KEY` (optional) | Local. |
+| `unsloth` | `UNSLOTH_API_KEY` (required) | Local. |
+
+### Choosing a model
+
+There are no default models. You choose the model to use with each provider
+when you add it, and the choice is remembered per provider:
+
+- `kiwimatecoder setup` asks you to pick one from the provider's list after it
+  saves the key (or pass `--model <id>` to skip the picker).
+- `/provider` asks for a model for each provider you add to the roster.
+- Custom providers take the model as the fourth argument of
+  `config provider add <id> <name> <base_url> <model>`; change it with
+  `config provider edit <id> --model <id>` or `/config provider edit <id> model=<id>`.
+- `config model set <id> [--provider <id>]` or `/config model set <model>
+  [provider]` changes the model for the active (or named) provider, and
+  `config model reset [--provider <id>]` / `/config model reset [provider]`
+  forgets it. `config provider list` shows each provider's chosen model.
+
+The interactive REPL asks for a model at launch when the primary has none. A
+fallback provider without a chosen model is skipped (with a note) during
+failover. Headless runs never prompt: `kiwimatecoder -p`, `ask`, and `jobs run`
+exit `1` with `No model chosen for <provider>…` when neither `--model` nor a
+chosen model is available (`eval run` reports the same message as invalid
+input, exit `2`). Local servers are the one exception — with nothing chosen,
+the session uses the first model the running server lists.
 
 Groq, Together, Fireworks, Cerebras, and DeepInfra work out of the box once
 their API key is set — they speak the standard OpenAI-compatible protocol.
+
+### KiwiMate (experimental)
+
+`kiwimate` is KiwiMate's own OpenAI-compatible API from
+[kiwimate.net](https://kiwimate.net). It is listed first in every provider
+picker, in its own **Experimental** box, and marked `(experimental)` in
+`config provider list`. Create a key at `kiwimate.net/developers/console` (it
+starts with `sk-km-`), then run `kiwimatecoder setup --provider kiwimate` (or
+set `KIWIMATE_API_KEY`, then `config provider use kiwimate` and `config model
+set <id>`). Setup offers the endpoint's models, falling back to the suggested
+`kiwimate-mini-1-0`, `kiwimate-small-1-0`, `kiwimate-medium-1-0`, and
+`kiwimate-large-1-0`, and reminds you that the provider is experimental.
+
+The endpoint is limited for now:
+
+- **Chat only, no tool use yet.** KiwiMateCoder sends it no tool schemas, so
+  with KiwiMate as the provider the agent cannot read or edit files or run
+  commands. Tool calls and results already in the conversation are flattened
+  into plain text when you switch to it mid-session.
+- **Replies are capped at about 1,024 tokens.** The REPL prints `The reply was
+  cut off at the provider's output limit.` when that happens.
+- **System prompts are ignored by the endpoint**, so project instructions
+  (`AGENTS.md`), memory, output styles, and custom prompts do not reach the
+  model. Only the last 20 non-system messages of the conversation are
+  forwarded to it.
 
 `azure` and `bedrock` ship **placeholder** endpoints because the endpoint is
 account-specific (`https://<resource>.openai.azure.com/openai/v1` and
@@ -665,12 +736,14 @@ signing, Azure managed identity, Google Vertex AI (project-specific endpoint,
 OAuth2-only auth), and interactive OAuth/device-code flows are not implemented
 (deferred; see ROADMAP).
 
-These defaults are a starting point; the live catalog below is what `/model`
-actually offers once a provider is in use.
+Each built-in provider still ships a short list of suggested model ids, used
+only to fill the pickers when its live listing is unavailable — none of them is
+used unless you choose it. The live catalog below is what `/model` actually
+offers once the provider can be queried (see **Needs a key** below).
 
 The `anthropic` provider talks to Anthropic's native Messages API, including
 streaming tool calls and native model listing. Custom providers can opt into the
-same path with `config provider add ... --compat anthropic` (or
+same path with `config provider edit <id> --compat anthropic` (or
 `/config provider edit <id> compat=anthropic`); everything else speaks the
 OpenAI-compatible chat+tools protocol.
 
@@ -686,9 +759,10 @@ own machine. Make sure the server is running ([Ollama](https://ollama.com) on
 /provider ollama
 ```
 
-That's it for Ollama and LM Studio — no API key, no setup. The session model is
-resolved live from whatever the server has loaded or pulled, and `/model` lists
-the server's actual models. `kiwimatecoder setup` detects which local servers
+That's it for Ollama and LM Studio — no API key needed. You can choose a model
+like any other provider (`kiwimatecoder setup` offers the server's models when
+it is running, and `/model` lists them); until you do, the session uses the
+first model the server lists. `kiwimatecoder setup` detects which local servers
 are running and marks them in the picker. Tool calling depends on the model you
 pick, so choose a tool-capable family (Llama 3.1+, Qwen 3, DeepSeek, ...).
 
@@ -702,8 +776,9 @@ server-side tools swallow the agent's tool calls.
 A key only matters if your server enforces auth (e.g. LM Studio's server token,
 or Ollama behind an authenticating proxy) — set `OLLAMA_API_KEY` /
 `LMSTUDIO_API_KEY` or `config key set ollama <key>` in that case. Running on a
-different port or another machine? Add it as a custom provider instead:
-`/config provider add mybox "My Box" http://mybox.local:11434/v1 any-model` —
+different port or another machine? Add it as a custom provider instead, with
+the model to use as the fourth argument:
+`/config provider add mybox "My Box" http://mybox.local:11434/v1 llama3.1:8b` —
 any `localhost`/`*.local` provider is treated as keyless automatically.
 
 ## Model catalogs
@@ -713,7 +788,7 @@ provider itself rather than being frozen into the release.
 
 - **Newest first.** Opening `/model` (or running `/model refresh`) calls the
   provider's `/models` endpoint and offers what it serves today, ordered by
-  release date, with the provider default pinned first. Search
+  release date, with your current model pinned first. Search
   (`/model search <term>`) bypasses this newest-first cap and scans the whole
   catalog by name.
 - **Deprecated ids disappear.** Anything the provider no longer lists is dropped
@@ -721,11 +796,12 @@ provider itself rather than being frozen into the release.
   model is one of them, it says so.
 - **Only usable models.** Embedding, image, audio, moderation, and non
   tool-calling models are filtered out — the agent loop needs text chat plus tool
-  calls. The newest 60 are offered; any other id still works if you type it.
+  calls (chat-only providers such as KiwiMate keep models without tool support).
+  The newest 60 are offered; any other id still works if you type it.
 - **Cached for a day.** Results are stored in `~/.kiwimatecoder/model_cache.json`
   and reused for 24 hours, so the selector stays instant and tab completion never
   touches the network. A failed fetch falls back to the cached list, then to the
-  built-in one, and is not retried automatically for 30 minutes.
+  built-in suggestions, and is not retried automatically for 30 minutes.
 - **Needs a key.** A cloud provider is only queried once it has an API key
   configured; keyless local servers (`ollama`, `lmstudio`, and any custom
   provider on `localhost` or a `*.local` host) are queried without one —
@@ -735,11 +811,11 @@ From the shell, `kiwimatecoder config models show [--provider <id>]` and
 `kiwimatecoder config models refresh [--provider <id>]` show or refresh the same
 catalog.
 
-The curated tuples in `kiwimatecoder/providers.py` remain the offline fallback,
-and custom providers can list theirs via a `"models"` array in
-`~/.kiwimatecoder/config.json`. `/config models allow|deny` reshapes what is
-offered on top of whichever catalog is in use, and `/model <name>` or
-`config model set <name>` accepts any id, listed or not.
+The suggested model tuples in `kiwimatecoder/providers.py` are only the offline
+fallback for the pickers (never a default), and custom providers can list
+theirs via a `"models"` array in `~/.kiwimatecoder/config.json`. `/config models
+allow|deny` reshapes what is offered on top of whichever catalog is in use, and
+`/model <name>` or `config model set <name>` accepts any id, listed or not.
 
 ## One-shot mode
 
@@ -747,8 +823,11 @@ For a quick question without entering the REPL:
 
 ```bash
 kiwimatecoder ask "how do I reverse a list in python?"
-kiwimatecoder ask "review this file" --file app.py --provider openai
+kiwimatecoder ask "review this file" --file app.py --provider openai --model gpt-5.6-sol
 ```
+
+`ask` uses the model chosen for the provider unless `--model` is passed, and
+exits `1` with `No model chosen for <provider>…` when there is neither.
 
 ## Headless mode
 
@@ -757,9 +836,13 @@ Run one agentic turn without entering the REPL — useful for scripts and CI:
 ```bash
 kiwimatecoder -p "Summarize the changes in the working tree."
 echo "Explain src/app.py" | kiwimatecoder -p -
+kiwimatecoder -p "Summarize the changes." --provider openai --model gpt-5.6-sol
 ```
 
-The prompt is the value of `-p/--print`; `-p -` reads it from stdin. Flags:
+The prompt is the value of `-p/--print`; `-p -` reads it from stdin. The run
+uses the model chosen for the provider (`kiwimatecoder setup` or `config model
+set`); pass `--model` to override it, or when none is chosen — headless runs
+never prompt for one. Flags:
 
 | Flag | Meaning |
 | --- | --- |
@@ -767,7 +850,7 @@ The prompt is the value of `-p/--print`; `-p -` reads it from stdin. Flags:
 | `--mode ask\|auto-accept\|plan` | Permission mode for this run (default: the configured mode). |
 | `--yes` | Treat approvals as granted (auto-accept) — never prompts. |
 | `--max-turns N` | Hard cap on tool-loop iterations (default 30). |
-| `--provider`, `--model` | Provider/model overrides for this run. |
+| `--provider`, `--model` | Provider/model overrides for this run. `--provider` makes that provider the primary, ahead of the configured roster; `--model` is required when no model is chosen for it. |
 | `--workspace PATH` | Workspace root (default: current directory). |
 | `--quiet` | Suppress tool/progress lines on stderr in text mode. |
 
@@ -776,16 +859,17 @@ JSON (json/stream-json modes) goes to **stdout**. Headless runs never prompt:
 actions that would need approval are denied with a note on stderr unless
 `--yes` or `--mode auto-accept` is used.
 
-Exit codes: `0` success, `1` runtime failure (missing key, provider error,
-turn cap without a final answer), `2` invalid usage (bad format, mode, or
-workspace).
+Exit codes: `0` success, `1` runtime failure (missing key or model — `No model
+chosen for <provider>…` on stderr — provider error, turn cap without a final
+answer), `2` invalid usage (bad format, mode, provider, or workspace).
 
-CI example:
+CI example (a fresh runner has no saved config, so pass `--model`):
 
 ```yaml
 - name: Review the diff
   run: |
     kiwimatecoder -p "Review the staged diff and list risks." \
+      --model anthropic/claude-sonnet-5 \
       --output-format json --max-turns 10 > review.json
     cat review.json
 ```
@@ -827,12 +911,18 @@ result = run_agent_sync(
     "Summarize README.md in three bullets.",
     workspace=".",
     mode="plan",
+    model="anthropic/claude-sonnet-5",  # omit to use the provider's chosen model
 )
 
 if result.success:
     print(result.text)
 print(result.usage, result.cost_usd)  # tokens and estimated USD (or None)
 ```
+
+Without `model=`, the run uses the model chosen for the provider. When there
+is none, `run_agent`/`run_agent_sync` raise
+`kiwimatecoder.config.ModelNotChosenError` (a `ValueError`) before contacting
+the provider.
 
 `RunResult` carries `text`, `usage` (`prompt_tokens`/`completion_tokens`),
 `cost_usd`, `provider`, `model`, `mode`, `tools_used`, `messages`, `success`,
@@ -893,6 +983,7 @@ Run an agent task detached from your terminal, then check on it later:
 
 ```bash
 kiwimatecoder jobs run "Add type hints to kiwimatecoder/jobs.py and run mypy."
+kiwimatecoder jobs run "Fix the failing test." --provider openai --model gpt-5.6-sol
 kiwimatecoder jobs list
 kiwimatecoder jobs show <id>
 kiwimatecoder jobs output <id>
@@ -904,7 +995,10 @@ Each job is one headless run (`python -m kiwimatecoder -p ... --output-format
 json`) recorded as JSON under `~/.kiwimatecoder/jobs/<id>.json` with its combined
 output at `~/.kiwimatecoder/jobs/<id>.log`. Records survive restarts; `jobs list`
 refreshes running jobs from their process and parsed result, and corruption in
-one record never hides the others.
+one record never hides the others. A job uses the model chosen for its provider
+unless `--model` is passed; `jobs run` and `jobs schedule` check this before
+starting anything and exit `1` with `No model chosen for <provider>…` when
+there is neither.
 
 > **Warning:** `jobs run` defaults to `--mode auto-accept`, so an unattended job
 > can edit files and run commands without asking. Pass `--mode ask` (approvals
@@ -922,8 +1016,10 @@ Scheduling is pull-based — there is no daemon and no platform cron integration
 `jobs schedule "<prompt>" --every <seconds>` starts a run immediately and stores
 the interval plus a `next_run_at` timestamp; every later invocation of
 `kiwimatecoder jobs tick` (or `/jobs tick`) starts any run that is due. A job
-that is still running is skipped, so runs never overlap. Wire `jobs tick` to
-your own scheduler, for example:
+that is still running is skipped, so runs never overlap. A due job that cannot
+start (its workspace is gone, its provider was removed, or no model is chosen)
+is left in place and reported as `Skipped <id>: <reason>`; `jobs tick` then
+exits `1`. Wire `jobs tick` to your own scheduler, for example:
 
 ```cron
 */5 * * * * kiwimatecoder jobs tick
@@ -1529,16 +1625,27 @@ the agent. `/config` does not manage hooks yet — edit the JSON directly.
 
 ## Configuration
 
-Global settings live in `~/.kiwimatecoder/config.json` (provider keys, default
-provider/model, default mode, sampling, output style, theme/color/output/ASCII
-preferences, custom prompt, and persisted tool approvals). The original
-single-key `~/.kiwimatecoder/config` format is read automatically, so existing
-setups keep working.
+Global settings live in `~/.kiwimatecoder/config.json` (provider keys, the
+default provider, the model chosen for each provider under `provider_models`,
+default mode, sampling, output style, theme/color/output/ASCII preferences,
+custom prompt, and persisted tool approvals). The original single-key
+`~/.kiwimatecoder/config` format is read automatically, so existing setups keep
+working. Config files from before per-provider models (version 2 or older) are
+migrated on load: a model saved with `config model set` becomes the primary provider's
+choice, and a custom provider's `default_model` becomes its chosen model.
+Built-in providers that never had a model chosen ask for one. A custom provider
+whose id is now built in (a hand-made `kiwimate`) is renamed to
+`kiwimate-custom`, keeping its stored key, model, filter, and the profiles that
+used it; if it read its key from `KIWIMATE_API_KEY`, it now reads
+`KIWIMATE_CUSTOM_API_KEY` so the built-in and the custom provider never share a
+key.
 
 A project can pin its own settings in `.kiwimatecoder.json` at the repository
 root (or wherever `KIWIMATECODER_PROJECT_CONFIG` points). Project values
 override global config — useful for pinning a provider, model, mode, sampling,
-or permissions per repository. API keys are never read from project files.
+or permissions per repository. A pinned `selected_model` applies to the primary
+provider only and wins over the model chosen for it. API keys are never read
+from project files.
 
 A shared **team policy** file can be layered on top of both (see
 [Team policies and session sharing](#team-policies-and-session-sharing)); it is
@@ -1553,7 +1660,8 @@ Prompt history lives in `~/.kiwimatecoder/history` and session autosaves in
 `~/.kiwimatecoder/sessions/last.json`. Both can be deleted at any time.
 
 Run `kiwimatecoder doctor` (or `/doctor`) to check config paths, key status,
-provider reachability, the model catalog, and the workspace.
+provider reachability, the model catalog, whether a model is chosen, and the
+workspace.
 
 ## Profiles
 
@@ -1660,12 +1768,15 @@ or edit `~/.kiwimatecoder/config.json` directly:
 ```
 
 The policy file may only control these keys: `default_mode`,
-`selected_provider`, `active_providers`, `selected_model`, `model_filters`,
-`command_rules`, `tool_permissions`, `sampling`, `trusted_workspace`,
+`selected_provider`, `active_providers`, `selected_model`,
+`model_filters`, `command_rules`, `tool_permissions`, `sampling`, `trusted_workspace`,
 `output_style`, `system_prompt`, `verify_command`, `budget`, `mcp_servers`,
 `plugins`, `subagents`, `sandbox`, `remote`, and `network`. `keys`, `version`,
 and `team` are ignored, so a policy can never carry API keys or weaken its own
-enforcement. Unknown keys are reported as warnings.
+enforcement. Unknown keys are reported as warnings. The per-provider model
+choices (`provider_models`) are deliberately not a policy key — an enforced
+policy would replace every provider's choice at once — so a team pins the
+primary provider's model with `selected_model`.
 
 - **Advisory** (`enforce: false`): policy values override global and project
   values, but project config still fills in any key the policy does not set.
@@ -1715,7 +1826,8 @@ Privacy notes:
 issues, exiting non-zero when any error-level problem is found. It surfaces
 exactly what the tolerant getters would silently drop: unknown top-level keys
 (warning), malformed provider/model-filter/sampling/budget/hook/command-rule/
-profile/MCP/plugin entries, invalid regexes, unknown hook events, bad network
+profile/MCP/plugin entries, a model chosen for an unknown provider in
+`provider_models` (warning), invalid regexes, unknown hook events, bad network
 (proxy/CA/offline) values, bad ACP permission timeouts, a missing or corrupt
 team policy file, and bad default mode,
 output style, UI (theme/color/ASCII/output mode), or workspace-flag values.
@@ -1760,8 +1872,10 @@ error is always a failure unless the case explicitly expects `success: false`.
 Cases live in `evals/cases/*.json` and are discovered sorted by `name`. Copy
 one as a starting point, or point `--dir` at another directory. The command
 exits `0` when every case passes, `1` when any case fails, and `2` on invalid
-input (bad directory, malformed JSON, unknown provider). Eval runs call a real
-model, so they need a configured provider key (`kiwimatecoder setup`); each
+input (bad directory, malformed JSON, unknown provider, or no `--model` passed
+and none chosen for the provider — `No model chosen for <provider>…`). Eval
+runs call a real model, so they need a configured provider key and a chosen
+model (`kiwimatecoder setup`) or `--model`; each
 case runs in a throwaway temp workspace and nothing is recorded beyond the
 report you ask for. Expectations are deterministic — there is no model-graded
 scoring yet.

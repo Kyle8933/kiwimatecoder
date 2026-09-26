@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from kiwimatecoder import config, main, sdk
 from kiwimatecoder.evals import cases as eval_cases
 from kiwimatecoder.evals import runner
+from kiwimatecoder.providers import REGISTRY
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,8 +23,8 @@ def isolate_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
-    for name in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
-        monkeypatch.delenv(name, raising=False)
+    for provider in REGISTRY.values():
+        monkeypatch.delenv(provider.key_env, raising=False)
 
 
 def _write_case(directory: Path, filename: str, payload: dict) -> Path:
@@ -386,6 +387,8 @@ def test_run_suite_filter_selects_matching_cases(tmp_path, monkeypatch):
         return runner.EvalResult(name=case.name, success=True)
 
     monkeypatch.setattr(runner, "run_case", fake_run_case)
+    # No --model: the model chosen for the configured provider is enough.
+    config.set_provider_model("openrouter", "test-model")
 
     report = runner.run_suite(cases_dir, filter="ALP")
 
@@ -407,6 +410,50 @@ def test_run_suite_empty_directory_raises(tmp_path):
 
     with pytest.raises(eval_cases.CaseError, match="No eval cases found"):
         runner.run_suite(cases_dir)
+
+
+def _forbid_run_case(monkeypatch):
+    def fake_run_case(case, **kwargs):
+        raise AssertionError("no case may run without a model")
+
+    monkeypatch.setattr(runner, "run_case", fake_run_case)
+
+
+def test_run_suite_without_a_chosen_model_raises_before_running(tmp_path, monkeypatch):
+    cases_dir = tmp_path / "cases"
+    _write_case(cases_dir, "a.json", {"name": "alpha", "prompt": "p", "expect": {}})
+    _forbid_run_case(monkeypatch)
+    report_path = tmp_path / "report.json"
+
+    with pytest.raises(eval_cases.CaseError, match="No model chosen for OpenRouter"):
+        runner.run_suite(cases_dir, report_path=report_path)
+    with pytest.raises(eval_cases.CaseError, match="No model chosen for OpenAI"):
+        runner.run_suite(cases_dir, provider="openai")
+
+    assert not report_path.exists()
+
+
+def test_run_suite_unknown_provider_raises_case_error(tmp_path, monkeypatch):
+    cases_dir = tmp_path / "cases"
+    _write_case(cases_dir, "a.json", {"name": "alpha", "prompt": "p", "expect": {}})
+    _forbid_run_case(monkeypatch)
+
+    with pytest.raises(eval_cases.CaseError, match="Unknown provider 'ghost'"):
+        runner.run_suite(cases_dir, provider="ghost", model="test-model")
+
+
+def test_run_suite_reports_missing_cases_before_a_missing_model(tmp_path, monkeypatch):
+    _forbid_run_case(monkeypatch)
+    assert config.get_provider_model("openrouter") == ""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    cases_dir = tmp_path / "cases"
+    _write_case(cases_dir, "a.json", {"name": "alpha", "prompt": "p", "expect": {}})
+
+    with pytest.raises(eval_cases.CaseError, match="No eval cases found"):
+        runner.run_suite(empty)
+    with pytest.raises(eval_cases.CaseError, match="matched"):
+        runner.run_suite(cases_dir, filter="zzz")
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +544,17 @@ def test_eval_run_unknown_provider_exits_2():
     )
 
     assert result.exit_code == 2
+
+
+def test_eval_run_without_a_chosen_model_exits_2(tmp_path, monkeypatch):
+    cases_dir = tmp_path / "cases"
+    _write_case(cases_dir, "a.json", {"name": "alpha", "prompt": "p", "expect": {}})
+    _forbid_run_case(monkeypatch)
+
+    result = CliRunner().invoke(main.app, ["eval", "run", "--dir", str(cases_dir)])
+
+    assert result.exit_code == 2
+    assert "No model chosen for OpenRouter" in " ".join(result.stdout.split())
 
 
 def test_eval_run_passes_options_to_suite(monkeypatch):

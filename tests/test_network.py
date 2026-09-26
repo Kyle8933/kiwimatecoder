@@ -36,7 +36,6 @@ def _local_provider(**overrides) -> ProviderConfig:
         "id": "local",
         "name": "Local",
         "base_url": "http://localhost:1234/v1",
-        "default_model": "m",
         "key_env": "LOCAL_API_KEY",
     }
     fields.update(overrides)
@@ -190,6 +189,18 @@ def test_offline_blocks_catalog_fetch_without_http():
         catalog.probe(REGISTRY["openrouter"], transport=httpx.MockTransport(_no_http))
         is False
     )
+
+
+def test_offline_blocks_experimental_kiwimate_catalog_fetch():
+    """KiwiMate is a cloud endpoint, so offline mode blocks it like any other."""
+    config.set_network(offline=True)
+
+    with pytest.raises(catalog.CatalogFetchError, match="offline mode"):
+        catalog.fetch_models(
+            REGISTRY["kiwimate"],
+            "sk-km-test",
+            transport=httpx.MockTransport(_no_http),
+        )
 
 
 def test_offline_blocks_embeddings_without_http():

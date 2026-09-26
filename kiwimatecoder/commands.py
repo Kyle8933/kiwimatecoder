@@ -46,6 +46,7 @@ from kiwimatecoder.config import (
     get_profiles,
     get_prompt_cache,
     get_provider_config,
+    get_provider_model,
     get_remote,
     get_sampling,
     get_sandbox,
@@ -66,6 +67,7 @@ from kiwimatecoder.config import (
     remove_provider,
     reset_default_mode,
     reset_sampling,
+    resolve_model,
     save_profile,
     search_model_catalog,
     set_active_providers,
@@ -83,7 +85,7 @@ from kiwimatecoder.config import (
     set_remote,
     set_sampling,
     set_sandbox,
-    set_selected_model,
+    set_provider_model,
     set_selected_provider,
     set_shell_config,
     set_subagents,
@@ -126,10 +128,15 @@ class CommandResult:
 
 @dataclass(frozen=True)
 class CommandOption:
-    """One value offered by an interactive slash-command selector."""
+    """One value offered by an interactive slash-command selector.
+
+    Options that share a ``group`` title are drawn together in their own box
+    above the ungrouped ones (experimental providers use this).
+    """
 
     value: str
     label: str
+    group: str | None = None
 
 
 @dataclass(frozen=True)
@@ -192,7 +199,7 @@ def dispatch(
             if not chosen or any(pid not in valid for pid in chosen):
                 console.print("[red]The selector returned an invalid choice.[/red]")
                 return CommandResult.CONTINUE
-            _apply_provider_checklist(session, console, chosen)
+            _apply_provider_checklist(session, console, chosen, selector)
             return CommandResult.CONTINUE
 
     if not arg and selector is not None:
@@ -211,6 +218,9 @@ def dispatch(
     if name == "model":
         # /model search <term> needs the selector to offer a filtered picker.
         return _model(arg, session, console, selector)
+    if name == "provider":
+        # Switching to a provider with no chosen model asks for one.
+        return _provider(arg, session, console, selector)
     return handler(arg, session, console)
 
 
@@ -306,7 +316,12 @@ def _catalog_status(catalog: ModelCatalog) -> str:
 
 
 def _report_catalog(
-    catalog: ModelCatalog, session: Session, console: Console, *, verbose: bool
+    catalog: ModelCatalog,
+    provider: ProviderConfig,
+    current: str,
+    console: Console,
+    *,
+    verbose: bool,
 ) -> None:
     """Print what a catalog refresh changed.
 
@@ -317,7 +332,7 @@ def _report_catalog(
     if catalog.source == "live":
         if verbose:
             console.print(
-                f"[green]Refreshed {session.provider.name} models[/green] — "
+                f"[green]Refreshed {provider.name} models[/green] — "
                 f"{len(catalog.models)} offered."
             )
         if catalog.added:
@@ -332,11 +347,11 @@ def _report_catalog(
             )
         if verbose and not catalog.added and not catalog.removed:
             console.print("[dim]No changes since the last check.[/dim]")
-        if session.model not in catalog.models:
+        if current and current not in catalog.models:
             console.print(
-                f"[yellow]Current model[/yellow] [cyan]{session.model}[/cyan] "
-                f"[yellow]is no longer offered by {session.provider.name}.[/yellow] "
-                "Pick another with /model, or run /config model reset."
+                f"[yellow]Current model[/yellow] [cyan]{current}[/cyan] "
+                f"[yellow]is no longer offered by {provider.name}.[/yellow] "
+                "Pick another with /model."
             )
         return
 
@@ -350,16 +365,101 @@ def _report_catalog(
         console.print(f"[dim]Using the {_catalog_status(catalog)}.[/dim]")
 
 
+def _provider_catalog(
+    provider: ProviderConfig,
+    current: str,
+    console: Console,
+    *,
+    force: bool = False,
+    verbose: bool = False,
+) -> ModelCatalog:
+    """Resolve ``provider``'s catalog (``current`` pinned first) and report changes."""
+    with console.status(f"Checking {provider.name} for new models…"):
+        catalog = get_model_catalog(provider.id, refresh=True, force=force, keep=(current,))
+    _report_catalog(catalog, provider, current, console, verbose=verbose)
+    return catalog
+
+
 def _model_catalog_for(
     session: Session, console: Console, *, force: bool = False, verbose: bool = False
 ) -> ModelCatalog:
     """Resolve the catalog for the active provider and report what changed."""
-    with console.status(f"Checking {session.provider.name} for new models…"):
-        catalog = get_model_catalog(
-            session.provider_id, refresh=True, force=force, keep=(session.model,)
+    return _provider_catalog(
+        session.provider, session.model, console, force=force, verbose=verbose
+    )
+
+
+def model_selection_prompt(
+    provider: ProviderConfig,
+    current: str = "",
+    console: Console | None = None,
+    *,
+    force: bool = False,
+    title: str | None = None,
+) -> SelectionPrompt:
+    """Offer ``provider``'s models, refreshing its catalog first.
+
+    Session-free so the setup wizard and ``/provider`` can ask for a model for
+    a provider that is not (yet) the session's primary. ``force`` refetches the
+    live listing even when the cache is fresh (e.g. right after a key is set).
+    """
+    quiet = console or Console(quiet=True)
+    catalog = _provider_catalog(provider, current, quiet, force=force)
+    models = apply_model_filter(provider.id, catalog.models)
+    return SelectionPrompt(
+        title=title or f"Choose a model for {provider.name}",
+        text=(
+            f"Choose a model from {provider.name} "
+            f"({provider.id}) — {_catalog_status(catalog)}."
+            f"\nCurrent model: {current or '(none chosen)'}"
+        ),
+        options=tuple(CommandOption(model, model) for model in models),
+        selected=current if current in models else None,
+        empty_message=(
+            f"No models are visible for {provider.id}. "
+            "Use /config models clear or /model <name>."
+        ),
+    )
+
+
+def _warn_if_no_model(session: Session, console: Console) -> None:
+    """Point at /model when the session's provider has no chosen model."""
+    if not session.model:
+        console.print(
+            f"[yellow]No model chosen for {session.provider.name} — choose one "
+            "with /model.[/yellow]"
         )
-    _report_catalog(catalog, session, console, verbose=verbose)
-    return catalog
+
+
+def _model_hint(provider: ProviderConfig, session: Session) -> str:
+    """The command that chooses a model for ``provider`` in this session."""
+    if provider.id == session.provider_id:
+        return "/model"
+    return f"/config model set <model> {provider.id}"
+
+
+def _choose_provider_model(
+    provider: ProviderConfig,
+    session: Session,
+    console: Console,
+    selector: CommandSelector | None,
+) -> str:
+    """Ask for (and persist) a model for ``provider``; return it, or "".
+
+    There are no default models, so adding a provider is when its model is
+    chosen. Without an interactive selector, say how to choose one instead.
+    """
+    if selector is not None:
+        prompt = model_selection_prompt(provider, "", console)
+        chosen = _run_selector(selector, prompt) if prompt.options else None
+        if chosen:
+            set_provider_model(provider.id, chosen)
+            return chosen
+    console.print(
+        f"[yellow]No model chosen for {provider.name} — choose one with "
+        f"{_model_hint(provider, session)}.[/yellow]"
+    )
+    return ""
 
 
 def _print_model_catalog(session: Session, console: Console, catalog: ModelCatalog) -> None:
@@ -440,7 +540,7 @@ def _model_search(
 
 def _model(arg: str, session: Session, console: Console, selector: CommandSelector | None = None) -> str:
     if not arg:
-        console.print(f"Current model: [cyan]{session.model}[/cyan]")
+        console.print(f"Current model: [cyan]{session.model or '(none chosen)'}[/cyan]")
         return CommandResult.CONTINUE
 
     parts = arg.strip().split(maxsplit=1)
@@ -466,66 +566,124 @@ def _model(arg: str, session: Session, console: Console, selector: CommandSelect
 
 
 def _apply_model(session: Session, model: str, console: Console) -> None:
-    """Switch the session model and remember it as the default for next time."""
+    """Switch the session model and remember it as this provider's choice."""
     session.model = model
-    set_selected_model(model)
+    try:
+        set_provider_model(session.provider_id, model)
+    except KeyError:
+        pass  # a loaded session's provider may no longer exist in config
     console.print(f"Model set to [cyan]{model}[/cyan].")
 
 
-def _provider(arg: str, session: Session, console: Console) -> str:
+def _provider(
+    arg: str,
+    session: Session,
+    console: Console,
+    selector: CommandSelector | None = None,
+) -> str:
     if not arg:
         active = {p.id for p in session.active_providers}
         table = Table(title="Providers", show_header=True)
         table.add_column("id", style="cyan")
         table.add_column("name")
-        table.add_column("default model")
+        table.add_column("model")
         for p in list_provider_configs():
             if p.id in active:
                 marker = " (primary)" if p.id == session.provider_id else " (active)"
             else:
                 marker = ""
-            table.add_row(p.id + marker, p.name, p.default_model or "(from server)")
+            table.add_row(p.id + marker, _provider_display_name(p), _table_model(p))
         console.print(table)
         return CommandResult.CONTINUE
     try:
-        get_provider_config(arg)
+        provider = get_provider_config(arg)
     except KeyError as exc:
         console.print(f"[red]{exc}[/red]")
         return CommandResult.CONTINUE
     session.set_active_providers(set_active_providers([arg]))
+    if not session.model:
+        session.model = _choose_provider_model(provider, session, console, selector)
     console.print(
         f"Provider set to [cyan]{session.provider_id}[/cyan] "
-        f"(model: [cyan]{session.model}[/cyan])."
+        f"(model: [cyan]{session.model or '(none chosen)'}[/cyan])."
     )
     return CommandResult.CONTINUE
 
 
 def _apply_provider_checklist(
-    session: Session, console: Console, provider_ids: list[str]
+    session: Session,
+    console: Console,
+    provider_ids: list[str],
+    selector: CommandSelector | None = None,
 ) -> None:
-    """Persist and apply a checked list of active providers."""
+    """Persist and apply a checked list of active providers.
+
+    Every checked provider without a chosen model is asked for one (when a
+    selector is available), since there are no default models.
+    """
     try:
         ids = set_active_providers(provider_ids)
     except (KeyError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
         return
     session.set_active_providers(ids)
+    for provider_id in ids:
+        if session.model_for(provider_id):
+            continue
+        chosen = _choose_provider_model(
+            get_provider_config(provider_id), session, console, selector
+        )
+        if chosen and provider_id == session.provider_id:
+            session.model = chosen
     primary = ids[0]
     fallbacks = ids[1:]
     summary = (
         f"Active providers: [cyan]{', '.join(ids)}[/cyan] "
-        f"(primary: [cyan]{primary}[/cyan], model: [cyan]{session.model}[/cyan])."
+        f"(primary: [cyan]{primary}[/cyan], "
+        f"model: [cyan]{session.model or '(none chosen)'}[/cyan])."
     )
     if fallbacks:
         summary += f"\n[dim]Fallbacks in order: {', '.join(fallbacks)}[/dim]"
     console.print(summary)
 
 
-def _provider_default_label(provider: ProviderConfig) -> str:
-    """Provider label fallback for locals with no static default model."""
-    if provider.default_model:
-        return provider.default_model
-    return "key required (local)" if provider.requires_key else "no key needed (local)"
+EXPERIMENTAL_GROUP = "Experimental"
+
+
+def _provider_model_label(provider: ProviderConfig) -> str:
+    """What to show for a provider's model: the one chosen for it, if any."""
+    chosen = get_provider_model(provider.id)
+    if chosen:
+        return chosen
+    if provider.is_local:
+        return "key required (local)" if provider.requires_key else "no key needed (local)"
+    return "no model chosen"
+
+
+def _provider_option(provider: ProviderConfig, role: str = "") -> CommandOption:
+    """A provider picker option; experimental providers get their own box.
+
+    The role and model come before the description so a narrow terminal
+    truncates the least useful part.
+    """
+    details = [_provider_model_label(provider)]
+    if provider.description:
+        details.append(provider.description)
+    return CommandOption(
+        provider.id,
+        f"{provider.name}{role} — {' · '.join(details)}",
+        group=EXPERIMENTAL_GROUP if provider.experimental else None,
+    )
+
+
+def _provider_display_name(provider: ProviderConfig) -> str:
+    """Provider name for tables, flagged when experimental."""
+    return f"{provider.name} (experimental)" if provider.experimental else provider.name
+
+
+def _table_model(provider: ProviderConfig) -> str:
+    """The model column of provider tables."""
+    return get_provider_model(provider.id) or ("(from server)" if provider.is_local else "—")
 
 
 def _multi_selection_prompt(session: Session) -> MultiSelectionPrompt | None:
@@ -541,26 +699,24 @@ def _multi_selection_prompt(session: Session) -> MultiSelectionPrompt | None:
     seen = set(roster)
     ordered.extend(provider for provider in providers if provider.id not in seen)
 
-    def _label(provider: ProviderConfig) -> str:
-        default = _provider_default_label(provider)
+    def _option(provider: ProviderConfig) -> CommandOption:
         if roster and provider.id == roster[0]:
             role = " (primary)"
         elif provider.id in roster:
             role = f" (fallback {roster.index(provider.id)})"
         else:
             role = ""
-        return f"{provider.name} — {default}{role}"
+        return _provider_option(provider, role)
 
     return MultiSelectionPrompt(
         title="Select active providers",
         text=(
             "Check every provider you want on the failover roster. The first "
             "checked provider is the primary; later checks are fallbacks "
-            "tried in that order if the primary fails."
+            "tried in that order if the primary fails. You choose a model for "
+            "each newly added provider next."
         ),
-        options=tuple(
-            CommandOption(provider.id, _label(provider)) for provider in ordered
-        ),
+        options=tuple(_option(provider) for provider in ordered),
         selected=tuple(roster),
     )
 
@@ -979,15 +1135,16 @@ def _config_help(console: Console) -> None:
         ("/config", "Show active providers, model, key, and model filter."),
         ("/config providers", "List built-in and custom providers."),
         (
-            "/config provider add <id> <name> <base_url> <default_model> [key_env] "
+            "/config provider add <id> <name> <base_url> <model> [key_env] "
             "[key_header=...] [key_prefix=...] [api_version=...]",
-            "Add an OpenAI-compatible custom provider. Quote names with spaces. "
-            "Use key_header=api-key key_prefix= api_version=<date> for Azure.",
+            "Add an OpenAI-compatible custom provider and the model to use with "
+            "it. Quote names with spaces. Use key_header=api-key key_prefix= "
+            "api_version=<date> for Azure.",
         ),
         ("/config provider remove <id>", "Remove a custom provider."),
         ("/config provider use <id>", "Persist and switch to a provider."),
         (
-            "/config provider edit <id> name=... base_url=... default_model=... "
+            "/config provider edit <id> name=... base_url=... model=... "
             "[key_env=...] [compat=...] [key_header=...] [key_prefix=...] "
             "[api_version=...]",
             "Update fields of a custom provider.",
@@ -995,8 +1152,14 @@ def _config_help(console: Console) -> None:
         ("/config key set <provider> <key>", "Save an API key."),
         ("/config key remove <provider>", "Remove a stored API key."),
         ("/config key list", "Show which providers have keys configured."),
-        ("/config model set <model>", "Persist the default model."),
-        ("/config model reset", "Use the provider default model."),
+        (
+            "/config model set <model> [provider]",
+            "Choose the model for the active (or named) provider.",
+        ),
+        (
+            "/config model reset [provider]",
+            "Forget the model chosen for the active (or named) provider.",
+        ),
         ("/config mode <set|reset>", "Set or reset the default permission mode."),
         (
             "/config models allow <model> [...]",
@@ -1131,7 +1294,7 @@ def _config_show(session: Session, console: Console) -> None:
     )
     console.print(
         f"Active providers: {active_line}\n"
-        f"Model: [cyan]{session.model}[/cyan]\n"
+        f"Model: [cyan]{session.model or '(none chosen)'}[/cyan]\n"
         f"Key: [cyan]{describe_key(provider.id)}[/cyan] ({provider.key_env})\n"
         f"Model visibility: [cyan]{model_filter['mode']}[/cyan]"
     )
@@ -1199,7 +1362,7 @@ def _config_providers(
         table.add_column("id", style="cyan")
         table.add_column("type")
         table.add_column("name")
-        table.add_column("default model")
+        table.add_column("model")
         table.add_column("auth")
         table.add_column("base URL")
         active = {item.id for item in session.active_providers}
@@ -1210,6 +1373,8 @@ def _config_providers(
                 marker = ""
             if provider.is_local:
                 kind = "local"
+            elif provider.experimental:
+                kind = "experimental"
             else:
                 kind = "built-in" if provider.id in REGISTRY else "custom"
             auth = provider.key_header
@@ -1219,7 +1384,7 @@ def _config_providers(
                 provider.id + marker,
                 kind,
                 provider.name,
-                provider.default_model or "(from server)",
+                _table_model(provider),
                 auth,
                 provider.base_url,
             )
@@ -1232,11 +1397,11 @@ def _config_providers(
         if len(rest) < 4:
             console.print(
                 "[yellow]Usage: /config provider add <id> <name> "
-                "<base_url> <default_model> [key_env] [key_header=...] "
-                "[key_prefix=...] [api_version=...][/yellow]"
+                "<base_url> <model> \\[key_env] \\[key_header=...] "
+                "\\[key_prefix=...] \\[api_version=...][/yellow]"
             )
             return
-        provider_id, name, base_url, default_model = rest[:4]
+        provider_id, name, base_url, model = rest[:4]
         extras = rest[4:]
         key_env: str | None = None
         if extras and "=" not in extras[0]:
@@ -1263,7 +1428,7 @@ def _config_providers(
                 provider_id,
                 name,
                 base_url,
-                default_model,
+                model,
                 key_env,
                 **options,
             )
@@ -1272,7 +1437,7 @@ def _config_providers(
             return
         console.print(
             f"[green]Added provider[/green] [cyan]{provider.id}[/cyan] "
-            f"({provider.name})."
+            f"({provider.name}) with model [cyan]{model}[/cyan]."
         )
         return
 
@@ -1292,6 +1457,7 @@ def _config_providers(
             remaining = [pid for pid in roster if pid != provider_id]
             session.set_active_providers(remaining or [DEFAULT_PROVIDER_ID])
         console.print(f"[green]Removed provider[/green] [cyan]{provider_id}[/cyan].")
+        _warn_if_no_model(session, console)
         return
 
     if action in {"use", "select", "set"}:
@@ -1307,15 +1473,16 @@ def _config_providers(
             return
         console.print(
             f"Provider set to [cyan]{session.provider_id}[/cyan] "
-            f"(model: [cyan]{session.model}[/cyan])."
+            f"(model: [cyan]{session.model or '(none chosen)'}[/cyan])."
         )
+        _warn_if_no_model(session, console)
         return
 
     if action in {"edit", "update"}:
         if len(rest) < 2:
             console.print(
                 "[yellow]Usage: /config provider edit <id> name=... "
-                "base_url=... default_model=... key_env=... compat=... "
+                "base_url=... model=... key_env=... compat=... "
                 "key_header=... key_prefix=... api_version=...[/yellow]"
             )
             return
@@ -1323,7 +1490,8 @@ def _config_providers(
         known_fields = {
             "name",
             "base_url",
-            "default_model",
+            "model",
+            "default_model",  # older spelling of model=
             "key_env",
             "compat",
             "key_header",
@@ -1335,7 +1503,7 @@ def _config_providers(
             if "=" not in pair:
                 console.print(
                     f"[yellow]Expected field=value, got '{pair}'. "
-                    "Known fields: name, base_url, default_model, key_env, "
+                    "Known fields: name, base_url, model, key_env, "
                     "compat, key_header, key_prefix, api_version.[/yellow]"
                 )
                 return
@@ -1344,16 +1512,21 @@ def _config_providers(
             if field not in known_fields:
                 console.print(
                     f"[yellow]Unknown provider field '{field}'. "
-                    "Known fields: name, base_url, default_model, key_env, "
+                    "Known fields: name, base_url, model, key_env, "
                     "compat, key_header, key_prefix, api_version.[/yellow]"
                 )
                 return
-            kwargs[field] = value
+            kwargs["model" if field == "default_model" else field] = value
         try:
             provider = update_provider(provider_id, **kwargs)
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
             return
+        if "model" in kwargs:
+            if provider.id == session.provider_id:
+                session.model = kwargs["model"].strip()
+            else:
+                session.models.pop(provider.id, None)
         console.print(
             f"[green]Updated provider[/green] [cyan]{provider.id}[/cyan]."
         )
@@ -1505,24 +1678,53 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
     rest = action_parts[1:]
 
     if action == "show":
-        console.print(f"Current model: [cyan]{session.model}[/cyan]")
+        console.print(f"Current model: [cyan]{session.model or '(none chosen)'}[/cyan]")
         return
     if action == "set":
         if not rest:
-            console.print("[yellow]Usage: /config model set <model>[/yellow]")
+            console.print("[yellow]Usage: /config model set <model> \\[provider][/yellow]")
             return
         model = rest[0]
-        set_selected_model(model)
-        session.model = model
-        console.print(f"[green]Default model set to[/green] [cyan]{model}[/cyan].")
+        provider_id = rest[1] if len(rest) > 1 else session.provider_id
+        try:
+            provider = get_provider_config(provider_id)
+            set_provider_model(provider_id, model)
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        if provider_id == session.provider_id:
+            session.model = model
+        else:
+            # Drop any per-session override (e.g. from /load) so failover
+            # uses the choice just saved.
+            session.models.pop(provider_id, None)
+        console.print(
+            f"[green]Model for {provider.name} set to[/green] [cyan]{model}[/cyan]."
+        )
         return
     if action in {"reset", "clear"}:
-        set_selected_model(None)
-        session.model = session.provider.default_model
-        console.print(
-            f"[green]Default model reset.[/green] "
-            f"Using [cyan]{session.model}[/cyan]."
-        )
+        provider_id = rest[0] if rest else session.provider_id
+        try:
+            provider = get_provider_config(provider_id)
+            set_provider_model(provider_id, None)
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+        session.models.pop(provider_id, None)
+        if provider_id != session.provider_id:
+            console.print(f"[green]Model choice for {provider.name} cleared.[/green]")
+            return
+        session.model = resolve_model(provider)
+        if session.model:
+            console.print(
+                f"[green]Model choice cleared.[/green] Using "
+                f"[cyan]{session.model}[/cyan] from the {provider.name} server."
+            )
+        else:
+            console.print(
+                f"[green]Model choice for {provider.name} cleared.[/green] "
+                "Choose one with /model before chatting."
+            )
         return
     console.print("[yellow]Unknown model config action. Try /config help.[/yellow]")
 
@@ -2812,7 +3014,7 @@ def _config_profile(
             table.add_row(
                 name,
                 str(values.get("provider") or ""),
-                str(values.get("model") or "(provider default)"),
+                str(values.get("model") or "(provider's chosen model)"),
                 str(values.get("mode") or ""),
             )
         console.print(table)
@@ -2859,9 +3061,10 @@ def _config_profile(
         console.print(
             f"[green]Applied profile [cyan]{name}[/cyan][/green] — "
             f"provider: [cyan]{session.provider_id}[/cyan], "
-            f"model: [cyan]{session.model}[/cyan], "
+            f"model: [cyan]{session.model or '(none chosen)'}[/cyan], "
             f"mode: [cyan]{session.mode.value}[/cyan]."
         )
+        _warn_if_no_model(session, console)
         return
 
     if action in {"remove", "rm", "delete"}:
@@ -3073,7 +3276,7 @@ def _config_interact(
             CommandOption("show", "Show active providers, model, key, filter"),
             CommandOption("providers", "List providers (add/remove/use/edit)"),
             CommandOption("keys", "Set or remove an API key"),
-            CommandOption("model", "Set or reset the default model"),
+            CommandOption("model", "Choose or forget the provider's model"),
             CommandOption("models", "Manage model visibility / refresh catalog"),
             CommandOption("mode", "Set the default permission mode"),
             CommandOption("permissions", "Manage tools approved with 'always'"),
@@ -3113,7 +3316,11 @@ def _config_interact(
             title="Choose a provider",
             text="Which provider's API key do you want to change?",
             options=tuple(
-                CommandOption(provider.id, provider.name)
+                CommandOption(
+                    provider.id,
+                    provider.name,
+                    group=EXPERIMENTAL_GROUP if provider.experimental else None,
+                )
                 for provider in list_provider_configs()
             ),
             selected=session.provider_id,
@@ -3238,6 +3445,7 @@ def _load(arg: str, session: Session, console: Console) -> str:
             f"[green]Loaded session [bold]{arg.strip()}[/bold]: "
             f"{len(session.messages)} messages, provider={session.provider_id}:{session.model}[/green]"
         )
+        _warn_if_no_model(session, console)
     except Exception as exc:
         console.print(f"[red]Failed to load session: {exc}[/red]")
     return CommandResult.CONTINUE
@@ -3720,14 +3928,19 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
         return CommandResult.CONTINUE
 
     if action == "tick":
-        started = jobs_module.run_due_jobs()
-        if not started:
+        skipped: list[tuple[Any, str]] = []
+        started = jobs_module.run_due_jobs(skipped=skipped)
+        if not started and not skipped:
             console.print("[dim]No jobs are due.[/dim]")
             return CommandResult.CONTINUE
         for job in started:
             console.print(
                 f"[green]Started[/green] [cyan]{job.id}[/cyan] "
                 f"([dim]{escape(_shorten(job.prompt, 60))}[/dim])"
+            )
+        for job, reason in skipped:
+            console.print(
+                f"[yellow]Skipped[/yellow] [cyan]{job.id}[/cyan]: {escape(reason)}"
             )
         return CommandResult.CONTINUE
 
@@ -3968,7 +4181,7 @@ _HELP_GROUPS = [
         [
             (
                 "/config",
-                "Show or change providers, API keys, model defaults, model "
+                "Show or change providers, API keys, chosen models, model "
                 "filters, themes, output modes, and accessibility settings.",
             ),
             ("/config help", "List every /config command."),
@@ -4002,7 +4215,7 @@ _COMMAND_DESCRIPTIONS = {
     "context": "Manage pinned files included with each turn.",
     "ctx": "Alias for /context.",
     "config": (
-        "Show or change providers, API keys, model defaults, and model filters."
+        "Show or change providers, API keys, chosen models, and model filters."
     ),
     "cost": "Show token usage for this session.",
     "doctor": "Run environment, config, and provider diagnostics.",
@@ -4066,7 +4279,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "key": "Save, remove, or list API keys.",
     "keys": "Save, remove, or list API keys.",
     "use": "Persist and switch provider.",
-    "model": "Set or reset the default model.",
+    "model": "Choose or forget the model for a provider.",
     "models": "Refresh the model catalog or manage allow/deny filters.",
     "mode": "Set or reset the default permission mode.",
     "permissions": "List or remove tools approved with 'always'.",
@@ -4130,22 +4343,8 @@ def _selection_prompt(
     the prompt can skip the reporting.
     """
     if name == "model":
-        quiet = console or Console(quiet=True)
-        catalog = _model_catalog_for(session, quiet)
-        models = apply_model_filter(session.provider_id, catalog.models)
-        return SelectionPrompt(
-            title="Select model",
-            text=(
-                f"Choose a model from {session.provider.name} "
-                f"({session.provider_id}) — {_catalog_status(catalog)}."
-                f"\nCurrent model: {session.model}"
-            ),
-            options=tuple(CommandOption(model, model) for model in models),
-            selected=session.model if session.model in models else None,
-            empty_message=(
-                f"No models are visible for {session.provider_id}. "
-                "Use /config models clear or /model <name>."
-            ),
+        return model_selection_prompt(
+            session.provider, session.model, console, title="Select model"
         )
 
     if name == "provider":
@@ -4153,13 +4352,7 @@ def _selection_prompt(
         return SelectionPrompt(
             title="Select provider",
             text="Choose the provider to use for this session.",
-            options=tuple(
-                CommandOption(
-                    provider.id,
-                    f"{provider.name} — {_provider_default_label(provider)}",
-                )
-                for provider in providers
-            ),
+            options=tuple(_provider_option(provider) for provider in providers),
             selected=session.provider_id,
         )
 
