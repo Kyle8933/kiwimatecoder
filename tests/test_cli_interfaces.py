@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -157,6 +159,26 @@ def test_man_page_documents_model_choice_and_the_kiwimate_key():
     assert "KiwiMate API key (experimental provider)." in text
     # A missing model is a runtime failure (exit 1), like a missing key.
     assert "missing API key, no model chosen, or a provider error" in text
+
+
+def test_man_page_type_names_do_not_depend_on_the_click_version():
+    # typer 0.27+ vendors click and names its types "str"/"int" rather than
+    # "text"/"integer"; the generated page must not change with the version.
+    spec = importlib.util.spec_from_file_location(
+        "generate_man", ROOT / "scripts" / "generate_man.py"
+    )
+    assert spec is not None and spec.loader is not None
+    generate_man = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generate_man)
+
+    def metavar(type_name: str) -> str:
+        return generate_man._metavar(SimpleNamespace(type=SimpleNamespace(name=type_name)))
+
+    assert metavar("str") == metavar("text") == "TEXT"
+    assert metavar("int") == metavar("integer") == "INTEGER"
+    assert metavar("bool") == metavar("boolean") == "BOOLEAN"
+    assert metavar("float") == "FLOAT"
+    assert metavar("path") == "PATH"
 
 
 def test_committed_man_page_matches_the_generator():

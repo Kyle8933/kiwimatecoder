@@ -58,9 +58,15 @@ def _italic(text: str) -> str:
     return r"\fI" + text.replace("-", r"\-") + r"\fP"
 
 
+# typer 0.27+ vendors click with shorter type names ("str", "int"). Mapping
+# them back keeps the page identical whichever typer/click CI installs.
+_TYPE_NAMES = {"str": "text", "int": "integer", "bool": "boolean"}
+
+
 def _metavar(param: click.Parameter) -> str:
     """A short uppercase placeholder for an option or a positional argument."""
     type_name = getattr(param.type, "name", "text") or "text"
+    type_name = _TYPE_NAMES.get(type_name.lower(), type_name)
     return type_name.upper().replace("_", " ")
 
 
