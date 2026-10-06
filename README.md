@@ -184,6 +184,9 @@ paths outside the workspace root; writes stay sandboxed.
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
+| `/image [--size WxH] [--model id] <prompt>` | Generate an image with the configured media provider and attach it to your next message (opt-in; see [Image and video generation](#image-and-video-generation)). |
+| `/video [--duration s] [--size 720p] [--model id] [--image path] <prompt>`, `/video resume <job-id>` | Generate a short video (billed per second; takes minutes), or fetch a job that was still rendering. |
+| `/media [list [count]]` | Show whether image and video generation are ready and list recently generated files. |
 | `/memory [list\|add\|add-user\|clear]` | Show or edit persistent project and user memory. |
 | `/index [status\|build\|clear]` | Show, refresh, or delete the local codebase index used by semantic search. |
 | `/jobs [list\|show <id>\|cancel <id>\|tick\|run <prompt>]` | List or manage detached background agent jobs; `tick` starts due scheduled runs. |
@@ -254,6 +257,9 @@ The assistant has these capabilities, all scoped to the workspace:
   always allowed; batches of read-only calls run in parallel.
 - `view_image` — attach a workspace image (`.png`, `.jpg`, `.jpeg`, `.gif`,
   `.webp`) so a vision-capable model can see it (see below).
+- `generate_image`, `generate_video` — create an image or a short video through the
+  configured media provider and save it under `.kiwimatecoder/media/` (opt-in and
+  approval-gated because they cost money; see below).
 - `write_file`, `edit_file` — create/modify files (approval-gated; each is
   checkpointed first so `/undo` can restore it).
 - `run_bash` — run shell commands (approval-gated, subject to command rules).
@@ -583,10 +589,10 @@ native Anthropic providers are supported. Limits live under
 4 images per turn); oversized or invalid images produce a clear message instead
 of a failed request.
 
-### Image generation
+### Image and video generation
 
-Generate images with an OpenAI-compatible image API and attach them to the
-conversation. Generation is **opt-in** and approval-gated because it costs
+Generate images and short videos with your provider's media API and keep them in
+the workspace. Generation is **opt-in** and approval-gated because it costs
 money:
 
 ```text
@@ -597,16 +603,54 @@ money:
 /image a red fox reading a book
 ```
 
-`/image <prompt>` saves a PNG under `.kiwimatecoder/media/` and queues it for
-the next request. The same generation is available to the model as the
+`/image [--size WxH] [--model <id>] <prompt>` saves a PNG under
+`.kiwimatecoder/media/` and queues it for the next request. Options come before
+the prompt, which is taken verbatim (quotes included); use `--` if a prompt
+starts with dashes. The same generation is available to the model as the
 `generate_image` tool: it asks for approval first, with a preview showing the
 provider, model, size, and prompt. Responses are accepted as
 `data[0].b64_json` or `data[0].url` (URL downloads are capped at 20 MB and
-honor offline mode and the local-address guard). Provider auth, API versioning
-(Azure-style `?api-version=`), proxy, and custom CA settings all come from the
-normal config. Configure it from the shell with
-`config media show|enable on|off|model <id>|provider <id>|size <WxH>`.
-Video generation is a follow-up.
+honor offline mode and the local-address guard). OpenAI-compatible providers
+are called at `/images/generations`; OpenRouter at `/images`.
+
+Video uses the same switch and provider but its own model, which you choose
+yourself (there is no default: ids and prices change quickly and a clip is billed
+per second):
+
+```text
+/config media provider openrouter
+/config media video-model <video model id>
+/config media duration 5          # seconds
+/config media video-size 720p     # or 1280x720; "default" clears it
+/video a paper boat drifting down a rainy street
+/video --duration 8 --size 1080p --image start.png the boat starts to sail
+```
+
+`/video [--duration <s>] [--size <WxH|720p>] [--model <id>] [--image <path>]
+<prompt>` submits an asynchronous job, shows live status while it renders
+(usually a few minutes), and streams the finished file to
+`.kiwimatecoder/media/` with a 500 MB cap. `--image` animates a workspace image
+as the first frame (OpenRouter models). Press Ctrl+C to stop waiting: the job
+keeps running (and billing) on the provider, and `/video resume <job-id>` fetches
+it later without paying twice. Polling is bounded to 15 minutes and tolerates
+brief network errors; the API key is only ever sent to the provider's own host,
+never to a download CDN. The model can call the approval-gated `generate_video`
+tool (its preview states the per-second billing); after a timeout it resumes with
+`resume_job_id` rather than regenerating.
+
+Two wire formats are spoken, chosen from the provider's host: OpenRouter
+(`duration`, `resolution`/`size`, `frame_images`, `unsigned_urls`) and the OpenAI
+Videos API (`seconds`, `size`, multipart form, `/videos/<id>/content`). The OpenAI
+format is covered by mocked-transport tests only; please report anything a live
+endpoint rejects.
+
+`/media` shows whether image and video generation are ready (and what is missing:
+disabled, offline, no API key, no video model) and lists the most recent files;
+reference an image from the list with `@<path>` to attach it again. Provider auth,
+API versioning (Azure-style `?api-version=`), proxy, and custom CA settings all
+come from the normal config. Configure it from the shell with
+`config media show|enable on|off|model <id>|provider <id>|size <WxH>|video-model
+<id>|duration <seconds>|video-size <size>|output-dir <path>`.
 
 ## Notebooks, PDFs, and docx
 

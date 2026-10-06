@@ -150,7 +150,7 @@ def config_main(ctx: typer.Context) -> None:
     console.print("  [cyan]config sandbox show[/cyan]        OS-level command sandbox")
     console.print("  [cyan]config remote show[/cyan]         SSH/devcontainer command execution")
     console.print("  [cyan]config acp show[/cyan]            ACP editor-integration timeout")
-    console.print("  [cyan]config media show[/cyan]          Opt-in image generation")
+    console.print("  [cyan]config media show[/cyan]          Opt-in image and video generation")
     console.print("  [cyan]config telemetry show[/cyan]      Opt-in local telemetry and crash reports")
     console.print("Run [cyan]config <section> --help[/cyan] for details.")
 
@@ -171,6 +171,15 @@ def _check() -> str:
     from kiwimatecoder.ui import glyph
 
     return escape(glyph("check"))
+
+
+def _cross() -> str:
+    """Return the active failure glyph, escaped for Rich markup."""
+    from rich.markup import escape
+
+    from kiwimatecoder.ui import glyph
+
+    return escape(glyph("cross"))
 
 
 def _print_ui(current: dict[str, Any]) -> None:
@@ -203,7 +212,7 @@ config_app.add_typer(mode_app, name="mode")
 models_app = typer.Typer(help="Manage model visibility and the model catalog.")
 config_app.add_typer(models_app, name="models")
 
-media_app = typer.Typer(help="Configure opt-in image generation.")
+media_app = typer.Typer(help="Configure opt-in image and video generation.")
 config_app.add_typer(media_app, name="media")
 
 telemetry_app = typer.Typer(
@@ -2434,8 +2443,9 @@ def config_show() -> None:
         "Media: "
         + f"[cyan]{'on' if media_config['enabled'] else 'off'}[/cyan] "
         + f"(provider [cyan]{media_config['provider']}[/cyan], "
-        + f"model [cyan]{media_config['model']}[/cyan], "
+        + f"image model [cyan]{media_config['model']}[/cyan], "
         + f"size [cyan]{media_config['size']}[/cyan], "
+        + f"video model [cyan]{media_config['video_model'] or 'none chosen'}[/cyan], "
         + f"output [cyan]{media_config['output_dir']}[/cyan])"
     )
     telemetry_config = get_telemetry(cfg)
@@ -2500,16 +2510,27 @@ def _print_media(settings: dict[str, Any]) -> None:
     console.print(
         f"Media: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
         f"Provider: [cyan]{settings['provider']}[/cyan]\n"
-        f"Model: [cyan]{settings['model']}[/cyan]\n"
-        f"Size: [cyan]{settings['size']}[/cyan]\n"
+        f"Image model: [cyan]{settings['model']}[/cyan]\n"
+        f"Image size: [cyan]{settings['size']}[/cyan]\n"
+        f"Video model: [cyan]{escape(settings['video_model'] or 'none chosen')}[/cyan]\n"
+        f"Video length: [cyan]{settings['video_duration']}s[/cyan]\n"
+        f"Video size: [cyan]{escape(settings['video_size'] or 'provider default')}[/cyan]\n"
         f"Output dir: [cyan]{settings['output_dir']}[/cyan]"
     )
 
 
 @media_app.command("show")
 def media_show() -> None:
-    """Show image-generation settings."""
+    """Show media settings and readiness."""
+    from kiwimatecoder import media as media_module
+
     _print_media(get_media())
+    for title, video in (("Images", False), ("Video", True)):
+        problems = media_module.readiness(video=video)
+        if problems:
+            console.print(f"[red]{_cross()} {title}:[/red] {escape(problems[0])}")
+        else:
+            console.print(f"[green]{_check()} {title}: ready[/green]")
 
 
 @media_app.command("enable")
@@ -2574,6 +2595,74 @@ def media_size(size: Annotated[str, typer.Argument(help="Image size as WxH")]) -
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Media size set to[/green] [cyan]{size}[/cyan]."
+    )
+
+
+@media_app.command("video-model")
+def media_video_model(
+    model: Annotated[str, typer.Argument(help="Video model id, or 'none' to clear")],
+) -> None:
+    """Set the video generation model."""
+    cleared = model.strip().lower() in {"none", "clear", "default", "-"}
+    try:
+        set_media(video_model="" if cleared else model)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if cleared:
+        console.print(f"[green]{_check()} Video model cleared.[/green]")
+    else:
+        console.print(
+            f"[green]{_check()} Video model set to[/green] [cyan]{escape(model)}[/cyan]."
+        )
+
+
+@media_app.command("duration")
+def media_duration(
+    seconds: Annotated[str, typer.Argument(help="Video length in whole seconds")],
+) -> None:
+    """Set the default video length (seconds)."""
+    try:
+        settings = set_media(video_duration=seconds)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Video length set to[/green] "
+        f"[cyan]{settings['video_duration']}s[/cyan]."
+    )
+
+
+@media_app.command("video-size")
+def media_video_size(
+    size: Annotated[str, typer.Argument(help="WxH or a tier like 720p; 'default' clears")],
+) -> None:
+    """Set the default video size."""
+    cleared = size.strip().lower() in {"none", "clear", "default", "-"}
+    try:
+        settings = set_media(video_size="" if cleared else size)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Video size set to[/green] "
+        f"[cyan]{escape(settings['video_size'] or 'provider default')}[/cyan]."
+    )
+
+
+@media_app.command("output-dir")
+def media_output_dir(
+    path: Annotated[str, typer.Argument(help="Directory inside the workspace")],
+) -> None:
+    """Set the media output directory."""
+    try:
+        settings = set_media(output_dir=path)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{_check()} Media output directory set to[/green] "
+        f"[cyan]{settings['output_dir']}[/cyan]."
     )
 
 
