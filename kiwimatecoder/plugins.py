@@ -28,6 +28,7 @@ from types import ModuleType
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 from kiwimatecoder import commands, config, events, tools
 from kiwimatecoder.events import EventBus, Subscriber
@@ -127,7 +128,7 @@ class PluginAPI:
 
     def log(self, message: str) -> None:
         """Print a dim status line through the loader's console."""
-        self._console.print(f"[dim]plugin {self.name}: {message}[/dim]")
+        self._console.print(f"[dim]plugin {escape(self.name)}: {escape(message)}[/dim]")
 
     def cleanup(self) -> None:
         """Undo every registration this plugin made."""

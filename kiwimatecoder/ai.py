@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 from kiwimatecoder.client import ProviderError, TextDelta, UnifiedClient
 from kiwimatecoder.config import get_prompt_cache, get_sampling, no_model_message, resolve_model
@@ -35,7 +36,7 @@ async def stream_response(
     provider = provider or default_provider()
     model = model or resolve_model(provider)
     if not model:
-        console.print(f"[red]{no_model_message(provider)}[/red]")
+        console.print(f"[red]{escape(no_model_message(provider))}[/red]")
         return
     client = UnifiedClient(
         provider,
@@ -64,4 +65,4 @@ async def stream_response(
             if thinking:
                 status.stop()
     except ProviderError as exc:
-        console.print(f"\n[red]{exc}[/red]")
+        console.print(f"\n[red]{escape(str(exc))}[/red]")

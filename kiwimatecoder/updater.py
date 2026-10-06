@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 
 PACKAGE_NAME = "kiwimatecoder"
 GITHUB_REPO_URL = "https://github.com/Kyle8933/kiwimatecoder.git"
@@ -131,11 +132,11 @@ def _commits_behind(source_root: Path, branch: str | None) -> int | None:
 def _fetch(source_root: Path, console: Console) -> int:
     """Best-effort `git fetch origin`. Failures are non-fatal."""
     command = ["git", "-C", str(source_root), "fetch", "origin"]
-    console.print(f"[dim]{shlex.join(command)}[/dim]")
+    console.print(f"[dim]{escape(shlex.join(command))}[/dim]")
     try:
         completed = subprocess.run(command, text=True)
     except OSError as exc:
-        console.print(f"[yellow]Could not fetch from origin: {exc}[/yellow]")
+        console.print(f"[yellow]Could not fetch from origin: {escape(str(exc))}[/yellow]")
         return 1
     if completed.returncode != 0:
         console.print(
@@ -145,11 +146,11 @@ def _fetch(source_root: Path, console: Console) -> int:
 
 
 def _run(command: list[str], console: Console) -> int:
-    console.print(f"[dim]{shlex.join(command)}[/dim]")
+    console.print(f"[dim]{escape(shlex.join(command))}[/dim]")
     try:
         completed = subprocess.run(command, text=True)
     except OSError as exc:
-        console.print(f"[red]Could not start command: {exc}[/red]")
+        console.print(f"[red]Could not start command: {escape(str(exc))}[/red]")
         return 1
     return completed.returncode
 
@@ -165,11 +166,11 @@ def run_update(console: Console | None = None, ref: str | None = None) -> int:
     console = console or Console()
     console.print("[cyan]Updating KiwiMateCoder...[/cyan]")
     if ref:
-        console.print(f"[dim]Target ref: {ref}[/dim]")
+        console.print(f"[dim]Target ref: {escape(ref)}[/dim]")
 
     source_root = find_source_root()
     if source_root is not None and _has_git_remote(source_root):
-        console.print(f"[dim]Detected source checkout: {source_root}[/dim]")
+        console.print(f"[dim]Detected source checkout: {escape(str(source_root))}[/dim]")
 
         old_sha = _get_short_sha(source_root)
         _fetch(source_root, console)
@@ -179,19 +180,19 @@ def run_update(console: Console | None = None, ref: str | None = None) -> int:
             if branch is not None and ref == branch and _commits_behind(source_root, branch) == 0:
                 console.print(
                     "[green]Already on "
-                    + f"{ref} (commit {old_sha or 'unknown'}).[/green]"
+                    + f"{escape(ref)} (commit {old_sha or 'unknown'}).[/green]"
                 )
                 return 0
             checkout = build_git_checkout_command(
                 source_root, ref, current_branch=branch
             )
             console.print(
-                f"[cyan]Checking out {ref} from {old_sha or 'unknown'}…[/cyan]"
+                f"[cyan]Checking out {escape(ref)} from {old_sha or 'unknown'}…[/cyan]"
             )
             checkout_code = _run(checkout, console)
             if checkout_code != 0:
                 console.print(
-                    f"[red]Update failed while checking out {ref}.[/red] "
+                    f"[red]Update failed while checking out {escape(ref)}.[/red] "
                     + "[yellow]Commit/stash local changes or verify the ref "
                     + "exists (try `git fetch --tags origin`), then try "
                     + "again.[/yellow]"
@@ -202,12 +203,12 @@ def run_update(console: Console | None = None, ref: str | None = None) -> int:
             if new_sha == old_sha:
                 console.print(
                     "[green]Already on "
-                    + f"{ref} (commit {old_sha or 'unknown'}).[/green]"
+                    + f"{escape(ref)} (commit {old_sha or 'unknown'}).[/green]"
                 )
                 return 0
             console.print(
                 f"[dim]Updated {old_sha or 'unknown'} → "
-                + f"{new_sha or ref} (ref {ref}).[/dim]"
+                + f"{new_sha or escape(ref)} (ref {escape(ref)}).[/dim]"
             )
             code = _run(build_source_install_command(source_root), console)
         else:
@@ -223,7 +224,7 @@ def run_update(console: Console | None = None, ref: str | None = None) -> int:
             if old_sha and behind and branch:
                 console.print(
                     f"[cyan]Updating from {old_sha} "
-                    + f"({behind} commit(s) behind origin/{branch})…[/cyan]"
+                    + f"({behind} commit(s) behind origin/{escape(branch)})…[/cyan]"
                 )
             else:
                 console.print(
@@ -261,7 +262,7 @@ def run_update(console: Console | None = None, ref: str | None = None) -> int:
                 f"[red]Update failed with exit code {code}.[/red] "
                 + "[yellow]KiwiMateCoder is not on PyPI; install from a source "
                 + "checkout or run: pip install --upgrade --force-reinstall "
-                + f"{target}[/yellow]"
+                + f"{escape(target)}[/yellow]"
             )
             return code
 

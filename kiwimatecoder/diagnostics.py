@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from kiwimatecoder import __version__, audit, catalog, config
@@ -278,7 +279,11 @@ def render(checks: list[Check], console: Console) -> None:
     table.add_column("Details")
     for check in checks:
         style = _STATUS_STYLE.get(check.status, "white")
-        table.add_row(check.name, f"[{style}]{check.status}[/{style}]", check.detail)
+        table.add_row(
+            escape(check.name),
+            f"[{style}]{check.status}[/{style}]",
+            escape(check.detail),
+        )
     console.print(table)
     failures = sum(1 for check in checks if check.status == FAIL)
     warnings = sum(1 for check in checks if check.status == WARN)

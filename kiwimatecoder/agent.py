@@ -213,7 +213,7 @@ class Agent:
         """Process one user message, looping over tool calls until the model stops."""
         blocked, reason = self._budget_exceeded()
         if blocked:
-            self.console.print(f"[red]{reason}[/red]")
+            self.console.print(f"[red]{escape(reason)}[/red]")
             self._emit("done", reason="budget", error=reason)
             return
 
@@ -244,7 +244,7 @@ class Agent:
                     model_override=routed_model
                 )
             except ProviderError as exc:
-                self.console.print(f"\n[red]{exc}[/red]")
+                self.console.print(f"\n[red]{escape(str(exc))}[/red]")
                 self._emit("error", kind="provider", error=str(exc))
                 self._emit("done", reason="provider_error")
                 return
@@ -341,7 +341,9 @@ class Agent:
         verify_tool = tools.get_tool("run_bash")
         if verify_tool is None:
             return
-        self.console.print(f"\n[bold]Auto-verify:[/bold] [cyan]{command}[/cyan]")
+        self.console.print(
+            f"\n[bold]Auto-verify:[/bold] [cyan]{escape(command)}[/cyan]"
+        )
         t0 = time.perf_counter()
         result = await asyncio.to_thread(
             verify_tool.execute, {"command": command}, self.session
@@ -433,7 +435,9 @@ class Agent:
                 model = self.session.model_for(provider.id)
                 if model_override and provider.id == self.session.provider_id:
                     if model_override != model:
-                        self.console.print(f"[dim]routed to {model_override}[/dim]")
+                        self.console.print(
+                            f"[dim]routed to {escape(model_override)}[/dim]"
+                        )
                     model = model_override
                 if not model:
                     raise ProviderError(
@@ -466,8 +470,8 @@ class Agent:
         if not remaining:
             return
         self.console.print(
-            f"\n[yellow]{provider_name} failed ({exc}); "
-            f"trying {remaining[0].name}.[/yellow]"
+            f"\n[yellow]{escape(provider_name)} failed ({escape(str(exc))}); "
+            f"trying {escape(str(remaining[0].name))}.[/yellow]"
         )
 
     async def _stream_from(
@@ -561,104 +565,92 @@ class Agent:
         return True
 
     def _format_call_summary(self, name: str, args: dict[str, Any]) -> str:
-        """Produce a short human-readable string summarizing the tool call arguments."""
+        """Produce a short human-readable string summarizing the tool call arguments.
+
+        The result is Rich markup, and every value in it comes from the model
+        (a path, a command, a pattern), so each one is escaped: ``app/[slug]/page.tsx``
+        must not lose its ``[slug]`` and ``test_a[/tmp/x]`` must not raise.
+        """
+
+        def clip(value: object, limit: int) -> str:
+            text = str(value or "")
+            return escape(text if len(text) <= limit else f"{text[: limit - 3]}...")
+
         if name in ("read_file", "write_file", "edit_file", "list_dir"):
             target = args.get("path", ".")
-            return f"{name} [dim]{target}[/dim]"
+            return f"{escape(name)} [dim]{escape(str(target))}[/dim]"
         if name == "view_image":
             target = args.get("path", ".")
-            return f"image [dim]{target}[/dim]"
+            return f"image [dim]{escape(str(target))}[/dim]"
         if name == "generate_image":
-            prompt = str(args.get("prompt", "") or "")
-            short = prompt if len(prompt) <= 50 else f"{prompt[:47]}..."
-            return f"image-gen [dim]{short}[/dim]"
+            return f"image-gen [dim]{clip(args.get('prompt'), 50)}[/dim]"
         if name == "generate_video":
             prompt = str(args.get("prompt", "") or "")
             if not prompt and args.get("resume_job_id"):
                 prompt = f"resume {args['resume_job_id']}"
-            short = prompt if len(prompt) <= 50 else f"{prompt[:47]}..."
-            return f"video-gen [dim]{short}[/dim]"
+            return f"video-gen [dim]{clip(prompt, 50)}[/dim]"
         if name == "search":
             pat = args.get("pattern", "")
             mode = args.get("mode", "grep")
-            return f"search [dim]{pat}[/dim] ({mode})"
+            return f"search [dim]{escape(str(pat))}[/dim] ({escape(str(mode))})"
         if name == "run_bash":
-            cmd = str(args.get("command", "") or "")
-            cmd_short = cmd if len(cmd) <= 40 else f"{cmd[:37]}..."
-            return f"bash [dim]`{cmd_short}`[/dim]"
+            return f"bash [dim]`{clip(args.get('command'), 40)}`[/dim]"
         if name == "shell":
-            cmd = str(args.get("command", "") or "")
-            cmd_short = cmd if len(cmd) <= 40 else f"{cmd[:37]}..."
-            return f"shell [dim]`{cmd_short}`[/dim]"
+            return f"shell [dim]`{clip(args.get('command'), 40)}`[/dim]"
         if name == "shell_jobs":
             action = str(args.get("action", "") or "")
-            detail = str(args.get("command") or args.get("id") or "")
-            short = detail if len(detail) <= 40 else f"{detail[:37]}..."
+            short = clip(args.get("command") or args.get("id"), 40)
             suffix = f" [dim]{short}[/dim]" if short else ""
-            return f"shell_jobs [dim]{action}[/dim]{suffix}"
+            return f"shell_jobs [dim]{escape(action)}[/dim]{suffix}"
         if name == "update_todos":
             todos = args.get("todos")
             count = len(todos) if isinstance(todos, list) else 0
             return f"todos [dim]({count} item{'s' if count != 1 else ''})[/dim]"
         if name == "ask_user":
-            question = str(args.get("question", "") or "")
-            short = question if len(question) <= 50 else f"{question[:47]}..."
-            return f"ask [dim]{short}[/dim]"
+            return f"ask [dim]{clip(args.get('question'), 50)}[/dim]"
         if name == "load_skill":
-            skill = str(args.get("name", "") or "")
-            return f"skill [dim]{skill}[/dim]"
+            return f"skill [dim]{escape(str(args.get('name', '') or ''))}[/dim]"
         if name == "web_fetch":
-            url = str(args.get("url", "") or "")
-            short = url if len(url) <= 60 else f"{url[:57]}..."
-            return f"web_fetch [dim]{short}[/dim]"
+            return f"web_fetch [dim]{clip(args.get('url'), 60)}[/dim]"
         if name == "web_search":
-            query = str(args.get("query", "") or "")
-            short = query if len(query) <= 50 else f"{query[:47]}..."
-            return f"web_search [dim]{short}[/dim]"
+            return f"web_search [dim]{clip(args.get('query'), 50)}[/dim]"
         if name in ("git", "git_write", "forge", "forge_write"):
             action = str(args.get("action", "") or "")
-            return f"{name} [dim]{action}[/dim]"
+            return f"{escape(name)} [dim]{escape(action)}[/dim]"
         if name == "remember":
             return "memory [dim]remember[/dim]"
         if name == "recall":
-            query = str(args.get("query", "") or "")
-            short = query if len(query) <= 40 else f"{query[:37]}..."
+            short = clip(args.get("query"), 40)
             return f"memory [dim]recall {short}[/dim]" if short else "memory [dim]recall[/dim]"
         if name == "read_clipboard":
             return "clipboard [dim]read[/dim]"
         if name == "write_clipboard":
-            text = str(args.get("text", "") or "")
-            short = text if len(text) <= 40 else f"{text[:37]}..."
-            return f"clipboard [dim]write {short}[/dim]"
+            return f"clipboard [dim]write {clip(args.get('text'), 40)}[/dim]"
         if name in ("http_get", "http_request"):
-            url = str(args.get("url", "") or "")
-            short = url if len(url) <= 60 else f"{url[:57]}..."
+            short = clip(args.get("url"), 60)
             method = str(args.get("method", "") or "GET").upper()
             label = "GET" if name == "http_get" else method
-            return f"http [dim]{label} {short}[/dim]"
+            return f"http [dim]{escape(label)} {short}[/dim]"
         if name in ("lsp_diagnostics", "lsp_definition", "lsp_references"):
             action = name[len("lsp_") :]
             path = str(args.get("path", "") or "")
             if action == "diagnostics" and not path:
                 return "lsp [dim]diagnostics recent files[/dim]"
-            return f"lsp [dim]{action} {path}[/dim]"
+            return f"lsp [dim]{action} {escape(path)}[/dim]"
         if name == "task":
-            description = str(args.get("description", "") or "")
-            short = description if len(description) <= 50 else f"{description[:47]}..."
-            return f"task [dim]{short}[/dim]"
+            return f"task [dim]{clip(args.get('description'), 50)}[/dim]"
         if name == "browser":
             action = str(args.get("action", "") or "")
-            target = str(
+            target = clip(
                 args.get("url")
                 or args.get("selector")
                 or args.get("script")
-                or args.get("text")
-                or ""
+                or args.get("text"),
+                60,
             )
-            short = target if len(target) <= 60 else f"{target[:57]}..."
-            detail = f"{action} {short}".strip()
+            detail = f"{escape(action)} {target}".strip()
             return f"browser [dim]{detail}[/dim]"
-        return name
+        return escape(name)
 
     # Only purely read-only tools are safe to run concurrently: they do not
     # mutate session state or the workspace.
@@ -747,7 +739,8 @@ class Agent:
                 reason=decision.reason,
             )
             self._print_markup(
-                f"[yellow]{self._glyph('blocked')} {summary}: {decision.reason}[/yellow]"
+                f"[yellow]{self._glyph('blocked')} {summary}: "
+                f"{escape(decision.reason)}[/yellow]"
             )
             return None, (self._tool_message(call.id, decision.reason), False)
 
@@ -787,7 +780,8 @@ class Agent:
                     hunks=decision.selected_hunks,
                 )
                 self._print_markup(
-                    f"[yellow]{self._glyph('blocked')} {summary}: {reason}[/yellow]"
+                    f"[yellow]{self._glyph('blocked')} {summary}: "
+                    f"{escape(reason)}[/yellow]"
                 )
                 return None, (self._tool_message(call.id, reason), False)
             args = selected_args
@@ -804,7 +798,7 @@ class Agent:
                 reason=reason,
             )
             self._print_markup(
-                f"[red]{self._glyph('blocked')} {summary}: {reason}[/red]"
+                f"[red]{self._glyph('blocked')} {summary}: {escape(reason)}[/red]"
             )
             return None, (
                 self._tool_message(call.id, self._hook_block_message(blocked)),

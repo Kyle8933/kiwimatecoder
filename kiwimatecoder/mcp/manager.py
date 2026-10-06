@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 from kiwimatecoder import config, events, tools
 from kiwimatecoder.mcp.client import (
@@ -226,7 +227,9 @@ class McpManager:
         reason = redact(str(exc)) or exc.__class__.__name__
         self._failures[name] = reason
         result.failed.append((name, reason))
-        self._console.print(f"[dim]MCP server '{name}' failed: {reason}[/dim]")
+        self._console.print(
+            f"[dim]MCP server '{escape(name)}' failed: {escape(reason)}[/dim]"
+        )
 
     @staticmethod
     def _close_quietly(client: McpClient) -> None:
