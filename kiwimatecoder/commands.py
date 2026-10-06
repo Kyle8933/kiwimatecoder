@@ -7,6 +7,7 @@ import shlex
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from glob import has_magic
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -115,6 +116,7 @@ from kiwimatecoder.session import (
     save_session,
 )
 from kiwimatecoder.templates import discover_templates
+from kiwimatecoder import ui
 from kiwimatecoder.ui import (
     COLOR_MODES,
     KEYBINDINGS,
@@ -189,8 +191,13 @@ def dispatch(
     selector: CommandSelector | None = None,
     prompt_input: Callable[[str], str] | None = None,
     multi_selector: CommandMultiSelector | None = None,
+    secret_input: Callable[[str], str] | None = None,
 ) -> str:
-    """Run a slash command. Returns CommandResult.CONTINUE or .EXIT."""
+    """Run a slash command. Returns CommandResult.CONTINUE or .EXIT.
+
+    ``prompt_input`` reads an ordinary typed answer; ``secret_input`` reads one
+    that must not be echoed (an API key). Either may be omitted.
+    """
     parts = line[1:].strip().split(maxsplit=1)
     name = parts[0].lower() if parts else ""
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -202,7 +209,7 @@ def dispatch(
 
     if name == "config" and not arg and selector is not None:
         return _config_interact(
-            session, console, selector, prompt_input, multi_selector
+            session, console, selector, prompt_input, multi_selector, secret_input
         )
 
     if name == "provider" and not arg and multi_selector is not None:
@@ -1577,6 +1584,7 @@ def _config_keys(
     console: Console,
     selector: CommandSelector | None = None,
     prompt_input: Callable[[str], str] | None = None,
+    secret_input: Callable[[str], str] | None = None,
 ) -> None:
     action = action_parts[0].lower() if action_parts else "list"
     rest = action_parts[1:]
@@ -1602,7 +1610,7 @@ def _config_keys(
     if action in {"set", "save", "add"}:
         if len(rest) < 2:
             if rest and selector is not None:
-                _config_key_enter(rest[0], console, selector, prompt_input)
+                _config_key_enter(rest[0], console, selector, prompt_input, secret_input)
                 return
             console.print("[yellow]Usage: /config key set <provider> <key>[/yellow]")
             return
@@ -1650,7 +1658,7 @@ def _config_keys(
                 "Run /config and pick Keys.[/yellow]"
             )
             return
-        _config_key_enter(rest[0], console, selector, prompt_input)
+        _config_key_enter(rest[0], console, selector, prompt_input, secret_input)
         return
 
     console.print("[yellow]Unknown key config action. Try /config help.[/yellow]")
@@ -1661,8 +1669,14 @@ def _config_key_enter(
     console: Console,
     selector: CommandSelector,
     prompt_input: Callable[[str], str] | None,
+    secret_input: Callable[[str], str] | None = None,
 ) -> None:
-    """Interactive 'change this key' flow: set or remove, then a text entry."""
+    """Interactive 'change this key' flow: set or remove, then a text entry.
+
+    The key is read with ``secret_input`` so it is not echoed. Callers that only
+    inject ``prompt_input`` (tests, embedders) keep working; with neither, the
+    console's hidden-input prompt is used.
+    """
     try:
         get_provider_config(provider_id)
     except KeyError as exc:
@@ -1694,11 +1708,14 @@ def _config_key_enter(
             console.print(f"[dim]No stored API key for {escape(provider_id)}.[/dim]")
         return
 
-    if prompt_input is None:
-        prompt_input = console.input
+    read_key = (
+        secret_input
+        or prompt_input
+        or partial(console.input, password=ui.hide_typed_secrets())
+    )
     console.print("[bold]Enter the new API key:[/bold]")
     try:
-        new_key = prompt_input("key> ").strip()
+        new_key = read_key("key> ").strip()
     except (EOFError, KeyboardInterrupt):
         console.print("[yellow]Cancelled.[/yellow]")
         return
@@ -3254,7 +3271,8 @@ def _doctor(arg: str, session: Session, console: Console) -> str:
 
 def _config(arg: str, session: Session, console: Console,
             selector: CommandSelector | None = None,
-            prompt_input: Callable[[str], str] | None = None) -> str:
+            prompt_input: Callable[[str], str] | None = None,
+            secret_input: Callable[[str], str] | None = None) -> str:
     try:
         parts = shlex.split(arg)
     except ValueError as exc:
@@ -3272,7 +3290,7 @@ def _config(arg: str, session: Session, console: Console,
     elif section in {"providers", "provider"}:
         _config_providers(rest, session, console)
     elif section in {"keys", "key", "api-key", "api-keys"}:
-        _config_keys(rest, console, selector, prompt_input)
+        _config_keys(rest, console, selector, prompt_input, secret_input)
     elif section == "use":
         _config_providers(["use", *rest], session, console)
     elif section == "model":
@@ -4654,6 +4672,7 @@ def _config_interact(
     selector: CommandSelector,
     prompt_input: Callable[[str], str] | None,
     multi_selector: CommandMultiSelector | None = None,
+    secret_input: Callable[[str], str] | None = None,
 ) -> str:
     """Staged interactive configuration: section menu, then an editor per section."""
     section_prompt = SelectionPrompt(
@@ -4727,7 +4746,7 @@ def _config_interact(
         provider_id = _run_selector(selector, provider_prompt)
         if provider_id is None:
             return CommandResult.CONTINUE
-        _config_key_enter(provider_id, console, selector, prompt_input)
+        _config_key_enter(provider_id, console, selector, prompt_input, secret_input)
         return CommandResult.CONTINUE
 
     menu = _ConfigMenu(session, console, selector, prompt_input, multi_selector)

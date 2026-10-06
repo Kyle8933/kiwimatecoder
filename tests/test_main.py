@@ -539,6 +539,45 @@ def test_setup_unsloth_without_key_prompts_instead_of_skipping(monkeypatch):
     assert config.get_key("unsloth") is None
 
 
+@pytest.mark.parametrize("terminal", [True, False])
+def test_setup_key_prompt_hides_input_only_on_a_terminal(monkeypatch, terminal):
+    seen: dict[str, object] = {}
+
+    def fake_input(prompt="", **kwargs):
+        seen["prompt"] = prompt
+        seen.update(kwargs)
+        return "  sk-typed  "
+
+    monkeypatch.setattr(main.console, "input", fake_input)
+    monkeypatch.setattr(ui, "hide_typed_secrets", lambda: terminal)
+
+    assert main._interactive_api_key() == "sk-typed"
+    assert seen == {"prompt": "key> ", "password": terminal}
+
+
+def test_setup_key_prompt_cancel_returns_none(monkeypatch):
+    def cancelled(prompt="", **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(main.console, "input", cancelled)
+
+    assert main._interactive_api_key() is None
+
+
+def test_setup_reads_a_piped_key_from_stdin_as_before(monkeypatch):
+    # No terminal: nothing is echoed, so the key is read from stdin, not from a
+    # keyboard that a script cannot reach.
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
+    monkeypatch.setattr(main, "_interactive_select_model", lambda *a, **k: "unsloth-model")
+    _forbid_fetch(monkeypatch)
+
+    result = CliRunner().invoke(
+        main.app, ["setup", "--provider", "unsloth"], input="sk-unsloth-piped\n"
+    )
+
+    assert config.get_key("unsloth") == "sk-unsloth-piped", result.output
+
+
 def test_setup_unsloth_with_key_saves_and_selects(monkeypatch):
     monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
 

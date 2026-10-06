@@ -1044,3 +1044,69 @@ def test_menu_without_a_selector_is_unchanged(session):
     dispatch("/config", session, console)
 
     assert "Active providers" in _output(console)
+
+
+# ---------------------------------------------------------------------------
+# API keys are read through a reader that does not echo
+# ---------------------------------------------------------------------------
+
+
+def _set_key_via_menu(session, console=None, **readers):
+    answers = iter(["keys", "openrouter", "set"])
+    console = console or _console()
+    dispatch(
+        "/config",
+        session,
+        console,
+        selector=lambda _prompt: next(answers, None),
+        **readers,
+    )
+    return console
+
+
+def test_key_is_read_with_the_secret_reader_when_there_is_one(session):
+    def visible(_message: str) -> str:
+        raise AssertionError("an API key must not use the visible reader")
+
+    _set_key_via_menu(session, prompt_input=visible, secret_input=lambda _m: "sk-hidden")
+
+    assert config.get_key("openrouter") == "sk-hidden"
+
+
+def test_key_falls_back_to_the_plain_reader_when_no_secret_reader_is_given(session):
+    # Embedders and tests that only inject prompt_input keep working.
+    _set_key_via_menu(session, prompt_input=lambda _m: "sk-plain")
+
+    assert config.get_key("openrouter") == "sk-plain"
+
+
+@pytest.mark.parametrize("terminal", [True, False])
+def test_key_default_reader_hides_input_on_a_terminal(session, monkeypatch, terminal):
+    from kiwimatecoder import ui
+
+    asked: list[tuple[str, dict]] = []
+    console = _console()
+
+    def console_input(prompt: str = "", **kwargs) -> str:
+        asked.append((prompt, kwargs))
+        return "sk-default"
+
+    console.input = console_input  # type: ignore[method-assign]
+    monkeypatch.setattr(ui, "hide_typed_secrets", lambda: terminal)
+
+    _set_key_via_menu(session, console=console)
+
+    assert asked == [("key> ", {"password": terminal})]
+    assert config.get_key("openrouter") == "sk-default"
+
+
+def test_cancelling_the_secret_reader_leaves_the_key_alone(session):
+    config.set_key("openrouter", "sk-old")
+
+    def cancelled(_message: str) -> str:
+        raise KeyboardInterrupt
+
+    console = _set_key_via_menu(session, secret_input=cancelled)
+
+    assert config.get_key("openrouter") == "sk-old"
+    assert "Cancelled" in _output(console)

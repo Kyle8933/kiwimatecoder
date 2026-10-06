@@ -284,3 +284,35 @@ def test_apply_plain_mode_runtime_overrides():
 
     assert ui.runtime_overrides() == {}
     assert ui.glyph("check") == "✓"
+
+
+# ---------------------------------------------------------------------------
+# Hiding typed secrets
+# ---------------------------------------------------------------------------
+
+
+class _Tty(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def test_typed_secrets_are_hidden_when_stdin_is_a_terminal(monkeypatch):
+    monkeypatch.setattr("sys.stdin", _Tty())
+
+    assert ui.hide_typed_secrets() is True
+
+
+@pytest.mark.parametrize("stdin", [io.StringIO("sk-piped\n"), None])
+def test_piped_or_missing_stdin_is_read_as_is(monkeypatch, stdin):
+    # getpass would ignore a piped key and wait on the keyboard instead.
+    monkeypatch.setattr("sys.stdin", stdin)
+
+    assert ui.hide_typed_secrets() is False
+
+
+def test_a_closed_stdin_is_not_hidden(monkeypatch):
+    closed = io.StringIO()
+    closed.close()  # isatty() then raises ValueError
+    monkeypatch.setattr("sys.stdin", closed)
+
+    assert ui.hide_typed_secrets() is False

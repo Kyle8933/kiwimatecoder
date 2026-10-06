@@ -977,6 +977,16 @@ def _read_command_input(message: str) -> str:
     return read_line(message)
 
 
+def _read_secret_input(message: str) -> str:
+    """Like ``_read_command_input`` but nothing typed is echoed (an API key).
+
+    prompt_toolkit shows bullet characters instead of the text, and the text is
+    never written to the REPL's history file. Ctrl-C and Ctrl-D raise, so the
+    caller cancels the same way.
+    """
+    return read_line(message, is_password=True)
+
+
 async def _dispatch_command(line: str, session: Session) -> str:
     """Run a slash command off the event loop.
 
@@ -991,6 +1001,7 @@ async def _dispatch_command(line: str, session: Session) -> str:
         _select_command_option,
         _read_command_input,
         _select_command_options,
+        _read_secret_input,
     )
 
 

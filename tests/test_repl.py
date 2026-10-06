@@ -1,6 +1,7 @@
 import base64
 import difflib
 import io
+import re
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,9 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.input import create_pipe_input
-from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.output import ColorDepth, DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
 from kiwimatecoder import config
@@ -41,6 +44,7 @@ from kiwimatecoder.repl import (
     _process_deferred_commands,
     _prompt_text,
     _read_command_input,
+    _read_secret_input,
     _resolve_slash_line,
     _route_steering_line,
     _select_command_option,
@@ -1046,8 +1050,8 @@ async def test_dispatch_command_reads_typed_answers_through_prompt_toolkit(
 ):
     seen = {}
 
-    def fake_dispatch(line, _session, _console, selector, reader, multi):
-        seen.update(selector=selector, reader=reader, multi=multi)
+    def fake_dispatch(line, _session, _console, selector, reader, multi, secret):
+        seen.update(selector=selector, reader=reader, multi=multi, secret=secret)
         return CommandResult.CONTINUE
 
     monkeypatch.setattr("kiwimatecoder.repl.dispatch", fake_dispatch)
@@ -1057,3 +1061,56 @@ async def test_dispatch_command_reads_typed_answers_through_prompt_toolkit(
     assert seen["selector"] is _select_command_option
     assert seen["reader"] is _read_command_input
     assert seen["multi"] is _select_command_options
+    # An API key is read by a different reader, one that does not echo.
+    assert seen["secret"] is _read_secret_input
+    assert seen["secret"] is not seen["reader"]
+
+
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _typed_on_screen(reader, keys: str) -> tuple[str, str]:
+    """Run ``reader`` on a captured vt100 screen; return (value, text it drew)."""
+    stdout = io.StringIO()
+    output = Vt100_Output(
+        stdout,
+        get_size=lambda: Size(rows=24, columns=80),
+        default_color_depth=ColorDepth.DEPTH_8_BIT,
+    )
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+        pipe.send_text(keys)
+        value = reader("key> ")
+    return value, _ANSI.sub("", stdout.getvalue())
+
+
+def test_the_capture_sees_ordinary_typed_text():
+    # Control for the test below: the visible reader does draw what is typed,
+    # so "the key is absent from the screen" cannot pass for lack of a screen.
+    value, drawn = _typed_on_screen(_read_command_input, "pytest -q\r")
+
+    assert value == "pytest -q"
+    assert "pytest -q" in drawn
+
+
+def test_read_secret_input_returns_the_key_but_never_draws_it():
+    key = "sk-live-Zx9f2Qk7"
+
+    value, drawn = _typed_on_screen(_read_secret_input, key + "\r")
+
+    assert value == key
+    assert "key> " in drawn  # the prompt is shown
+    assert key not in drawn
+    assert "Zx9f2Qk7" not in drawn  # nor any recognisable part of it
+
+
+@pytest.mark.parametrize(
+    ("key", "error"), [("\x03", KeyboardInterrupt), ("\x04", EOFError)]
+)
+def test_read_secret_input_ctrl_c_and_ctrl_d_cancel(key, error):
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        pipe.send_text(key)
+
+        with pytest.raises(error):
+            _read_secret_input("key> ")

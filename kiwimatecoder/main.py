@@ -3392,7 +3392,7 @@ def _interactive_api_key() -> str | None:
     """Prompt for an API key, returning None on cancel/EOF."""
     try:
         console.print("[bold]Enter the API key for the provider:[/bold]")
-        return console.input("key> ").strip()
+        return console.input("key> ", password=ui.hide_typed_secrets()).strip()
     except (EOFError, KeyboardInterrupt):
         console.print()
         return None

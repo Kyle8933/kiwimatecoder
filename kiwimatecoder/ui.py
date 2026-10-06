@@ -9,6 +9,7 @@ unit-tested without a terminal.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from rich.console import Console
@@ -166,6 +167,21 @@ def theme_accent(cfg: dict[str, Any] | None = None) -> str:
 def vi_mode_enabled(cfg: dict[str, Any] | None = None) -> bool:
     """Whether the prompt should start in Vim mode (``ui.keybindings``)."""
     return _ui_config(cfg)["keybindings"] == "vim"
+
+
+def hide_typed_secrets() -> bool:
+    """Whether a typed secret (an API key) should be read without echo.
+
+    Hidden input goes through ``getpass``, which reads the controlling terminal
+    and ignores stdin. That is right when stdin *is* the terminal, and wrong
+    otherwise: a piped key (``echo $KEY | kiwimatecoder setup``) or a test
+    runner's simulated stdin would be ignored while the program waits on the
+    keyboard. A redirected stdin is never echoed anyway, so it is read as is.
+    """
+    try:
+        return bool(sys.stdin and sys.stdin.isatty())
+    except (AttributeError, ValueError, OSError):  # closed or detached stdin
+        return False
 
 
 def spinner_enabled(cfg: dict[str, Any] | None = None) -> bool:
