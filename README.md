@@ -249,7 +249,8 @@ change that setting: toggles and fixed choices (theme, locale, log level, …) a
 picked from a list, free-form values (a proxy URL, an image size, a regex) are
 typed, and each list shows the current value. Sections with several independent
 settings, such as **Media** or **UI**, return to their list after each change
-until you pick **Done** (Ctrl-C also leaves). **Keys** works the same way: choose
+until you pick **Done** (Ctrl-C also leaves; at a typed prompt, Ctrl-C or an
+empty line cancels just that entry). **Keys** works the same way: choose
 a provider, then set (type a new key) or remove it. Only **Show** and **help**
 just print. Every entry also works as a typed command as shown above, and
 `/config key set` / `/config key list` always show which file or environment

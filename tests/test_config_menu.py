@@ -575,10 +575,15 @@ def test_budget_set_each_limit_and_clear_one(session):
 
 
 def test_budget_invalid_value_is_reported(session):
+    # The prompt line is always printed, so "some output" proves nothing; the
+    # handler's error names the rejected value.
     console = _run(session, Script("budget", "tokens"), Typed("lots"))
+    assert "lots" in _output(console)
+
+    console = _run(session, Script("budget", "cost"), Typed("free"))
+    assert "free" in _output(console)
 
     assert config.get_budget() == {}
-    assert _output(console).strip() != ""
 
 
 def test_budget_remove_both_limits_needs_confirmation(session):
@@ -659,6 +664,91 @@ def test_sandbox_clear_paths_needs_confirmation(session):
 
     _run(session, Script("sandbox", "clear-paths", "yes"))
     assert config.get_sandbox()["extra_writable"] == []
+
+
+def test_budget_cost_limit_can_be_cleared_on_its_own(session):
+    config.set_budget(max_tokens="1000", max_cost_usd="2")
+
+    _run(session, Script("budget", "cost", "__done__"), Typed("clear"))
+
+    assert config.get_budget() == {"max_tokens": 1000}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("budget", "clear"),
+        ("sandbox", "clear-paths"),
+        ("prompt", "clear"),
+    ],
+)
+def test_destructive_confirmations_default_to_cancel(session, path):
+    # Enter on a confirmation must never be the destructive answer.
+    config.set_budget(max_tokens="1000")
+    config.set_sandbox(extra_writable=["/a"])
+    session.custom_system_prompt = "keep"
+    config.set_system_prompt("keep")
+    script = Script(*path, "no")
+
+    _run(session, script)
+
+    confirm = script.prompts[2]
+    assert confirm.title == "Are you sure?"
+    assert confirm.selected == "no"
+    assert [o.value for o in confirm.options] == ["yes", "no"]
+
+
+def test_sandbox_labels_show_the_current_state(session):
+    config.set_sandbox(enabled=True, network=False, extra_writable=["/a", "/b"])
+    script = Script("sandbox")
+
+    _run(session, script)
+
+    labels = {o.value: o.label for o in script.prompts[1].options}
+    assert labels == {
+        "enable": "Sandbox — on",
+        "network": "Network access inside the sandbox — off",
+        "add-path": "Add a writable path — /a, /b",
+        "remove-path": "Remove a writable path",
+        "clear-paths": "Remove every extra writable path",
+        "__done__": "Done",
+    }
+
+
+def test_subagents_labels_show_the_current_state(session):
+    config.set_subagents(enabled=False, max_steps=7)
+    script = Script("subagents")
+
+    _run(session, script)
+
+    labels = {o.value: o.label for o in script.prompts[1].options}
+    assert labels["enable"] == "Subagents — off"
+    assert labels["max-steps"] == "Max steps per subagent — 7"
+    assert labels["model"] == "Subagent model — session model"
+
+
+def test_verify_list_labels_and_single_shot_behaviour(session):
+    script = Script("verify", "set")
+
+    _run(session, script, Typed("pytest -q"))
+
+    labels = {o.value: o.label for o in script.prompts[1].options}
+    assert labels["set"] == "Set the command — off"
+    # An entry that just runs has no "current value" suffix.
+    assert labels["clear"] == "Turn auto-verify off"
+    # verify offers alternatives, so it does not loop back after the change:
+    # only the top menu and the section list were shown.
+    assert len(script.prompts) == 2
+
+
+def test_choice_prompt_starts_on_the_current_value(session):
+    config.set_ui(theme="ocean")
+    script = Script("ui", "theme", None)
+
+    _run(session, script)
+
+    # prompts: top menu, ui list, then the theme value prompt.
+    assert script.prompts[2].selected == "ocean"
 
 
 # ---------------------------------------------------------------------------
@@ -901,7 +991,7 @@ def test_command_rules_invalid_regex_is_reported(session):
     console = _run(session, Script("commands", "deny"), Typed("("))
 
     assert config.get_command_rules()["deny"] == []
-    assert _output(console).strip() != ""
+    assert "Invalid regular expression" in _output(console)
 
 
 def test_command_rules_remove_with_none_set(session):

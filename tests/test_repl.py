@@ -3,11 +3,14 @@ import difflib
 import io
 from pathlib import Path
 
+import pytest
+from prompt_toolkit.application import create_app_session
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from kiwimatecoder import config
@@ -29,6 +32,7 @@ from kiwimatecoder.repl import (
     _attach_images,
     _banner,
     _build_history,
+    _dispatch_command,
     _extract_file_mentions,
     _extract_image_mentions,
     _make_confirm,
@@ -36,6 +40,7 @@ from kiwimatecoder.repl import (
     _option_groups,
     _process_deferred_commands,
     _prompt_text,
+    _read_command_input,
     _resolve_slash_line,
     _route_steering_line,
     _select_command_option,
@@ -1009,3 +1014,46 @@ def test_notify_turn_finished_bell_mode_rings(monkeypatch):
     _notify_turn_finished(3)
 
     assert stream.getvalue() == "\a"
+
+
+def test_read_command_input_returns_the_typed_line():
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        pipe.send_text("pytest -q\r")
+
+        assert _read_command_input("value> ") == "pytest -q"
+
+
+@pytest.mark.parametrize(
+    ("key", "error"), [("\x03", KeyboardInterrupt), ("\x04", EOFError)]
+)
+def test_read_command_input_ctrl_c_and_ctrl_d_cancel(key, error):
+    # Commands run in a worker thread, where a plain input() never sees Ctrl-C
+    # (it goes to the event loop) and the REPL exited on the next Enter. The
+    # reader must raise instead so the command can say "Cancelled."
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        pipe.send_text(key)
+
+        with pytest.raises(error):
+            _read_command_input("value> ")
+
+
+async def test_dispatch_command_reads_typed_answers_through_prompt_toolkit(
+    session, monkeypatch
+):
+    seen = {}
+
+    def fake_dispatch(line, _session, _console, selector, reader, multi):
+        seen.update(selector=selector, reader=reader, multi=multi)
+        return CommandResult.CONTINUE
+
+    monkeypatch.setattr("kiwimatecoder.repl.dispatch", fake_dispatch)
+
+    assert await _dispatch_command("/config", session) == CommandResult.CONTINUE
+
+    assert seen["selector"] is _select_command_option
+    assert seen["reader"] is _read_command_input
+    assert seen["multi"] is _select_command_options

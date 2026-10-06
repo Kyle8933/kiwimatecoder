@@ -48,6 +48,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.shortcuts import CompleteStyle, choice
+from prompt_toolkit.shortcuts import prompt as read_line
 from prompt_toolkit.shortcuts.choice_input import create_default_choice_input_style
 from prompt_toolkit.styles import BaseStyle, Style, merge_styles
 from prompt_toolkit.widgets import Box, Frame, Label
@@ -964,6 +965,18 @@ def _route_steering_line(session: Session, line: str) -> str:
     return "steered"
 
 
+def _read_command_input(message: str) -> str:
+    """Read one typed line for a slash command's follow-up question.
+
+    Commands run in a worker thread (see ``_dispatch_command``), where a plain
+    ``input()`` never sees Ctrl-C: the signal goes to the event loop in the
+    main thread, so the prompt ignores it and the REPL exits on the next Enter.
+    prompt_toolkit reads Ctrl-C and Ctrl-D as keys, as the selectors do, so they
+    raise here and the command cancels.
+    """
+    return read_line(message)
+
+
 async def _dispatch_command(line: str, session: Session) -> str:
     """Run a slash command off the event loop.
 
@@ -976,7 +989,7 @@ async def _dispatch_command(line: str, session: Session) -> str:
         session,
         console,
         _select_command_option,
-        None,
+        _read_command_input,
         _select_command_options,
     )
 
