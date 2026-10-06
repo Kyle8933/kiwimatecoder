@@ -63,7 +63,8 @@ class StrictConsole(Console):
             except MarkupError as exc:
                 self.problems.append(f"MarkupError ({exc}) in {text!r}")
             else:
-                if self.hostile not in plain:
+                # every occurrence must survive, not just one of several
+                if plain.count(self.hostile) < text.count(self.hostile):
                     self.problems.append(f"{self.hostile!r} lost: {text!r} -> {plain!r}")
 
     def render_str(self, text, *args, **kwargs):  # type: ignore[override]
@@ -398,6 +399,14 @@ def test_the_detector_sees_an_unescaped_value():
     console.print(f"[green]saved:[/green] {escape('[/x]')}")
     assert console.problems == []
     assert "[/x]" in console.file.getvalue()
+
+    # one value escaped and another not: the second one is lost, and that counts
+    console = StrictConsole("[slow]")
+    console.print(f"{escape('[slow]')} then [slow]")
+    assert console.problems
+    console = StrictConsole("[slow]")
+    console.print(f"{escape('[slow]')} then {escape('[slow]')}")
+    assert console.problems == []
 
 
 class Walk:
