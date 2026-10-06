@@ -532,7 +532,7 @@ Provider id (default: configured provider)
 \fB\-\-help\fP
 Show this command's help and exit.
 .SS \fBconfig media\fP
-Configure opt-in image generation.
+Configure opt-in image and video generation.
 .PP
 .nf
 kiwimatecoder config media [OPTIONS]
@@ -541,7 +541,7 @@ kiwimatecoder config media [OPTIONS]
 \fB\-\-help\fP
 Show this command's help and exit.
 .SS \fBconfig media show\fP
-Show image-generation settings.
+Show media settings and readiness.
 .PP
 .nf
 kiwimatecoder config media show [OPTIONS]
@@ -593,6 +593,54 @@ kiwimatecoder config media size [OPTIONS] SIZE
 .fi
 .TP
 \fBSIZE\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig media video\-model\fP
+Set the video generation model.
+.PP
+.nf
+kiwimatecoder config media video-model [OPTIONS] MODEL
+.fi
+.TP
+\fBMODEL\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig media duration\fP
+Set the default video length (seconds).
+.PP
+.nf
+kiwimatecoder config media duration [OPTIONS] SECONDS
+.fi
+.TP
+\fBSECONDS\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig media video\-size\fP
+Set the default video size.
+.PP
+.nf
+kiwimatecoder config media video-size [OPTIONS] SIZE
+.fi
+.TP
+\fBSIZE\fP
+Positional argument.
+.TP
+\fB\-\-help\fP
+Show this command's help and exit.
+.SS \fBconfig media output\-dir\fP
+Set the media output directory.
+.PP
+.nf
+kiwimatecoder config media output-dir [OPTIONS] PATH
+.fi
+.TP
+\fBPATH\fP
 Positional argument.
 .TP
 \fB\-\-help\fP

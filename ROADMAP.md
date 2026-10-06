@@ -157,9 +157,16 @@ Goal: breadth of integrations and long-tail quality.
 - [x] 5.8 Full accessibility audit (M; depends 2.8)
 
 **5.1 follow-up:** image generation ships through OpenAI-compatible
-`/images/generations` endpoints (b64 or URL responses), the approval-gated
-`generate_image` tool, and `/image <prompt>`; files are written atomically
-under the workspace at `.kiwimatecoder/media/`. Video generation is deferred.
+`/images/generations` endpoints (OpenRouter's `/images`; b64 or URL responses),
+the approval-gated `generate_image` tool, and `/image [--size] [--model]
+<prompt>`; files are written atomically under the workspace at
+`.kiwimatecoder/media/`. Video generation is now done too: `/video` and the
+approval-gated `generate_video` tool run an asynchronous submit/poll/download
+job against OpenRouter or OpenAI-style `/videos` endpoints, with a user-chosen
+model (no default), bounded polling and download, `/video resume <job-id>` for
+jobs still rendering, and first-frame image-to-video on OpenRouter. `/media`
+reports readiness and recent files. Audio generation, video-to-video editing,
+and live (non-mocked) coverage of the OpenAI video dialect remain open.
 
 **5.2 follow-up:** telemetry is local-only JSON lines under
 `~/.kiwimatecoder/logs/` with rotation, secret redaction, event-bus lifecycle

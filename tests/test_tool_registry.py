@@ -12,6 +12,7 @@ BUILTIN_NAMES = [
     "read_file",
     "view_image",
     "generate_image",
+    "generate_video",
     "list_dir",
     "search",
     "load_skill",

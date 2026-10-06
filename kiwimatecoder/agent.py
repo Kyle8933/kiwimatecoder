@@ -572,6 +572,12 @@ class Agent:
             prompt = str(args.get("prompt", "") or "")
             short = prompt if len(prompt) <= 50 else f"{prompt[:47]}..."
             return f"image-gen [dim]{short}[/dim]"
+        if name == "generate_video":
+            prompt = str(args.get("prompt", "") or "")
+            if not prompt and args.get("resume_job_id"):
+                prompt = f"resume {args['resume_job_id']}"
+            short = prompt if len(prompt) <= 50 else f"{prompt[:47]}..."
+            return f"video-gen [dim]{short}[/dim]"
         if name == "search":
             pat = args.get("pattern", "")
             mode = args.get("mode", "grep")

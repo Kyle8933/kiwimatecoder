@@ -139,6 +139,9 @@ def _empty_config() -> dict[str, Any]:
             "model": "gpt-image-1",
             "size": "1024x1024",
             "output_dir": ".kiwimatecoder/media",
+            "video_model": "",
+            "video_duration": 5,
+            "video_size": "",
         },
         "telemetry": {
             "enabled": False,
@@ -2626,17 +2629,27 @@ def set_vision(
 
 
 # ---------------------------------------------------------------------------
-# Media generation (images; video generation is a follow-up)
+# Media generation (images and video)
 # ---------------------------------------------------------------------------
 
+# ``video_model`` is empty on purpose: like chat models, a video model is the
+# user's choice (ids and prices move quickly and a clip costs real money), so
+# /video asks for one instead of silently spending on a stale default.
 MEDIA_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "provider": "openai",
     "model": "gpt-image-1",
     "size": "1024x1024",
     "output_dir": ".kiwimatecoder/media",
+    "video_model": "",
+    "video_duration": 5,
+    "video_size": "",
 }
 MEDIA_SIZE_RE = re.compile(r"^\d+x\d+$")
+# Video sizes are an exact WxH, or a resolution tier such as 720p / 1080p / 2K.
+VIDEO_SIZE_RE = re.compile(r"^(?:\d+x\d+|\d{3,4}p|[1-8]K)$", re.IGNORECASE)
+VIDEO_DURATION_MIN = 1
+VIDEO_DURATION_MAX = 60
 
 
 def _valid_media_output_dir(value: object) -> str | None:
@@ -2679,6 +2692,19 @@ def get_media(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     output_dir = _valid_media_output_dir(stored.get("output_dir"))
     if output_dir is not None:
         effective["output_dir"] = output_dir
+    video_model = stored.get("video_model")
+    if isinstance(video_model, str):
+        effective["video_model"] = video_model.strip()
+    duration = stored.get("video_duration")
+    if (
+        isinstance(duration, int)
+        and not isinstance(duration, bool)
+        and VIDEO_DURATION_MIN <= duration <= VIDEO_DURATION_MAX
+    ):
+        effective["video_duration"] = duration
+    video_size = str(stored.get("video_size") or "").strip()
+    if video_size and VIDEO_SIZE_RE.match(video_size):
+        effective["video_size"] = video_size
     return effective
 
 
@@ -2688,13 +2714,19 @@ def set_media(
     model: str | None = None,
     size: str | None = None,
     output_dir: str | None = None,
+    video_model: str | None = None,
+    video_duration: int | str | None = None,
+    video_size: str | None = None,
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Update media-generation settings; omitted arguments keep their value.
 
     Validation is eager: ``provider`` must be a known provider id, ``size``
     must look like ``WxH`` (digits), and ``output_dir`` must be a relative path
-    that cannot escape the workspace. Raises ``ValueError`` otherwise.
+    that cannot escape the workspace. ``video_model`` may be cleared with an
+    empty string, ``video_duration`` is whole seconds, and ``video_size`` is
+    ``WxH`` or a tier like ``720p`` (empty means the provider's default).
+    Raises ``ValueError`` otherwise.
     """
     cfg = cfg or load_config()
     current = get_media(cfg)
@@ -2726,6 +2758,28 @@ def set_media(
                 "media output_dir must be a relative path inside the workspace."
             )
         current["output_dir"] = cleaned_dir
+    if video_model is not None:
+        current["video_model"] = str(video_model).strip()
+    if video_duration is not None:
+        try:
+            # Accept "8" and "8s" alike.
+            seconds = int(str(video_duration).strip().rstrip("sS"))
+        except ValueError:
+            seconds = 0
+        if not VIDEO_DURATION_MIN <= seconds <= VIDEO_DURATION_MAX:
+            raise ValueError(
+                "media video duration must be whole seconds between "
+                f"{VIDEO_DURATION_MIN} and {VIDEO_DURATION_MAX}."
+            )
+        current["video_duration"] = seconds
+    if video_size is not None:
+        cleaned_video_size = str(video_size).strip()
+        if cleaned_video_size and not VIDEO_SIZE_RE.match(cleaned_video_size):
+            raise ValueError(
+                "media video size must be WxH (e.g. 1280x720) or a tier like "
+                "720p, 1080p or 2K; use an empty value for the provider default."
+            )
+        current["video_size"] = cleaned_video_size
     cfg["media"] = current
     save_config(cfg)
     return get_media(cfg)
@@ -4415,6 +4469,30 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                     "error",
                     "media.output_dir",
                     "'output_dir' must be a relative path inside the workspace.",
+                )
+            if "video_model" in media and not isinstance(media["video_model"], str):
+                add("error", "media.video_model", "'video_model' must be a string.")
+            duration = media.get("video_duration")
+            if duration is not None and (
+                not isinstance(duration, int)
+                or isinstance(duration, bool)
+                or not VIDEO_DURATION_MIN <= duration <= VIDEO_DURATION_MAX
+            ):
+                add(
+                    "error",
+                    "media.video_duration",
+                    f"'video_duration' must be whole seconds between "
+                    f"{VIDEO_DURATION_MIN} and {VIDEO_DURATION_MAX}.",
+                )
+            video_size = media.get("video_size")
+            if video_size not in (None, "") and (
+                not isinstance(video_size, str)
+                or not VIDEO_SIZE_RE.match(video_size.strip())
+            ):
+                add(
+                    "error",
+                    "media.video_size",
+                    "'video_size' must be WxH or a tier like 720p, 1080p or 2K.",
                 )
 
     telemetry = cfg.get("telemetry")

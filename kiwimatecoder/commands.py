@@ -112,7 +112,13 @@ from kiwimatecoder.session import (
     save_session,
 )
 from kiwimatecoder.templates import discover_templates
-from kiwimatecoder.tools.paths import PathError, display_path, resolve_in_workspace
+from kiwimatecoder.ui import glyph
+from kiwimatecoder.tools.paths import (
+    PathError,
+    display_path,
+    resolve_for_read,
+    resolve_in_workspace,
+)
 
 if TYPE_CHECKING:
     from kiwimatecoder.lsp import LspManager
@@ -1240,8 +1246,10 @@ def _config_help(console: Console) -> None:
         ),
         (
             "/config media [show|enable on|off|model <id>|provider <id>|"
-            "size <WxH>]",
-            "Configure opt-in image generation (/image and generate_image).",
+            "size <WxH>|video-model <id>|duration <s>|video-size <size>|"
+            "output-dir <path>]",
+            "Configure opt-in image and video generation (/image, /video, "
+            "generate_image, generate_video).",
         ),
         (
             "/config telemetry [show|enable on|off|level <lvl>|"
@@ -2651,13 +2659,25 @@ def _config_vision(action_parts: list[str], console: Console) -> None:
 
 
 def _media_status_line(settings: dict[str, Any]) -> str:
+    video_model = settings["video_model"] or "none chosen"
     return (
         f"Media: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan] "
         f"(provider [cyan]{settings['provider']}[/cyan], "
-        f"model [cyan]{settings['model']}[/cyan], "
+        f"image model [cyan]{settings['model']}[/cyan], "
         f"size [cyan]{settings['size']}[/cyan], "
+        f"video model [cyan]{escape(video_model)}[/cyan], "
+        f"video [cyan]{settings['video_duration']}s"
+        f"{' ' + escape(settings['video_size']) if settings['video_size'] else ''}"
+        f"[/cyan], "
         f"output [cyan]{settings['output_dir']}[/cyan])"
     )
+
+
+_MEDIA_USAGE = (
+    "[yellow]Usage: /config media [show|enable on|off|model <id>|provider <id>|"
+    "size <WxH>|video-model <id|none>|duration <seconds>|video-size <WxH|720p|"
+    "default>|output-dir <path>][/yellow]"
+)
 
 
 def _config_media(action_parts: list[str], console: Console) -> None:
@@ -2693,33 +2713,57 @@ def _config_media(action_parts: list[str], console: Console) -> None:
         )
         if enabled:
             console.print(
-                "[dim]`/image <prompt>` and the generate_image tool are now "
-                "available (image API calls cost money).[/dim]"
+                "[dim]`/image <prompt>` and `/video <prompt>` (and the "
+                "generate_image / generate_video tools) are now available. "
+                "Media API calls cost money; `/media` shows what is ready.[/dim]"
             )
+            if not get_media()["video_model"]:
+                console.print(
+                    "[dim]For video, also choose a model: "
+                    "/config media video-model <id>[/dim]"
+                )
         return
 
-    if action in {"model", "provider", "size"}:
+    hints = {
+        "model": "<id>",
+        "provider": "<id>",
+        "size": "<WxH>",
+        "video-model": "<id|none>",
+        "duration": "<seconds>",
+        "video-size": "<WxH|720p|default>",
+        "output-dir": "<path>",
+    }
+    action = {"video_model": "video-model", "video_size": "video-size",
+              "output_dir": "output-dir", "dir": "output-dir"}.get(action, action)
+    if action in hints:
         if not rest:
-            hint = "<WxH>" if action == "size" else "<id>"
-            console.print(f"[yellow]Usage: /config media {action} {hint}[/yellow]")
+            console.print(f"[yellow]Usage: /config media {action} {hints[action]}[/yellow]")
             return
+        value = " ".join(rest)
+        # ``none`` / ``default`` clear the optional video settings.
+        cleared = value.lower() in {"none", "default", "clear", "-"}
         try:
             if action == "model":
-                set_media(model=" ".join(rest))
+                set_media(model=value)
             elif action == "provider":
                 set_media(provider=rest[0])
-            else:
+            elif action == "size":
                 set_media(size=rest[0])
+            elif action == "video-model":
+                set_media(video_model="" if cleared else value)
+            elif action == "duration":
+                set_media(video_duration=rest[0])
+            elif action == "video-size":
+                set_media(video_size="" if cleared else rest[0])
+            else:
+                set_media(output_dir=value)
         except (ValueError, KeyError) as exc:
             console.print(f"[red]{exc}[/red]")
             return
         console.print(_media_status_line(get_media()))
         return
 
-    console.print(
-        "[yellow]Usage: /config media "
-        "[show|enable on|off|model <id>|provider <id>|size <WxH>][/yellow]"
-    )
+    console.print(_MEDIA_USAGE)
 
 
 def _telemetry_status_line(settings: dict[str, Any]) -> str:
@@ -3290,7 +3334,9 @@ def _config_interact(
             CommandOption("web", "Web fetch/search limits and local access"),
             CommandOption("network", "Proxy, custom CA bundle, and offline mode"),
             CommandOption("vision", "Image attachment size and count limits"),
-            CommandOption("media", "Opt-in image generation (provider/model/size)"),
+            CommandOption(
+                "media", "Opt-in image and video generation (provider/models/size)"
+            ),
             CommandOption("telemetry", "Opt-in local telemetry and crash reports"),
             CommandOption("style", "Show or set the output style"),
             CommandOption(
@@ -3977,39 +4023,328 @@ def _shorten(text: str, limit: int) -> str:
     return cleaned if len(cleaned) <= limit else f"{cleaned[: limit - 3]}..."
 
 
+def _split_media_options(
+    arg: str, allowed: dict[str, str]
+) -> tuple[dict[str, str], str]:
+    """Pull leading ``--name value`` / ``--name=value`` options off ``arg``.
+
+    Everything after the options is the prompt, verbatim (quotes and all); a
+    bare ``--`` ends option parsing so a prompt may itself start with dashes.
+    Raises ``ValueError`` with a user-facing message for unknown options.
+    """
+    options: dict[str, str] = {}
+    rest = arg.strip()
+    while rest.startswith("--"):
+        token, _, remainder = rest.partition(" ")
+        remainder = remainder.lstrip()
+        if token == "--":
+            rest = remainder
+            break
+        name, has_value, value = token[2:].partition("=")
+        if name not in allowed:
+            known = ", ".join(f"--{key}" for key in allowed)
+            raise ValueError(
+                f"Unknown option --{name}. Options: {known} (use `--` before a "
+                "prompt that starts with dashes)."
+            )
+        if not has_value:
+            value, _, remainder = remainder.partition(" ")
+            remainder = remainder.lstrip()
+        if not value:
+            raise ValueError(f"--{name} needs a value ({allowed[name]}).")
+        options[name] = value
+        rest = remainder
+    return options, rest.strip()
+
+
+def _display_output(path: Path, session: Session) -> str:
+    return display_path(path, session.workspace_root)
+
+
+def _run_media_call(
+    console: Console, label: str, work: Callable[[Callable[[str], None]], Any]
+) -> tuple[Any, float]:
+    """Run ``work`` under a spinner; returns ``(result, elapsed seconds)``.
+
+    ``work`` receives an ``update(text)`` callable that changes the spinner
+    label. Exceptions (including Ctrl+C) propagate to the caller.
+    """
+    started = time.monotonic()
+    with console.status(f"{label}…") as status:
+        result = work(lambda text: status.update(f"{text}"))
+    return result, time.monotonic() - started
+
+
+def _media_disabled_hint(console: Console) -> None:
+    console.print(
+        "[yellow]Media generation is disabled.[/yellow] Enable it with "
+        "/config media enable on (or config media enable on)."
+    )
+
+
+_IMAGE_OPTIONS = {"size": "WxH, e.g. 1024x1024", "model": "image model id"}
+_VIDEO_OPTIONS = {
+    "duration": "whole seconds",
+    "size": "WxH or a tier like 720p",
+    "model": "video model id",
+    "image": "workspace image to animate as the first frame",
+}
+
+
 def _image(arg: str, session: Session, console: Console) -> str:
     """Generate an image from a prompt and attach it to the next message."""
     settings = get_media()
     if not settings["enabled"]:
+        _media_disabled_hint(console)
+        return CommandResult.CONTINUE
+    try:
+        options, prompt = _split_media_options(arg, _IMAGE_OPTIONS)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        return CommandResult.CONTINUE
+    if not prompt:
         console.print(
-            "[yellow]Image generation is disabled.[/yellow] Enable it with "
-            "/config media enable on (or config media enable on)."
+            "[yellow]Usage: /image [--size WxH] [--model <id>] <prompt>[/yellow]\n"
+            f"[dim]Now: {settings['provider']}/{settings['model']} at "
+            f"{settings['size']}. Example: /image a red fox reading a book[/dim]"
         )
         return CommandResult.CONTINUE
-    prompt = arg.strip()
-    if not prompt:
-        console.print("[yellow]Usage: /image <prompt>[/yellow]")
-        return CommandResult.CONTINUE
-    console.print(
-        f"[dim]Generating {settings['size']} image with "
-        f"{settings['provider']}/{settings['model']}…[/dim]"
-    )
+
+    model = options.get("model") or settings["model"]
+    size = options.get("size") or settings["size"]
+    label = f"Generating {size} image with {settings['provider']}/{model}"
     try:
-        result = media_module.generate_image(prompt, session=session)
+        result, elapsed = _run_media_call(
+            console,
+            label,
+            lambda _update: media_module.generate_image(
+                prompt,
+                session=session,
+                size=options.get("size"),
+                model=options.get("model"),
+            ),
+        )
     except media_module.MediaError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        return CommandResult.CONTINUE
+    except KeyboardInterrupt:
+        console.print(
+            "[yellow]Cancelled.[/yellow] [dim]A request already sent to the "
+            "provider may still be billed.[/dim]"
+        )
         return CommandResult.CONTINUE
     console.print(
-        f"[green]Saved[/green] [cyan]{result.path}[/cyan] "
-        f"({result.bytes:,} bytes)"
+        f"[green]Saved[/green] [cyan]{escape(_display_output(result.path, session))}"
+        f"[/cyan] ({media_module.format_bytes(result.bytes)}, {elapsed:.0f}s)"
     )
     if result.revised_prompt:
         console.print(f"[dim]Revised prompt: {escape(result.revised_prompt)}[/dim]")
     note = media_module.attach_result(result, session)
     if note:
-        console.print(f"[yellow]{note}[/yellow]")
+        console.print(f"[yellow]{escape(note)}[/yellow]")
     else:
         console.print("[dim]The image will be attached to your next message.[/dim]")
+    return CommandResult.CONTINUE
+
+
+def _video(arg: str, session: Session, console: Console) -> str:
+    """Generate a short video, or resume a job that was still rendering."""
+    settings = get_media()
+    if not settings["enabled"]:
+        _media_disabled_hint(console)
+        return CommandResult.CONTINUE
+
+    words = arg.split(None, 1)
+    resume_id = ""
+    if words and words[0].lower() == "resume":
+        resume_id = words[1].strip() if len(words) > 1 else ""
+        if not resume_id:
+            console.print("[yellow]Usage: /video resume <job-id>[/yellow]")
+            return CommandResult.CONTINUE
+        options: dict[str, str] = {}
+        prompt = ""
+    else:
+        try:
+            options, prompt = _split_media_options(arg, _VIDEO_OPTIONS)
+        except ValueError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            return CommandResult.CONTINUE
+        if not prompt:
+            video_model = settings["video_model"] or "none chosen"
+            console.print(
+                "[yellow]Usage: /video [--duration <s>] [--size <WxH|720p>] "
+                "[--model <id>] [--image <path>] <prompt>[/yellow]\n"
+                "[yellow]       /video resume <job-id>[/yellow]\n"
+                f"[dim]Now: {settings['provider']}/{escape(video_model)}, "
+                f"{settings['video_duration']}s. Video is billed per second and "
+                "takes minutes to render. Example: /video a paper boat drifting "
+                "down a rainy street[/dim]"
+            )
+            return CommandResult.CONTINUE
+
+    first_frame: Path | None = None
+    if options.get("image"):
+        try:
+            first_frame = resolve_for_read(
+                options["image"],
+                session.workspace_root,
+                trusted=bool(getattr(session, "trusted_workspace", False)),
+            )
+        except PathError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            return CommandResult.CONTINUE
+        if not first_frame.is_file():
+            console.print(f"[red]File not found: {escape(options['image'])}[/red]")
+            return CommandResult.CONTINUE
+
+    duration: int | None = None
+    if options.get("duration"):
+        try:
+            duration = int(options["duration"].rstrip("sS"))
+        except ValueError:
+            console.print("[red]--duration must be whole seconds, e.g. 8.[/red]")
+            return CommandResult.CONTINUE
+
+    # Fail on the cheap, local problems before announcing a long, paid job.
+    if not resume_id and not (options.get("model") or settings["video_model"]):
+        console.print(f"[yellow]{escape(media_module.NO_VIDEO_MODEL_MESSAGE)}[/yellow]")
+        return CommandResult.CONTINUE
+
+    seen_job: list[str] = []
+
+    def on_progress(update: Callable[[str], None]) -> media_module.ProgressCallback:
+        def callback(tick: media_module.VideoProgress) -> None:
+            if not seen_job:
+                seen_job.append(tick.job_id)
+                console.print(
+                    f"[dim]Job {tick.job_id} submitted. Ctrl+C stops waiting; the "
+                    "job keeps running and can be resumed with "
+                    f"/video resume {tick.job_id}[/dim]"
+                )
+            detail = tick.status
+            if tick.percent is not None:
+                detail += f" {tick.percent}%"
+            update(f"Rendering video ({detail}, {tick.elapsed:.0f}s)")
+
+        return callback
+
+    if resume_id:
+        label = f"Resuming video job {resume_id}"
+    else:
+        model = options.get("model") or settings["video_model"]
+        seconds = duration or settings["video_duration"]
+        console.print(
+            f"[dim]Requesting a video ({seconds}s) from {settings['provider']}/"
+            f"{escape(model)}. It is billed per second and usually takes a "
+            "few minutes.[/dim]"
+        )
+        label = "Submitting video job"
+    try:
+        result, elapsed = _run_media_call(
+            console,
+            label,
+            lambda update: (
+                media_module.resume_video(
+                    resume_id, session=session, progress=on_progress(update)
+                )
+                if resume_id
+                else media_module.generate_video(
+                    prompt,
+                    session=session,
+                    model=options.get("model"),
+                    duration=duration,
+                    size=options.get("size"),
+                    first_frame=first_frame,
+                    progress=on_progress(update),
+                )
+            ),
+        )
+    except media_module.MediaError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        return CommandResult.CONTINUE
+    except KeyboardInterrupt:
+        job = resume_id or (seen_job[0] if seen_job else "")
+        if job:
+            console.print(
+                f"[yellow]Stopped waiting.[/yellow] Job [cyan]{escape(job)}[/cyan] "
+                "may still be rendering (and billing) on the provider. Resume with "
+                f"[cyan]/video resume {escape(job)}[/cyan]."
+            )
+        else:
+            console.print("[yellow]Cancelled before a job was submitted.[/yellow]")
+        return CommandResult.CONTINUE
+
+    cost = f", ${result.cost:.2f}" if result.cost is not None else ""
+    console.print(
+        f"[green]Saved[/green] [cyan]{escape(_display_output(result.path, session))}"
+        f"[/cyan] ({media_module.format_bytes(result.bytes)}{cost}, "
+        f"{elapsed:.0f}s). [dim]Job {escape(result.job_id)}.[/dim]"
+    )
+    console.print("[dim]Open it with your system's video player.[/dim]")
+    return CommandResult.CONTINUE
+
+
+def _age(seconds: float) -> str:
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} h ago"
+    return f"{int(seconds // 86400)} d ago"
+
+
+def _media(arg: str, session: Session, console: Console) -> str:
+    """Show media readiness and recently generated files."""
+    words = arg.split()
+    if words and words[0].lower() not in {"list", "ls", "show", "status", "recent"}:
+        console.print("[yellow]Usage: /media [list [count]][/yellow]")
+        return CommandResult.CONTINUE
+    limit = 10
+    if len(words) > 1:
+        try:
+            limit = max(1, min(int(words[1]), 100))
+        except ValueError:
+            console.print("[yellow]Usage: /media [list [count]][/yellow]")
+            return CommandResult.CONTINUE
+
+    settings = get_media()
+    console.print(_media_status_line(settings))
+    ok, bad = escape(glyph("check")), escape(glyph("cross"))
+    if not settings["enabled"]:
+        # One line, not one per kind: nothing else matters until it is enabled.
+        console.print(
+            f"  [red]{bad}[/red] Disabled. Enable image and video generation with "
+            "/config media enable on"
+        )
+    else:
+        for title, video in (("Images", False), ("Video", True)):
+            problems = media_module.readiness(video=video)
+            if problems:
+                console.print(f"  [red]{bad}[/red] {title}: {escape(problems[0])}")
+            else:
+                console.print(f"  [green]{ok}[/green] {title}: ready")
+
+    outputs = media_module.list_outputs(session, limit)
+    directory = settings["output_dir"]
+    if not outputs:
+        console.print(f"[dim]No generated media in {escape(directory)} yet.[/dim]")
+        return CommandResult.CONTINUE
+    console.print(f"Recent in [cyan]{escape(directory)}[/cyan]:")
+    now = time.time()
+    for index, path in enumerate(outputs, start=1):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        console.print(
+            f"  {index:>2}. {escape(_display_output(path, session))} "
+            f"[dim]({media_module.format_bytes(stat.st_size)}, "
+            f"{_age(max(0.0, now - stat.st_mtime))})[/dim]"
+        )
+    console.print(
+        "[dim]Reference an image in a prompt with @<path> to attach it again.[/dim]"
+    )
     return CommandResult.CONTINUE
 
 
@@ -4019,6 +4354,8 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "quit": _exit,
     "clear": _clear,
     "image": _image,
+    "video": _video,
+    "media": _media,
     "model": _model,
     "provider": _provider,
     "mode": _mode,
@@ -4170,9 +4507,19 @@ _HELP_GROUPS = [
                 "Manage pinned files included with each turn.",
             ),
             (
-                "/image <prompt>",
+                "/image [--size WxH] [--model id] <prompt>",
                 "Generate an image with the configured media provider and "
                 "attach it to your next message.",
+            ),
+            (
+                "/video [--duration s] [--size 720p] [--image path] <prompt>",
+                "Generate a short video (billed per second; takes minutes). "
+                "`/video resume <job-id>` fetches a job that was still rendering.",
+            ),
+            (
+                "/media [list [count]]",
+                "Show whether image/video generation is ready and list recent "
+                "generated files.",
             ),
         ],
     ),
@@ -4205,6 +4552,8 @@ _COMMAND_DESCRIPTIONS = {
     "quit": "Leave the session.",
     "clear": "Clear the conversation history.",
     "image": "Generate an image from a prompt and attach it.",
+    "video": "Generate a short video from a prompt (or resume a job).",
+    "media": "Show media generation readiness and recent files.",
     "model": "Choose a model, set one by name, refresh the list, or search.",
     "provider": "Choose a failover roster (checklist), or replace it with one provider by id.",
     "mode": "Choose or directly set the permission mode.",
@@ -4244,6 +4593,14 @@ _CONTEXT_ACTION_DESCRIPTIONS = {
     "add": "Pin one or more files or globs.",
     "remove": "Unpin one or more files.",
     "clear": "Remove all pinned context files.",
+}
+
+_VIDEO_ACTION_DESCRIPTIONS = {
+    "resume": "Fetch a video job that was still rendering.",
+}
+
+_MEDIA_ACTION_DESCRIPTIONS = {
+    "list": "Show readiness and recent generated files.",
 }
 
 _MODEL_ACTION_DESCRIPTIONS = {
@@ -4295,7 +4652,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "web": "Set web fetch/search limits and local-address access.",
     "network": "Set proxy, CA bundle, and offline mode.",
     "vision": "Set image attachment size and count limits.",
-    "media": "Configure image generation provider, model, size, and output.",
+    "media": "Configure image/video generation provider, models, size, and output.",
     "telemetry": "Configure opt-in local telemetry, debug logs, crash reports.",
     "style": "Show or set the output style.",
     "prompt": "Show, set, or clear a custom system prompt.",
@@ -4388,6 +4745,10 @@ def slash_argument_completions(
     command = command.lower()
     if command in {"context", "ctx"}:
         choices = _CONTEXT_ACTION_DESCRIPTIONS
+    elif command == "video":
+        choices = _VIDEO_ACTION_DESCRIPTIONS
+    elif command == "media":
+        choices = _MEDIA_ACTION_DESCRIPTIONS
     elif command == "mode":
         choices = _MODE_DESCRIPTIONS
     elif command == "memory":
