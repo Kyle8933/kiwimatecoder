@@ -1196,8 +1196,11 @@ def test_bare_config_opens_interactive_menu(session):
 
 
 def test_bare_config_menu_selection_lists_providers(session):
+    # "Providers" opens an action menu; listing is one of its choices.
+    selections = iter(["providers", "list"])
+
     def select(prompt: SelectionPrompt) -> str:
-        return "providers"
+        return next(selections)
 
     console = _console()
     dispatch("/config", session, console, selector=select)

@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from glob import has_magic
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from rich.console import Console
 from rich.markup import escape
@@ -28,6 +28,9 @@ from kiwimatecoder.config import (
     clear_always_allowed_tools,
     clear_budget,
     clear_command_rules,
+    OUTPUT_STYLES,
+    REASONING_EFFORTS,
+    TELEMETRY_LEVELS,
     describe_key,
     get_acp,
     get_always_allowed_tools,
@@ -99,7 +102,7 @@ from kiwimatecoder.config import (
     set_web,
     update_provider,
 )
-from kiwimatecoder.i18n import t
+from kiwimatecoder.i18n import LOCALES, t
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY, ProviderConfig
 from kiwimatecoder.session import (
@@ -112,7 +115,15 @@ from kiwimatecoder.session import (
     save_session,
 )
 from kiwimatecoder.templates import discover_templates
-from kiwimatecoder.ui import glyph
+from kiwimatecoder.ui import (
+    COLOR_MODES,
+    KEYBINDINGS,
+    NOTIFY_MODES,
+    OUTPUT_MODES,
+    SPINNER_MODES,
+    THEMES,
+    glyph,
+)
 from kiwimatecoder.tools.paths import (
     PathError,
     display_path,
@@ -190,7 +201,9 @@ def dispatch(
         return CommandResult.CONTINUE
 
     if name == "config" and not arg and selector is not None:
-        return _config_interact(session, console, selector, prompt_input)
+        return _config_interact(
+            session, console, selector, prompt_input, multi_selector
+        )
 
     if name == "provider" and not arg and multi_selector is not None:
         checklist = _multi_selection_prompt(session)
@@ -3303,22 +3316,1189 @@ def _run_selector(selector: CommandSelector | None, prompt: SelectionPrompt) -> 
     return selected
 
 
+# ---------------------------------------------------------------------------
+# Interactive /config menu
+#
+# Choosing a section in the bare ``/config`` menu used to re-run
+# ``/config <section>`` with no action. Every section handler reads that as
+# "show", so most entries only printed the current value. Each section now has
+# a staged editor that gathers a choice (and, where needed, a typed value) and
+# then runs the same ``/config <section> <action> <value>`` command a user
+# could type, so validation, persistence, and messages stay in one place.
+# ---------------------------------------------------------------------------
+
+_MENU_DONE = "__done__"
+_CLEAR_WORDS = frozenset({"clear", "none", "default", "-"})
+_PREVIEW_CHARS = 48
+
+
+def _onoff(value: object) -> str:
+    return "on" if value else "off"
+
+
+def _preview(value: object, empty: str = "(none)") -> str:
+    """A one-line, length-capped rendering of a setting for menu labels."""
+    text = str(value if value not in (None, "") else empty).replace("\n", " ")
+    if len(text) > _PREVIEW_CHARS:
+        text = text[: _PREVIEW_CHARS - 1] + "…"
+    return text
+
+
+@dataclass(frozen=True)
+class _Setting:
+    """One thing a /config section lets you change from the menu.
+
+    ``action`` holds the /config tokens after the section name and the chosen
+    value is appended through ``fmt``, so a ``toggle`` with
+    ``action=("headless",)`` in the browser section runs
+    ``/config browser headless on``.
+    """
+
+    key: str
+    label: str
+    kind: Literal["toggle", "choice", "text", "run"]
+    action: tuple[str, ...] = ()
+    current: Callable[[Session], str] | None = None
+    choices: Callable[[], Sequence[CommandOption]] | None = None
+    ask: str = ""
+    fmt: str = "{}"
+    # What a typed "clear" becomes; None means the setting cannot be unset.
+    clear_value: str | None = None
+    # For ``run``: a question to confirm first (for destructive actions).
+    confirm: str = ""
+
+
+@dataclass(frozen=True)
+class _Section:
+    name: str
+    title: str
+    text: str
+    settings: tuple[_Setting, ...]
+    # Offer the setting list again after a change. True for independent
+    # settings (media, ui); False when the entries are alternatives.
+    loop: bool = True
+
+
+def _values(*values: str) -> Callable[[], tuple[CommandOption, ...]]:
+    return lambda: tuple(CommandOption(value, value) for value in values)
+
+
+_ON_OFF = _values("on", "off")
+
+
+def _toggle(
+    key: str, label: str, current: Callable[[Session], str], *action: str
+) -> _Setting:
+    return _Setting(key, label, "toggle", action, current)
+
+
+def _choice(
+    key: str,
+    label: str,
+    current: Callable[[Session], str],
+    choices: Callable[[], Sequence[CommandOption]],
+    *action: str,
+    fmt: str = "{}",
+) -> _Setting:
+    return _Setting(key, label, "choice", action, current, choices, fmt=fmt)
+
+
+def _text(
+    key: str,
+    label: str,
+    current: Callable[[Session], str],
+    ask: str,
+    *action: str,
+    fmt: str = "{}",
+    clear: str | None = None,
+) -> _Setting:
+    return _Setting(
+        key, label, "text", action, current, ask=ask, fmt=fmt, clear_value=clear
+    )
+
+
+def _action(key: str, label: str, *action: str, confirm: str = "") -> _Setting:
+    return _Setting(key, label, "run", action, confirm=confirm)
+
+
+def _sampling_value(key: str) -> Callable[[Session], str]:
+    return lambda _session: _preview(get_sampling().get(key), "provider default")
+
+
+def _media_provider_choices() -> tuple[CommandOption, ...]:
+    return tuple(
+        CommandOption(provider.id, f"{provider.name} ({provider.id})")
+        for provider in list_provider_configs()
+    )
+
+
+def _mode_choices() -> tuple[CommandOption, ...]:
+    return tuple(
+        CommandOption(value, f"{value} — {description}")
+        for value, description in _MODE_DESCRIPTIONS.items()
+    )
+
+
+_CONFIG_SECTIONS: dict[str, _Section] = {
+    section.name: section
+    for section in (
+        _Section(
+            "mode",
+            "Default permission mode",
+            "New sessions start in this mode. Use /mode to change the current one.",
+            (
+                _choice(
+                    "set",
+                    "Set the default mode",
+                    lambda _s: get_default_mode(),
+                    _mode_choices,
+                    "set",
+                ),
+                _action("reset", "Reset to the built-in default", "reset"),
+            ),
+            loop=False,
+        ),
+        _Section(
+            "trust",
+            "Trusted workspace",
+            "Let read-only tools read outside the workspace root. Writes stay "
+            "sandboxed.",
+            (
+                _toggle(
+                    "trust",
+                    "Trusted workspace",
+                    lambda s: _onoff(s.trusted_workspace),
+                ),
+            ),
+        ),
+        _Section(
+            "sampling",
+            "Sampling",
+            "Unset values use the provider's defaults. Type 'clear' to unset one.",
+            (
+                _text(
+                    "temperature",
+                    "Temperature",
+                    _sampling_value("temperature"),
+                    "Temperature, 0 to 2",
+                    "set",
+                    fmt="temperature={}",
+                    clear="",
+                ),
+                _text(
+                    "top_p",
+                    "Top-p",
+                    _sampling_value("top_p"),
+                    "Top-p, 0 to 1",
+                    "set",
+                    fmt="top_p={}",
+                    clear="",
+                ),
+                _text(
+                    "max_tokens",
+                    "Max output tokens",
+                    _sampling_value("max_tokens"),
+                    "Maximum output tokens per reply",
+                    "set",
+                    fmt="max_tokens={}",
+                    clear="",
+                ),
+                _choice(
+                    "reasoning_effort",
+                    "Reasoning effort",
+                    _sampling_value("reasoning_effort"),
+                    _values(*REASONING_EFFORTS),
+                    "set",
+                    fmt="reasoning_effort={}",
+                ),
+                _action("reset", "Reset everything to provider defaults", "reset"),
+            ),
+        ),
+        _Section(
+            "browser",
+            "Browser automation",
+            "Optional Playwright-driven browser tools.",
+            (
+                _toggle(
+                    "enable",
+                    "Browser automation",
+                    lambda _s: _onoff(get_browser()["enabled"]),
+                    "enable",
+                ),
+                _toggle(
+                    "headless",
+                    "Headless",
+                    lambda _s: _onoff(get_browser()["headless"]),
+                    "headless",
+                ),
+                _text(
+                    "timeout",
+                    "Timeout",
+                    lambda _s: f"{get_browser()['timeout_ms']}ms",
+                    "Browser timeout in milliseconds",
+                    "timeout",
+                ),
+            ),
+        ),
+        _Section(
+            "shell",
+            "Shell",
+            "The persistent shell and background jobs.",
+            (
+                _toggle(
+                    "persistent",
+                    "Persistent shell",
+                    lambda _s: _onoff(get_shell_config()["persistent"]),
+                    "persistent",
+                ),
+                _text(
+                    "timeout",
+                    "Command timeout",
+                    lambda _s: f"{get_shell_config()['timeout']}s",
+                    "Command timeout in seconds",
+                    "timeout",
+                ),
+                _text(
+                    "max-jobs",
+                    "Background job cap",
+                    lambda _s: str(get_shell_config()["max_jobs"]),
+                    "Maximum concurrent background jobs",
+                    "max-jobs",
+                ),
+            ),
+        ),
+        _Section(
+            "remote",
+            "Remote execution",
+            "Run shell commands over SSH or in a devcontainer/Docker container.",
+            (
+                _toggle(
+                    "enable",
+                    "Remote execution",
+                    lambda _s: _onoff(get_remote()["enabled"]),
+                    "enable",
+                ),
+                _text(
+                    "host",
+                    "Host",
+                    lambda _s: _preview(get_remote()["host"]),
+                    "SSH host",
+                    "host",
+                    clear="",
+                ),
+                _text(
+                    "user",
+                    "User",
+                    lambda _s: _preview(get_remote()["user"]),
+                    "SSH user",
+                    "user",
+                    clear="",
+                ),
+                _text(
+                    "port",
+                    "Port",
+                    lambda _s: str(get_remote()["port"]),
+                    "SSH port, 1 to 65535",
+                    "port",
+                ),
+                _text(
+                    "identity",
+                    "Identity file",
+                    lambda _s: _preview(get_remote()["identity"], "(default)"),
+                    "Path to an SSH identity file",
+                    "identity",
+                    clear="",
+                ),
+                _text(
+                    "workspace",
+                    "Remote workspace",
+                    lambda _s: _preview(get_remote()["workspace"], "(remote default)"),
+                    "Workspace path on the remote host",
+                    "workspace",
+                    clear="",
+                ),
+                _text(
+                    "devcontainer",
+                    "Devcontainer",
+                    lambda _s: _preview(get_remote()["devcontainer"]),
+                    "Devcontainer: auto, off, or a container name",
+                    "devcontainer",
+                ),
+            ),
+        ),
+        _Section(
+            "acp",
+            "ACP permission timeout",
+            "How long the ACP server waits for an editor to answer a permission "
+            "request.",
+            (
+                _text(
+                    "timeout",
+                    "Permission timeout",
+                    lambda _s: f"{get_acp()['permission_timeout']}s",
+                    "Permission timeout in seconds",
+                    "timeout",
+                ),
+            ),
+        ),
+        _Section(
+            "web",
+            "Web access",
+            "Limits for the web fetch and search tools.",
+            (
+                _text(
+                    "max-chars",
+                    "Max characters per fetch",
+                    lambda _s: str(get_web()["max_chars"]),
+                    "Maximum characters returned per fetch",
+                    "max-chars",
+                ),
+                _text(
+                    "timeout",
+                    "Timeout",
+                    lambda _s: f"{get_web()['timeout']:g}s",
+                    "Request timeout in seconds",
+                    "timeout",
+                ),
+                _toggle(
+                    "allow-local",
+                    "Allow local addresses",
+                    lambda _s: _onoff(get_web()["allow_local"]),
+                    "allow-local",
+                ),
+            ),
+        ),
+        _Section(
+            "network",
+            "Network",
+            "Proxy, custom CA bundle, and offline mode.",
+            (
+                _text(
+                    "proxy",
+                    "Proxy",
+                    lambda _s: _preview(get_network()["proxy"]),
+                    "Proxy URL",
+                    "proxy",
+                    clear="clear",
+                ),
+                _text(
+                    "ca",
+                    "CA bundle",
+                    lambda _s: _preview(get_network()["ca_bundle"], "system default"),
+                    "Path to a CA bundle",
+                    "ca",
+                    clear="clear",
+                ),
+                _toggle(
+                    "offline",
+                    "Offline mode",
+                    lambda _s: _onoff(get_network()["offline"]),
+                    "offline",
+                ),
+            ),
+        ),
+        _Section(
+            "vision",
+            "Image attachments",
+            "Limits for images attached to a message.",
+            (
+                _text(
+                    "max-bytes",
+                    "Max bytes per image",
+                    lambda _s: f"{get_vision()['max_image_bytes']:,}",
+                    "Maximum bytes per image",
+                    "max-bytes",
+                ),
+                _text(
+                    "max-images",
+                    "Max images per turn",
+                    lambda _s: str(get_vision()["max_images_per_turn"]),
+                    "Maximum images per turn",
+                    "max-images",
+                ),
+            ),
+        ),
+        _Section(
+            "media",
+            "Image and video generation",
+            "Opt-in. Media API calls cost money; /media shows what is ready.",
+            (
+                _toggle(
+                    "enable",
+                    "Media generation",
+                    lambda _s: _onoff(get_media()["enabled"]),
+                    "enable",
+                ),
+                _choice(
+                    "provider",
+                    "Provider",
+                    lambda _s: get_media()["provider"],
+                    _media_provider_choices,
+                    "provider",
+                ),
+                _text(
+                    "model",
+                    "Image model",
+                    lambda _s: get_media()["model"],
+                    "Image model id",
+                    "model",
+                ),
+                _text(
+                    "size",
+                    "Image size",
+                    lambda _s: get_media()["size"],
+                    "Image size as WxH, e.g. 1024x1024",
+                    "size",
+                ),
+                _text(
+                    "video-model",
+                    "Video model",
+                    lambda _s: _preview(get_media()["video_model"], "none chosen"),
+                    "Video model id",
+                    "video-model",
+                    clear="clear",
+                ),
+                _text(
+                    "duration",
+                    "Video duration",
+                    lambda _s: f"{get_media()['video_duration']}s",
+                    "Video duration in seconds",
+                    "duration",
+                ),
+                _text(
+                    "video-size",
+                    "Video size",
+                    lambda _s: _preview(get_media()["video_size"], "provider default"),
+                    "Video size as WxH or a tier such as 720p",
+                    "video-size",
+                    clear="default",
+                ),
+                _text(
+                    "output-dir",
+                    "Output folder",
+                    lambda _s: get_media()["output_dir"],
+                    "Output folder, relative to the workspace",
+                    "output-dir",
+                ),
+            ),
+        ),
+        _Section(
+            "telemetry",
+            "Telemetry and crash reports",
+            "Opt-in and local only: nothing leaves this machine.",
+            (
+                _toggle(
+                    "enable",
+                    "Telemetry",
+                    lambda _s: _onoff(get_telemetry()["enabled"]),
+                    "enable",
+                ),
+                _choice(
+                    "level",
+                    "Level",
+                    lambda _s: get_telemetry()["level"],
+                    _values(*TELEMETRY_LEVELS),
+                    "level",
+                ),
+                _text(
+                    "log-file",
+                    "Log file",
+                    lambda _s: _preview(get_telemetry()["log_file"], "default"),
+                    "Absolute path for the log file",
+                    "log-file",
+                    clear="",
+                ),
+                _text(
+                    "max-bytes",
+                    "Max log size",
+                    lambda _s: f"{get_telemetry()['max_log_bytes']:,} bytes",
+                    "Maximum log size in bytes",
+                    "max-bytes",
+                ),
+            ),
+        ),
+        _Section(
+            "style",
+            "Output style",
+            "How the model words its answers.",
+            (
+                _choice(
+                    "style",
+                    "Output style",
+                    lambda s: s.output_style,
+                    _values(*OUTPUT_STYLES),
+                    "set",
+                ),
+            ),
+        ),
+        _Section(
+            "ui",
+            "Appearance and interface",
+            "Color, theme, and output changes apply after you restart the session.",
+            (
+                _choice(
+                    "theme",
+                    "Theme",
+                    lambda _s: get_ui()["theme"],
+                    _values(*THEMES),
+                    "theme",
+                ),
+                _choice(
+                    "color",
+                    "Color",
+                    lambda _s: get_ui()["color"],
+                    _values(*COLOR_MODES),
+                    "color",
+                ),
+                _choice(
+                    "output",
+                    "Output",
+                    lambda _s: get_ui()["output_mode"],
+                    _values(*OUTPUT_MODES),
+                    "output",
+                ),
+                _toggle(
+                    "ascii",
+                    "ASCII only",
+                    lambda _s: _onoff(get_ui()["ascii"]),
+                    "ascii",
+                ),
+                _choice(
+                    "locale",
+                    "Language",
+                    lambda _s: get_ui()["locale"],
+                    _values(*LOCALES),
+                    "locale",
+                ),
+                _choice(
+                    "keybindings",
+                    "Key bindings",
+                    lambda _s: get_ui()["keybindings"],
+                    _values(*KEYBINDINGS),
+                    "keybindings",
+                ),
+                _choice(
+                    "notify",
+                    "Notifications",
+                    lambda _s: get_ui()["notify"],
+                    _values(*NOTIFY_MODES),
+                    "notify",
+                ),
+                _text(
+                    "notify-after",
+                    "Notify after",
+                    lambda _s: f"{get_ui()['notify_after_seconds']}s",
+                    "Notify when a turn runs longer than this many seconds",
+                    "notify-after",
+                ),
+                _choice(
+                    "spinner",
+                    "Spinner",
+                    lambda _s: get_ui()["spinner"],
+                    _values(*SPINNER_MODES),
+                    "spinner",
+                ),
+            ),
+        ),
+        _Section(
+            "prompt",
+            "Custom system prompt",
+            "Text added to the system prompt of every session.",
+            (
+                _text(
+                    "set",
+                    "Set the prompt",
+                    lambda s: _preview(s.custom_system_prompt),
+                    "System prompt text",
+                    "set",
+                ),
+                _action(
+                    "clear",
+                    "Clear the prompt",
+                    "clear",
+                    confirm="Remove the custom system prompt?",
+                ),
+            ),
+            loop=False,
+        ),
+        _Section(
+            "team",
+            "Team policy",
+            "A shared policy overlay file (global-only; no server).",
+            (
+                _text(
+                    "policy",
+                    "Policy file",
+                    lambda _s: _preview(get_team()["policy_path"]),
+                    "Path to the policy file",
+                    "set-policy",
+                    clear="",
+                ),
+                _toggle(
+                    "enforce",
+                    "Enforce the policy",
+                    lambda _s: _onoff(get_team()["enforce"]),
+                    "enforce",
+                ),
+            ),
+        ),
+        _Section(
+            "cache",
+            "Prompt caching",
+            "Cache the system prompt and tools on native Anthropic providers.",
+            (
+                _toggle(
+                    "cache", "Prompt caching", lambda _s: _onoff(get_prompt_cache())
+                ),
+            ),
+        ),
+    )
+}
+
+
+@dataclass
+class _ConfigMenu:
+    """The prompts and output a /config section editor works with."""
+
+    session: Session
+    console: Console
+    selector: CommandSelector
+    prompt_input: Callable[[str], str] | None = None
+    multi_selector: CommandMultiSelector | None = None
+
+    def pick(
+        self,
+        title: str,
+        text: str,
+        options: Sequence[CommandOption],
+        selected: str | None = None,
+    ) -> str | None:
+        offered = tuple(options)
+        # The cursor can only start on an offered value; "current" labels such
+        # as "provider default" are not options.
+        if selected not in {option.value for option in offered}:
+            selected = None
+        prompt = SelectionPrompt(
+            title=title, text=text, options=offered, selected=selected
+        )
+        return _run_selector(self.selector, prompt)
+
+    def ask(
+        self,
+        label: str,
+        *,
+        current: str | None = None,
+        clearable: bool = False,
+        optional: bool = False,
+    ) -> str | None:
+        """Read one line. None means cancelled (or empty, unless ``optional``)."""
+        hints = []
+        if current:
+            hints.append(f"current: {current}")
+        if clearable:
+            hints.append("'clear' to unset")
+        hints.append("Enter to skip" if optional else "Enter to cancel")
+        self.console.print(
+            f"[bold]{escape(label)}[/bold] [dim]({escape('; '.join(hints))})[/dim]"
+        )
+        reader = self.prompt_input or self.console.input
+        try:
+            text = reader("value> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            self.console.print("[yellow]Cancelled.[/yellow]")
+            return None
+        if not text and not optional:
+            self.console.print("[dim]Nothing entered; nothing changed.[/dim]")
+            return None
+        return text
+
+    def confirm(self, question: str, yes_label: str) -> bool:
+        return (
+            self.pick(
+                "Are you sure?",
+                question,
+                (CommandOption("yes", yes_label), CommandOption("no", "Cancel")),
+                selected="no",
+            )
+            == "yes"
+        )
+
+    def run(self, *parts: str) -> None:
+        """Run ``/config <parts>`` exactly as if it had been typed."""
+        _config(
+            shlex.join(parts), self.session, self.console, self.selector,
+            self.prompt_input,
+        )
+
+
+def _menu_setting_label(menu: _ConfigMenu, setting: _Setting) -> str:
+    if setting.current is None:
+        return setting.label
+    return f"{setting.label} — {setting.current(menu.session)}"
+
+
+def _menu_apply_setting(menu: _ConfigMenu, section: _Section, setting: _Setting) -> None:
+    """Gather the value for one setting and run the matching /config command."""
+    head = (section.name, *setting.action)
+    current = setting.current(menu.session) if setting.current else None
+
+    if setting.kind == "run":
+        if setting.confirm and not menu.confirm(setting.confirm, setting.label):
+            return
+        menu.run(*head)
+        return
+
+    if setting.kind == "toggle":
+        value = menu.pick(
+            setting.label, section.text, _ON_OFF(), selected=current
+        )
+    elif setting.kind == "choice":
+        assert setting.choices is not None
+        value = menu.pick(
+            setting.label, section.text, setting.choices(), selected=current
+        )
+    else:
+        clearable = setting.clear_value is not None
+        value = menu.ask(setting.ask or setting.label, current=current,
+                         clearable=clearable)
+        if value is not None and clearable and value.lower() in _CLEAR_WORDS:
+            value = setting.clear_value
+    if value is None:
+        return
+    menu.run(*head, setting.fmt.format(value))
+
+
+def _menu_loop(
+    menu: _ConfigMenu,
+    title: str,
+    text: str,
+    build: Callable[[], Sequence[CommandOption]],
+    act: Callable[[str], None],
+    *,
+    loop: bool,
+    empty: str = "",
+) -> None:
+    """Offer ``build()``'s options, run ``act`` on the pick, and optionally repeat."""
+    last: str | None = None
+    while True:
+        options = build()
+        if not options:
+            if empty:
+                menu.console.print(f"[dim]{empty}[/dim]")
+            return
+        choice = menu.pick(
+            title, text, (*options, CommandOption(_MENU_DONE, "Done")), selected=last
+        )
+        if choice is None or choice == _MENU_DONE:
+            return
+        last = choice
+        act(choice)
+        if not loop:
+            return
+
+
+def _menu_section(menu: _ConfigMenu, section: _Section) -> None:
+    """Edit one declaratively described section."""
+    settings = {setting.key: setting for setting in section.settings}
+    if len(section.settings) == 1:
+        _menu_apply_setting(menu, section, section.settings[0])
+        return
+    _menu_loop(
+        menu,
+        section.title,
+        section.text,
+        lambda: [
+            CommandOption(setting.key, _menu_setting_label(menu, setting))
+            for setting in section.settings
+        ],
+        lambda key: _menu_apply_setting(menu, section, settings[key]),
+        loop=section.loop,
+    )
+
+
+def _custom_providers() -> list[ProviderConfig]:
+    return [p for p in list_provider_configs() if p.id not in REGISTRY]
+
+
+def _pick_custom_provider(menu: _ConfigMenu, title: str) -> str | None:
+    providers = _custom_providers()
+    if not providers:
+        menu.console.print(
+            "[dim]No custom providers yet. Add one first; built-in providers "
+            "cannot be edited or removed.[/dim]"
+        )
+        return None
+    return menu.pick(
+        title,
+        "Only providers you added can be changed.",
+        [CommandOption(p.id, f"{p.name} ({p.id}) — {p.base_url}") for p in providers],
+    )
+
+
+_PROVIDER_EDIT_FIELDS = (
+    ("name", "Display name", False),
+    ("base_url", "Base URL", False),
+    ("model", "Model", False),
+    ("key_env", "API key environment variable", False),
+    ("compat", "API style (openai or anthropic)", False),
+    ("key_header", "Auth header", False),
+    ("key_prefix", "Auth header prefix", True),
+    ("api_version", "API version", True),
+)
+
+
+def _provider_edit_current(provider: ProviderConfig, field: str) -> str:
+    if field == "model":
+        return get_provider_model(provider.id) or ""
+    return str(getattr(provider, field, "") or "")
+
+
+def _menu_provider_add(menu: _ConfigMenu) -> None:
+    values: list[str] = []
+    for label in (
+        "Provider id (short, e.g. local)",
+        "Display name",
+        "Base URL (OpenAI-compatible, e.g. http://localhost:1234/v1)",
+        "Model id to use with it",
+    ):
+        value = menu.ask(label)
+        if value is None:
+            return
+        values.append(value)
+    key_env = menu.ask("API key environment variable", optional=True)
+    if key_env is None:
+        return
+    menu.run("providers", "add", *values, *([key_env] if key_env else []))
+
+
+def _menu_provider_edit(menu: _ConfigMenu) -> None:
+    provider_id = _pick_custom_provider(menu, "Edit which provider?")
+    if provider_id is None:
+        return
+    provider = get_provider_config(provider_id)
+    field = menu.pick(
+        f"Edit {provider_id}",
+        "Choose the field to change.",
+        [
+            CommandOption(
+                name, f"{label} — {_preview(_provider_edit_current(provider, name))}"
+            )
+            for name, label, _clearable in _PROVIDER_EDIT_FIELDS
+        ],
+    )
+    if field is None:
+        return
+    _name, label, clearable = next(
+        item for item in _PROVIDER_EDIT_FIELDS if item[0] == field
+    )
+    value = menu.ask(
+        f"New {label.lower()}",
+        current=_provider_edit_current(provider, field) or None,
+        clearable=clearable,
+    )
+    if value is None:
+        return
+    if clearable and value.lower() in _CLEAR_WORDS:
+        value = ""
+    menu.run("providers", "edit", provider_id, f"{field}={value}")
+
+
+def _menu_providers(menu: _ConfigMenu) -> None:
+    def act(choice: str) -> None:
+        if choice == "list":
+            menu.run("providers")
+        elif choice == "use":
+            picked = menu.pick(
+                "Use a provider",
+                "Choose the provider to use.",
+                [_provider_option(p) for p in list_provider_configs()],
+                selected=menu.session.provider_id,
+            )
+            if picked is not None:
+                # Same path as /provider <id>: asks for a model when none is chosen.
+                _provider(picked, menu.session, menu.console, menu.selector)
+        elif choice == "add":
+            _menu_provider_add(menu)
+        elif choice == "edit":
+            _menu_provider_edit(menu)
+        elif choice == "remove":
+            provider_id = _pick_custom_provider(menu, "Remove which provider?")
+            if provider_id is not None and menu.confirm(
+                f"Remove the provider '{provider_id}'?", f"Remove {provider_id}"
+            ):
+                menu.run("providers", "remove", provider_id)
+
+    _menu_loop(
+        menu,
+        "Providers",
+        "What do you want to do?",
+        lambda: [
+            CommandOption("use", "Use a provider"),
+            CommandOption("add", "Add a custom provider"),
+            CommandOption("edit", "Edit a custom provider"),
+            CommandOption("remove", "Remove a custom provider"),
+            CommandOption("list", "List providers"),
+        ],
+        act,
+        loop=False,
+    )
+
+
+def _menu_model(menu: _ConfigMenu) -> None:
+    session = menu.session
+
+    def act(choice: str) -> None:
+        if choice == "choose":
+            prompt = model_selection_prompt(session.provider, session.model, menu.console)
+            if not prompt.options:
+                menu.console.print(f"[yellow]{prompt.empty_message}[/yellow]")
+                return
+            picked = _run_selector(menu.selector, prompt)
+            if picked is not None:
+                menu.run("model", "set", picked)
+        elif choice == "type":
+            model = menu.ask("Model id", current=session.model or None)
+            if model is not None:
+                menu.run("model", "set", model)
+        elif choice == "forget":
+            menu.run("model", "reset")
+
+    _menu_loop(
+        menu,
+        f"Model for {session.provider.name}",
+        f"Current model: {session.model or '(none chosen)'}",
+        lambda: [
+            CommandOption("choose", "Choose from the provider's models"),
+            CommandOption("type", "Type a model id"),
+            CommandOption("forget", "Forget the chosen model"),
+        ],
+        act,
+        loop=False,
+    )
+
+
+def _menu_models(menu: _ConfigMenu) -> None:
+    session = menu.session
+    provider_id = session.provider_id
+
+    def choose_models(mode: str, question: str) -> None:
+        models: list[str]
+        if menu.multi_selector is not None:
+            catalog = get_model_catalog(provider_id)
+            if not catalog.models:
+                menu.console.print(
+                    "[dim]No models are listed yet. Refresh the catalog first.[/dim]"
+                )
+                return
+            current = get_model_filter(provider_id)
+            checklist = MultiSelectionPrompt(
+                title="Choose models",
+                text=question,
+                options=tuple(CommandOption(m, m) for m in catalog.models),
+                selected=tuple(current["models"]) if current["mode"] == mode else (),
+            )
+            chosen = menu.multi_selector(checklist)
+            models = list(chosen or [])
+        else:
+            typed = menu.ask(f"{question} Model ids, separated by spaces")
+            models = typed.split() if typed else []
+        if not models:
+            menu.console.print("[dim]No models chosen; nothing changed.[/dim]")
+            return
+        menu.run("models", mode, *models)
+
+    def act(choice: str) -> None:
+        if choice == "refresh":
+            menu.run("models", "refresh")
+        elif choice == "allow":
+            choose_models("allow", "Only show these models.")
+        elif choice == "deny":
+            choose_models("deny", "Hide these models.")
+        elif choice == "clear":
+            menu.run("models", "clear")
+
+    visibility = get_model_filter(provider_id)["mode"]
+    _menu_loop(
+        menu,
+        f"Models for {session.provider.name}",
+        f"Model visibility: {visibility}.",
+        lambda: [
+            CommandOption("refresh", "Refresh the model catalog from the provider"),
+            CommandOption("allow", "Only show models I choose"),
+            CommandOption("deny", "Hide models I choose"),
+            CommandOption("clear", "Show every model (clear the filter)"),
+        ],
+        act,
+        loop=False,
+    )
+
+
+def _menu_permissions(menu: _ConfigMenu) -> None:
+    session = menu.session
+
+    def build() -> list[CommandOption]:
+        tools = sorted(session.always_allowed)
+        if not tools:
+            return []
+        return [
+            *(CommandOption(f"remove:{name}", f"Stop auto-approving {name}") for name in tools),
+            CommandOption("clear", "Stop auto-approving every tool"),
+        ]
+
+    def act(choice: str) -> None:
+        if choice == "clear":
+            if menu.confirm("Remove every persisted tool approval?", "Remove all"):
+                menu.run("permissions", "clear")
+        else:
+            menu.run("permissions", "remove", choice.removeprefix("remove:"))
+
+    _menu_loop(
+        menu,
+        "Always-allowed tools",
+        "Tools you approved with 'always'. Pick one to require approval again.",
+        build,
+        act,
+        loop=True,
+        empty="No persisted tool approvals. Answer 'always' at an approval "
+        "prompt to add one.",
+    )
+
+
+def _menu_commands(menu: _ConfigMenu) -> None:
+    def rules() -> list[tuple[str, str]]:
+        current = get_command_rules()
+        return [
+            (kind, pattern) for kind in ("deny", "allow") for pattern in current[kind]
+        ]
+
+    def act(choice: str) -> None:
+        if choice in {"allow", "deny"}:
+            verb = "auto-approve" if choice == "allow" else "block"
+            pattern = menu.ask(f"Regex for commands to {verb}")
+            if pattern is not None:
+                menu.run("commands", choice, pattern)
+        elif choice == "remove":
+            existing = rules()
+            if not existing:
+                menu.console.print("[dim]No command rules set.[/dim]")
+                return
+            picked = menu.pick(
+                "Remove a rule",
+                "Pick the rule to remove.",
+                [
+                    CommandOption(str(index), f"{kind}: {pattern}")
+                    for index, (kind, pattern) in enumerate(existing)
+                ],
+            )
+            if picked is not None:
+                kind, pattern = existing[int(picked)]
+                menu.run("commands", "remove", kind, pattern)
+        elif choice == "clear":
+            if menu.confirm("Remove every command rule?", "Remove all rules"):
+                menu.run("commands", "clear")
+
+    def build() -> list[CommandOption]:
+        current = get_command_rules()
+        return [
+            CommandOption("allow", "Auto-approve commands matching a regex"),
+            CommandOption("deny", "Block commands matching a regex"),
+            CommandOption(
+                "remove",
+                f"Remove a rule ({len(current['deny'])} deny, {len(current['allow'])} allow)",
+            ),
+            CommandOption("clear", "Remove every rule"),
+        ]
+
+    _menu_loop(
+        menu,
+        "Shell command rules",
+        "Rules apply to the run_bash tool. Deny rules win over allow rules.",
+        build,
+        act,
+        loop=True,
+    )
+
+
+def _menu_profile(menu: _ConfigMenu) -> None:
+    def pick_profile(title: str) -> str | None:
+        profiles = get_profiles()
+        if not profiles:
+            menu.console.print(
+                "[dim]No profiles saved. Save one first.[/dim]"
+            )
+            return None
+        return menu.pick(
+            title,
+            "Profiles capture provider, model, and mode.",
+            [CommandOption(name, name) for name in sorted(profiles)],
+        )
+
+    def act(choice: str) -> None:
+        if choice == "save":
+            name = menu.ask("Profile name (saves the current settings)")
+            if name is not None:
+                menu.run("profile", "save", name)
+        elif choice == "use":
+            name = pick_profile("Apply which profile?")
+            if name is not None:
+                menu.run("profile", "use", name)
+        elif choice == "show":
+            name = pick_profile("Show which profile?")
+            if name is not None:
+                menu.run("profile", "show", name)
+        elif choice == "remove":
+            name = pick_profile("Remove which profile?")
+            if name is not None and menu.confirm(
+                f"Remove the profile '{name}'?", f"Remove {name}"
+            ):
+                menu.run("profile", "remove", name)
+        elif choice == "list":
+            menu.run("profile", "list")
+
+    _menu_loop(
+        menu,
+        "Configuration profiles",
+        "Save the current settings, or switch to a saved set.",
+        lambda: [
+            CommandOption("save", "Save the current settings as a profile"),
+            CommandOption("use", "Apply a saved profile"),
+            CommandOption("show", "Show a saved profile"),
+            CommandOption("remove", "Remove a saved profile"),
+            CommandOption("list", "List saved profiles"),
+        ],
+        act,
+        loop=False,
+    )
+
+
+_CONFIG_EDITORS: dict[str, Callable[[_ConfigMenu], None]] = {
+    "providers": _menu_providers,
+    "provider": _menu_providers,
+    "model": _menu_model,
+    "models": _menu_models,
+    "permissions": _menu_permissions,
+    "commands": _menu_commands,
+    "profile": _menu_profile,
+}
+
+
 def _config_interact(
     session: Session,
     console: Console,
     selector: CommandSelector,
     prompt_input: Callable[[str], str] | None,
+    multi_selector: CommandMultiSelector | None = None,
 ) -> str:
-    """Staged interactive configuration: section menu, then deeper steps."""
+    """Staged interactive configuration: section menu, then an editor per section."""
     section_prompt = SelectionPrompt(
         title="Configure KiwiMateCoder",
         text=(
-            "Pick a setting to view or change. Keys lets you set or remove an "
-            "API key interactively."
+            "Pick a setting to change it. Each one asks for the new value and "
+            "saves it. Show and help only print."
         ),
         options=(
             CommandOption("show", "Show active providers, model, key, filter"),
-            CommandOption("providers", "List providers (add/remove/use/edit)"),
+            CommandOption("providers", "Switch, add, edit, or remove providers"),
             CommandOption("keys", "Set or remove an API key"),
             CommandOption("model", "Choose or forget the provider's model"),
             CommandOption("models", "Manage model visibility / refresh catalog"),
@@ -3338,12 +4518,12 @@ def _config_interact(
                 "media", "Opt-in image and video generation (provider/models/size)"
             ),
             CommandOption("telemetry", "Opt-in local telemetry and crash reports"),
-            CommandOption("style", "Show or set the output style"),
+            CommandOption("style", "Set the output style"),
             CommandOption(
                 "ui",
                 "Theme, color, output, ASCII, locale, keys, notify, and spinners",
             ),
-            CommandOption("prompt", "Show, set, or clear a custom system prompt"),
+            CommandOption("prompt", "Set or clear a custom system prompt"),
             CommandOption("profile", "Save or apply configuration profiles"),
             CommandOption("team", "Load a shared team policy overlay"),
             CommandOption("cache", "Toggle Anthropic prompt caching"),
@@ -3356,6 +4536,9 @@ def _config_interact(
 
     if section == "show":
         _config_show(session, console)
+        return CommandResult.CONTINUE
+    if section == "help":
+        _config_help(console)
         return CommandResult.CONTINUE
     if section == "keys":
         provider_prompt = SelectionPrompt(
@@ -3376,36 +4559,15 @@ def _config_interact(
             return CommandResult.CONTINUE
         _config_key_enter(provider_id, console, selector, prompt_input)
         return CommandResult.CONTINUE
-    if section in {"providers", "provider"}:
-        _config_providers([], session, console)
+
+    menu = _ConfigMenu(session, console, selector, prompt_input, multi_selector)
+    editor = _CONFIG_EDITORS.get(section)
+    if editor is not None:
+        editor(menu)
         return CommandResult.CONTINUE
-    if section in {
-        "model",
-        "models",
-        "mode",
-        "help",
-        "permissions",
-        "sampling",
-        "browser",
-        "shell",
-        "remote",
-        "acp",
-        "web",
-        "network",
-        "vision",
-        "media",
-        "telemetry",
-        "style",
-        "ui",
-        "prompt",
-        "profile",
-        "team",
-        "cache",
-        "commands",
-        "trust",
-    }:
-        _config(section, session, console, selector, prompt_input)
-        return CommandResult.CONTINUE
+    spec = _CONFIG_SECTIONS.get(section)
+    if spec is not None:
+        _menu_section(menu, spec)
     return CommandResult.CONTINUE
 
 
