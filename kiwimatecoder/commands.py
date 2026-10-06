@@ -209,7 +209,7 @@ def dispatch(
         checklist = _multi_selection_prompt(session)
         if checklist is not None:
             if not checklist.options:
-                console.print(f"[yellow]{checklist.empty_message}[/yellow]")
+                console.print(f"[yellow]{escape(checklist.empty_message)}[/yellow]")
                 return CommandResult.CONTINUE
             chosen = multi_selector(checklist)
             if chosen is None:
@@ -225,7 +225,7 @@ def dispatch(
         prompt = _selection_prompt(name, session, console)
         if prompt is not None:
             if not prompt.options:
-                console.print(f"[yellow]{prompt.empty_message}[/yellow]")
+                console.print(f"[yellow]{escape(prompt.empty_message)}[/yellow]")
                 return CommandResult.CONTINUE
             selected = selector(prompt)
             if selected is None:
@@ -351,32 +351,32 @@ def _report_catalog(
     if catalog.source == "live":
         if verbose:
             console.print(
-                f"[green]Refreshed {provider.name} models[/green] — "
+                f"[green]Refreshed {escape(provider.name)} models[/green] — "
                 f"{len(catalog.models)} offered."
             )
         if catalog.added:
             console.print(
                 f"[green]New ({len(catalog.added)}):[/green] "
-                f"{summarize_ids(catalog.added)}"
+                f"{escape(summarize_ids(catalog.added))}"
             )
         if catalog.removed:
             console.print(
                 f"[yellow]Deprecated, removed ({len(catalog.removed)}):[/yellow] "
-                f"{summarize_ids(catalog.removed)}"
+                f"{escape(summarize_ids(catalog.removed))}"
             )
         if verbose and not catalog.added and not catalog.removed:
             console.print("[dim]No changes since the last check.[/dim]")
         if current and current not in catalog.models:
             console.print(
-                f"[yellow]Current model[/yellow] [cyan]{current}[/cyan] "
-                f"[yellow]is no longer offered by {provider.name}.[/yellow] "
+                f"[yellow]Current model[/yellow] [cyan]{escape(current)}[/cyan] "
+                f"[yellow]is no longer offered by {escape(provider.name)}.[/yellow] "
                 "Pick another with /model."
             )
         return
 
     if catalog.error:
         console.print(
-            f"[dim]Could not refresh models ({catalog.error}); "
+            f"[dim]Could not refresh models ({escape(str(catalog.error))}); "
             f"using the {'cached' if catalog.source == 'cache' else 'built-in'} "
             "list.[/dim]"
         )
@@ -393,7 +393,7 @@ def _provider_catalog(
     verbose: bool = False,
 ) -> ModelCatalog:
     """Resolve ``provider``'s catalog (``current`` pinned first) and report changes."""
-    with console.status(f"Checking {provider.name} for new models…"):
+    with console.status(f"Checking {escape(provider.name)} for new models…"):
         catalog = get_model_catalog(provider.id, refresh=True, force=force, keep=(current,))
     _report_catalog(catalog, provider, current, console, verbose=verbose)
     return catalog
@@ -445,8 +445,8 @@ def _warn_if_no_model(session: Session, console: Console) -> None:
     """Point at /model when the session's provider has no chosen model."""
     if not session.model:
         console.print(
-            f"[yellow]No model chosen for {session.provider.name} — choose one "
-            "with /model.[/yellow]"
+            f"[yellow]No model chosen for {escape(session.provider.name)} — choose "
+            "one with /model.[/yellow]"
         )
 
 
@@ -475,8 +475,8 @@ def _choose_provider_model(
             set_provider_model(provider.id, chosen)
             return chosen
     console.print(
-        f"[yellow]No model chosen for {provider.name} — choose one with "
-        f"{_model_hint(provider, session)}.[/yellow]"
+        f"[yellow]No model chosen for {escape(provider.name)} — choose one with "
+        f"{escape(_model_hint(provider, session))}.[/yellow]"
     )
     return ""
 
@@ -484,17 +484,17 @@ def _choose_provider_model(
 def _print_model_catalog(session: Session, console: Console, catalog: ModelCatalog) -> None:
     visible = apply_model_filter(session.provider_id, catalog.models)
     table = Table(
-        title=f"{session.provider.name} models ({_catalog_status(catalog)})",
+        title=escape(f"{session.provider.name} models ({_catalog_status(catalog)})"),
         show_header=True,
     )
     table.add_column("model", style="cyan")
     table.add_column("")
     for model in visible:
-        table.add_row(model, "active" if model == session.model else "")
+        table.add_row(escape(model), "active" if model == session.model else "")
     console.print(table)
     if not visible:
         console.print(
-            f"[yellow]{t('error.no_models', provider=session.provider_id)}[/yellow] "
+            f"[yellow]{escape(t('error.no_models', provider=session.provider_id))}[/yellow] "
             "Use /config models clear or /model <name>."
         )
 
@@ -503,14 +503,16 @@ def _print_model_search(
     session: Session, console: Console, models: Sequence[str], query: str
 ) -> None:
     table = Table(
-        title=f"{len(models)} match(es) for '{query}' "
-        f"({_catalog_status(get_model_catalog(session.provider_id))})",
+        title=escape(
+            f"{len(models)} match(es) for '{query}' "
+            f"({_catalog_status(get_model_catalog(session.provider_id))})"
+        ),
         show_header=True,
     )
     table.add_column("model", style="cyan")
     table.add_column("")
     for model in models:
-        table.add_row(model, "active" if model == session.model else "")
+        table.add_row(escape(model), "active" if model == session.model else "")
     console.print(table)
 
 
@@ -521,18 +523,22 @@ def _model_search(
     selector: CommandSelector | None,
 ) -> None:
     """Search the full catalog and offer the matches for selection."""
-    with console.status(f"Searching {session.provider.name} models for '{query}'…"):
+    with console.status(
+        f"Searching {escape(session.provider.name)} models for '{escape(query)}'…"
+    ):
         matches = search_model_catalog(
             session.provider_id, query, refresh=True, keep=(session.model,)
         )
     if not matches:
         console.print(
             "[yellow]"
-            + t(
-                "error.no_model_matches",
-                query=query,
-                provider=session.provider.name,
-                provider_id=session.provider_id,
+            + escape(
+                t(
+                    "error.no_model_matches",
+                    query=query,
+                    provider=session.provider.name,
+                    provider_id=session.provider_id,
+                )
             )
             + "[/yellow]"
         )
@@ -559,7 +565,7 @@ def _model_search(
 
 def _model(arg: str, session: Session, console: Console, selector: CommandSelector | None = None) -> str:
     if not arg:
-        console.print(f"Current model: [cyan]{session.model or '(none chosen)'}[/cyan]")
+        console.print(f"Current model: [cyan]{escape(session.model or '(none chosen)')}[/cyan]")
         return CommandResult.CONTINUE
 
     parts = arg.strip().split(maxsplit=1)
@@ -591,7 +597,7 @@ def _apply_model(session: Session, model: str, console: Console) -> None:
         set_provider_model(session.provider_id, model)
     except KeyError:
         pass  # a loaded session's provider may no longer exist in config
-    console.print(f"Model set to [cyan]{model}[/cyan].")
+    console.print(f"Model set to [cyan]{escape(model)}[/cyan].")
 
 
 def _provider(
@@ -611,20 +617,24 @@ def _provider(
                 marker = " (primary)" if p.id == session.provider_id else " (active)"
             else:
                 marker = ""
-            table.add_row(p.id + marker, _provider_display_name(p), _table_model(p))
+            table.add_row(
+                escape(p.id + marker),
+                escape(_provider_display_name(p)),
+                escape(_table_model(p)),
+            )
         console.print(table)
         return CommandResult.CONTINUE
     try:
         provider = get_provider_config(arg)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     session.set_active_providers(set_active_providers([arg]))
     if not session.model:
         session.model = _choose_provider_model(provider, session, console, selector)
     console.print(
-        f"Provider set to [cyan]{session.provider_id}[/cyan] "
-        f"(model: [cyan]{session.model or '(none chosen)'}[/cyan])."
+        f"Provider set to [cyan]{escape(session.provider_id)}[/cyan] "
+        f"(model: [cyan]{escape(session.model or '(none chosen)')}[/cyan])."
     )
     return CommandResult.CONTINUE
 
@@ -643,7 +653,7 @@ def _apply_provider_checklist(
     try:
         ids = set_active_providers(provider_ids)
     except (KeyError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return
     session.set_active_providers(ids)
     for provider_id in ids:
@@ -747,7 +757,7 @@ def _mode(arg: str, session: Session, console: Console) -> str:
     try:
         session.mode = PermissionMode.from_str(arg)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     console.print(f"Mode set to [cyan]{session.mode.value}[/cyan].")
     return CommandResult.CONTINUE
@@ -943,7 +953,7 @@ def _show_context(session: Session, console: Console) -> None:
         try:
             resolved = resolve_in_workspace(path, session.workspace_root)
         except PathError as exc:
-            table.add_row(path, f"[red]{exc}[/red]")
+            table.add_row(path, f"[red]{escape(str(exc))}[/red]")
             continue
         if not resolved.exists():
             table.add_row(path, "[yellow]missing[/yellow]")
@@ -960,7 +970,7 @@ def _context(arg: str, session: Session, console: Console) -> str:
     try:
         parts = shlex.split(arg)
     except ValueError as exc:
-        console.print(f"[red]Could not parse command: {exc}[/red]")
+        console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
 
     if not parts or parts[0] in {"list", "ls"}:
@@ -1310,17 +1320,18 @@ def _config_show(session: Session, console: Console) -> None:
     model_filter = get_model_filter(provider.id)
     active = [item.id for item in session.active_providers]
     active_line = ", ".join(
-        f"[cyan]{pid}[/cyan]" + (" (primary)" if pid == active[0] else "")
+        f"[cyan]{escape(pid)}[/cyan]" + (" (primary)" if pid == active[0] else "")
         for pid in active
     )
     console.print(
         f"Active providers: {active_line}\n"
-        f"Model: [cyan]{session.model or '(none chosen)'}[/cyan]\n"
-        f"Key: [cyan]{describe_key(provider.id)}[/cyan] ({provider.key_env})\n"
+        f"Model: [cyan]{escape(session.model or '(none chosen)')}[/cyan]\n"
+        f"Key: [cyan]{escape(describe_key(provider.id))}[/cyan] "
+        f"({escape(provider.key_env)})\n"
         f"Model visibility: [cyan]{model_filter['mode']}[/cyan]"
     )
     if model_filter["models"]:
-        console.print("Models: " + ", ".join(model_filter["models"]))
+        console.print("Models: " + escape(", ".join(model_filter["models"])))
     sampling = get_sampling()
     sampling_line = (
         ", ".join(f"{key}={value}" for key, value in sampling.items())
@@ -1328,9 +1339,10 @@ def _config_show(session: Session, console: Console) -> None:
     )
     console.print(
         f"Output style: [cyan]{session.output_style}[/cyan]\n"
-        f"Sampling: [cyan]{sampling_line}[/cyan]\n"
+        f"Sampling: [cyan]{escape(sampling_line)}[/cyan]\n"
         f"Custom system prompt: [cyan]{'set' if session.custom_system_prompt else 'none'}[/cyan]\n"
-        f"Always-allowed tools: [cyan]{', '.join(sorted(session.always_allowed)) or 'none'}[/cyan]\n"
+        "Always-allowed tools: [cyan]"
+        f"{escape(', '.join(sorted(session.always_allowed)) or 'none')}[/cyan]\n"
         f"Trusted workspace: [cyan]{'on' if session.trusted_workspace else 'off'}[/cyan]"
     )
     ui_config = get_ui()
@@ -1347,8 +1359,8 @@ def _config_show(session: Session, console: Console) -> None:
     network_config = get_network()
     console.print(
         "Network: proxy "
-        f"[cyan]{network_config['proxy'] or 'none'}[/cyan], "
-        f"CA [cyan]{network_config['ca_bundle'] or 'system'}[/cyan], "
+        f"[cyan]{escape(network_config['proxy'] or 'none')}[/cyan], "
+        f"CA [cyan]{escape(network_config['ca_bundle'] or 'system')}[/cyan], "
         f"offline [cyan]{'on' if network_config['offline'] else 'off'}[/cyan]"
     )
     remote_config = get_remote()
@@ -1362,7 +1374,9 @@ def _config_show(session: Session, console: Console) -> None:
     console.print(_telemetry_status_line(get_telemetry()))
     project_path = project_config_path()
     if project_path is not None:
-        console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
+        console.print(
+            f"Project config: [cyan]{escape(str(project_path))}[/cyan] (overrides global)"
+        )
     command_rules = get_command_rules()
     if command_rules["allow"] or command_rules["deny"]:
         console.print(
@@ -1402,12 +1416,12 @@ def _config_providers(
             if provider.key_prefix:
                 auth += f": {provider.key_prefix.strip()}"
             table.add_row(
-                provider.id + marker,
+                escape(provider.id + marker),
                 kind,
-                provider.name,
-                _table_model(provider),
-                auth,
-                provider.base_url,
+                escape(provider.name),
+                escape(_table_model(provider)),
+                escape(auth),
+                escape(provider.base_url),
             )
         console.print(table)
         return
@@ -1431,7 +1445,7 @@ def _config_providers(
         for pair in extras:
             if "=" not in pair:
                 console.print(
-                    f"[yellow]Expected field=value, got '{pair}'. "
+                    f"[yellow]Expected field=value, got '{escape(pair)}'. "
                     "Known fields: key_header, key_prefix, api_version.[/yellow]"
                 )
                 return
@@ -1439,7 +1453,7 @@ def _config_providers(
             field = field.strip()
             if field not in provider_add_fields:
                 console.print(
-                    f"[yellow]Unknown provider field '{field}'. "
+                    f"[yellow]Unknown provider field '{escape(field)}'. "
                     "Known fields: key_header, key_prefix, api_version.[/yellow]"
                 )
                 return
@@ -1454,11 +1468,11 @@ def _config_providers(
                 **options,
             )
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Added provider[/green] [cyan]{provider.id}[/cyan] "
-            f"({provider.name}) with model [cyan]{model}[/cyan]."
+            f"[green]Added provider[/green] [cyan]{escape(provider.id)}[/cyan] "
+            f"({escape(provider.name)}) with model [cyan]{escape(model)}[/cyan]."
         )
         return
 
@@ -1472,12 +1486,14 @@ def _config_providers(
         try:
             remove_provider(provider_id)
         except (KeyError, ValueError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if was_in_roster:
             remaining = [pid for pid in roster if pid != provider_id]
             session.set_active_providers(remaining or [DEFAULT_PROVIDER_ID])
-        console.print(f"[green]Removed provider[/green] [cyan]{provider_id}[/cyan].")
+        console.print(
+            f"[green]Removed provider[/green] [cyan]{escape(provider_id)}[/cyan]."
+        )
         _warn_if_no_model(session, console)
         return
 
@@ -1490,11 +1506,11 @@ def _config_providers(
             set_selected_provider(provider_id)
             session.set_active_providers([provider_id])
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"Provider set to [cyan]{session.provider_id}[/cyan] "
-            f"(model: [cyan]{session.model or '(none chosen)'}[/cyan])."
+            f"Provider set to [cyan]{escape(session.provider_id)}[/cyan] "
+            f"(model: [cyan]{escape(session.model or '(none chosen)')}[/cyan])."
         )
         _warn_if_no_model(session, console)
         return
@@ -1523,7 +1539,7 @@ def _config_providers(
         for pair in rest[1:]:
             if "=" not in pair:
                 console.print(
-                    f"[yellow]Expected field=value, got '{pair}'. "
+                    f"[yellow]Expected field=value, got '{escape(pair)}'. "
                     "Known fields: name, base_url, model, key_env, "
                     "compat, key_header, key_prefix, api_version.[/yellow]"
                 )
@@ -1532,7 +1548,7 @@ def _config_providers(
             field = field.strip()
             if field not in known_fields:
                 console.print(
-                    f"[yellow]Unknown provider field '{field}'. "
+                    f"[yellow]Unknown provider field '{escape(field)}'. "
                     "Known fields: name, base_url, model, key_env, "
                     "compat, key_header, key_prefix, api_version.[/yellow]"
                 )
@@ -1541,7 +1557,7 @@ def _config_providers(
         try:
             provider = update_provider(provider_id, **kwargs)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if "model" in kwargs:
             if provider.id == session.provider_id:
@@ -1549,7 +1565,7 @@ def _config_providers(
             else:
                 session.models.pop(provider.id, None)
         console.print(
-            f"[green]Updated provider[/green] [cyan]{provider.id}[/cyan]."
+            f"[green]Updated provider[/green] [cyan]{escape(provider.id)}[/cyan]."
         )
         return
 
@@ -1571,7 +1587,11 @@ def _config_keys(
         table.add_column("env var")
         table.add_column("status")
         for provider in list_provider_configs():
-            table.add_row(provider.id, provider.key_env, describe_key(provider.id))
+            table.add_row(
+                escape(provider.id),
+                escape(provider.key_env),
+                escape(describe_key(provider.id)),
+            )
         console.print(table)
         console.print(
             "[dim]Change a key with /config key set <provider> <key> or from "
@@ -1590,14 +1610,14 @@ def _config_keys(
         try:
             warning = set_key(provider_id, key)
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Saved API key for[/green] [cyan]{provider_id}[/cyan] — "
-            f"now {describe_key(provider_id)}."
+            f"[green]Saved API key for[/green] [cyan]{escape(provider_id)}[/cyan] — "
+            f"now {escape(describe_key(provider_id))}."
         )
         if warning:
-            console.print(f"[yellow]{warning}[/yellow]")
+            console.print(f"[yellow]{escape(warning)}[/yellow]")
         return
 
     if action in {"remove", "rm", "delete", "clear"}:
@@ -1608,14 +1628,14 @@ def _config_keys(
         try:
             existed = remove_key(provider_id)
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if existed:
             console.print(
-                f"[green]Removed stored API key for[/green] [cyan]{provider_id}[/cyan]."
+                f"[green]Removed stored API key for[/green] [cyan]{escape(provider_id)}[/cyan]."
             )
         else:
-            console.print(f"[dim]No stored API key for {provider_id}.[/dim]")
+            console.print(f"[dim]No stored API key for {escape(provider_id)}.[/dim]")
         return
 
     if action in {"edit", "change"}:
@@ -1646,7 +1666,7 @@ def _config_key_enter(
     try:
         get_provider_config(provider_id)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return
 
     action_prompt = SelectionPrompt(
@@ -1668,10 +1688,10 @@ def _config_key_enter(
         existed = remove_key(provider_id)
         if existed:
             console.print(
-                f"[green]Removed stored API key for[/green] [cyan]{provider_id}[/cyan]."
+                f"[green]Removed stored API key for[/green] [cyan]{escape(provider_id)}[/cyan]."
             )
         else:
-            console.print(f"[dim]No stored API key for {provider_id}.[/dim]")
+            console.print(f"[dim]No stored API key for {escape(provider_id)}.[/dim]")
         return
 
     if prompt_input is None:
@@ -1687,11 +1707,11 @@ def _config_key_enter(
         return
     warning = set_key(provider_id, new_key)
     console.print(
-        f"[green]Saved API key for[/green] [cyan]{provider_id}[/cyan] — "
-        f"now {describe_key(provider_id)}."
+        f"[green]Saved API key for[/green] [cyan]{escape(provider_id)}[/cyan] — "
+        f"now {escape(describe_key(provider_id))}."
     )
     if warning:
-        console.print(f"[yellow]{warning}[/yellow]")
+        console.print(f"[yellow]{escape(warning)}[/yellow]")
 
 
 def _config_model(action_parts: list[str], session: Session, console: Console) -> None:
@@ -1699,7 +1719,7 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
     rest = action_parts[1:]
 
     if action == "show":
-        console.print(f"Current model: [cyan]{session.model or '(none chosen)'}[/cyan]")
+        console.print(f"Current model: [cyan]{escape(session.model or '(none chosen)')}[/cyan]")
         return
     if action == "set":
         if not rest:
@@ -1711,7 +1731,7 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
             provider = get_provider_config(provider_id)
             set_provider_model(provider_id, model)
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if provider_id == session.provider_id:
             session.model = model
@@ -1720,7 +1740,8 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
             # uses the choice just saved.
             session.models.pop(provider_id, None)
         console.print(
-            f"[green]Model for {provider.name} set to[/green] [cyan]{model}[/cyan]."
+            f"[green]Model for {escape(provider.name)} set to[/green] "
+            f"[cyan]{escape(model)}[/cyan]."
         )
         return
     if action in {"reset", "clear"}:
@@ -1729,21 +1750,22 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
             provider = get_provider_config(provider_id)
             set_provider_model(provider_id, None)
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         session.models.pop(provider_id, None)
         if provider_id != session.provider_id:
-            console.print(f"[green]Model choice for {provider.name} cleared.[/green]")
+            console.print(f"[green]Model choice for {escape(provider.name)} cleared.[/green]")
             return
         session.model = resolve_model(provider)
         if session.model:
             console.print(
                 f"[green]Model choice cleared.[/green] Using "
-                f"[cyan]{session.model}[/cyan] from the {provider.name} server."
+                f"[cyan]{escape(session.model)}[/cyan] from the "
+                f"{escape(provider.name)} server."
             )
         else:
             console.print(
-                f"[green]Model choice for {provider.name} cleared.[/green] "
+                f"[green]Model choice for {escape(provider.name)} cleared.[/green] "
                 "Choose one with /model before chatting."
             )
         return
@@ -1766,7 +1788,7 @@ def _config_mode(action_parts: list[str], session: Session, console: Console) ->
         try:
             effective = set_default_mode(rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Default mode set to[/green] [cyan]{effective}[/cyan]."
@@ -1792,14 +1814,16 @@ def _config_models(action_parts: list[str], session: Session, console: Console) 
         catalog = get_model_catalog(provider_id)
         visible = apply_model_filter(provider_id, catalog.models)
         console.print(
-            f"Model visibility for [cyan]{provider_id}[/cyan]: "
+            f"Model visibility for [cyan]{escape(provider_id)}[/cyan]: "
             f"[cyan]{model_filter['mode']}[/cyan]\n"
             f"Catalog: [cyan]{_catalog_status(catalog)}[/cyan] "
             f"({len(catalog.models)} models)"
         )
         if model_filter["models"]:
-            console.print("Configured list: " + ", ".join(model_filter["models"]))
-        console.print("Shown in completions: " + (", ".join(visible) or "[none]"))
+            console.print("Configured list: " + escape(", ".join(model_filter["models"])))
+        console.print(
+            "Shown in completions: " + (escape(", ".join(visible)) or "\\[none]")
+        )
         return
 
     if action in {"refresh", "update", "fetch"}:
@@ -1814,11 +1838,11 @@ def _config_models(action_parts: list[str], session: Session, console: Console) 
         try:
             set_model_filter(provider_id, "allow", models)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Only showing these models for {provider_id}:[/green] "
-            + ", ".join(models)
+            f"[green]Only showing these models for {escape(provider_id)}:[/green] "
+            + escape(", ".join(models))
         )
         return
 
@@ -1829,17 +1853,17 @@ def _config_models(action_parts: list[str], session: Session, console: Console) 
         try:
             set_model_filter(provider_id, "deny", models)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Hiding these models for {provider_id}:[/green] "
-            + ", ".join(models)
+            f"[green]Hiding these models for {escape(provider_id)}:[/green] "
+            + escape(", ".join(models))
         )
         return
 
     if action in {"clear", "reset", "all"}:
         set_model_filter(provider_id, "all", [])
-        console.print(f"[green]Cleared model visibility for {provider_id}.[/green]")
+        console.print(f"[green]Cleared model visibility for {escape(provider_id)}.[/green]")
         return
 
     console.print("[yellow]Unknown models config action. Try /config help.[/yellow]")
@@ -1862,7 +1886,7 @@ def _config_permissions(
         table = Table(title="Always-allowed tools", show_header=True)
         table.add_column("Tool", style="cyan")
         for name in allowed:
-            table.add_row(name)
+            table.add_row(escape(name))
         console.print(table)
         return
 
@@ -1874,9 +1898,9 @@ def _config_permissions(
         removed = remove_always_allowed_tool(name)
         session.always_allowed.discard(name)
         if removed:
-            console.print(f"[green]Removed persisted approval for {name}.[/green]")
+            console.print(f"[green]Removed persisted approval for {escape(name)}.[/green]")
         else:
-            console.print(f"[dim]No persisted approval for {name}.[/dim]")
+            console.print(f"[dim]No persisted approval for {escape(name)}.[/dim]")
         return
 
     if action in {"clear", "reset"}:
@@ -1928,7 +1952,7 @@ def _config_verify(action_parts: list[str], session: Session, console: Console) 
         set_verify_command(command)
         session.verify_command = command
         console.print(
-            f"[green]Auto-verify command set:[/green] {command}\n"
+            f"[green]Auto-verify command set:[/green] {escape(command)}\n"
             "[dim]Run after successful file edits, with output fed back to the model.[/dim]"
         )
         return
@@ -1940,7 +1964,7 @@ def _config_verify(action_parts: list[str], session: Session, console: Console) 
         return
 
     if session.verify_command:
-        console.print(f"Auto-verify: [cyan]{session.verify_command}[/cyan]")
+        console.print(f"Auto-verify: [cyan]{escape(session.verify_command)}[/cyan]")
     else:
         console.print("[dim]Auto-verify is off. Set it with /config verify set <command>.[/dim]")
 
@@ -1969,7 +1993,7 @@ def _config_budget(action_parts: list[str], session: Session, console: Console) 
         try:
             set_budget(max_tokens=_limit(rest[0] if rest else None))
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         budget = get_budget()
         console.print(
@@ -1982,7 +2006,7 @@ def _config_budget(action_parts: list[str], session: Session, console: Console) 
         try:
             set_budget(max_cost_usd=_limit(rest[0] if rest else None))
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         budget = get_budget()
         console.print(
@@ -2011,7 +2035,7 @@ def _config_subagents(action_parts: list[str], console: Console) -> None:
         model = settings["model"] or "(session model)"
         console.print(
             f"Subagents: [cyan]{state}[/cyan] "
-            f"(max steps {settings['max_steps']}, model {model})"
+            f"(max steps {settings['max_steps']}, model {escape(model)})"
         )
         return
 
@@ -2035,7 +2059,7 @@ def _config_subagents(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_subagents(max_steps=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Subagent max steps:[/green] {settings['max_steps']}")
         return
@@ -2043,12 +2067,13 @@ def _config_subagents(action_parts: list[str], console: Console) -> None:
     if action == "model":
         if not rest:
             current = get_subagents()["model"] or "(session model)"
-            console.print(f"Subagent model: [cyan]{current}[/cyan]")
+            console.print(f"Subagent model: [cyan]{escape(current)}[/cyan]")
             return
         value = "" if rest[0].strip().lower() in {"clear", "none", "off"} else rest[0]
         settings = set_subagents(model=value)
         console.print(
-            f"[green]Subagent model:[/green] {settings['model'] or '(session model)'}"
+            "[green]Subagent model:[/green] "
+            f"{escape(settings['model'] or '(session model)')}"
         )
         return
 
@@ -2117,7 +2142,7 @@ def _config_browser(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_browser(timeout_ms=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         _reset_browser_driver()
         console.print(f"[green]Browser timeout:[/green] {settings['timeout_ms']}ms")
@@ -2168,7 +2193,7 @@ def _config_shell(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_shell_config(timeout=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Shell timeout:[/green] {settings['timeout']}s")
         return
@@ -2183,7 +2208,7 @@ def _config_shell(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_shell_config(max_jobs=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Background job cap:[/green] {settings['max_jobs']}")
         return
@@ -2241,9 +2266,9 @@ def _config_sandbox(action_parts: list[str], console: Console) -> None:
         try:
             set_sandbox(extra_writable=paths)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
-        console.print(f"[green]Writable in sandbox:[/green] {rest[0]}")
+        console.print(f"[green]Writable in sandbox:[/green] {escape(rest[0])}")
         return
 
     if action in {"remove-path", "remove"}:
@@ -2253,10 +2278,10 @@ def _config_sandbox(action_parts: list[str], console: Console) -> None:
         current = get_sandbox()["extra_writable"]
         paths = [item for item in current if item != rest[0]]
         if len(paths) == len(current):
-            console.print(f"[dim]No such writable path: {rest[0]}[/dim]")
+            console.print(f"[dim]No such writable path: {escape(rest[0])}[/dim]")
             return
         set_sandbox(extra_writable=paths)
-        console.print(f"[green]Removed writable path:[/green] {rest[0]}")
+        console.print(f"[green]Removed writable path:[/green] {escape(rest[0])}")
         return
 
     if action in {"clear-paths", "clear"}:
@@ -2307,7 +2332,7 @@ def _config_remote(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_remote(enabled=token == "on")
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Remote {'on' if settings['enabled'] else 'off'}.[/green]")
         return
@@ -2331,7 +2356,7 @@ def _config_remote(action_parts: list[str], console: Console) -> None:
             updates: dict[str, Any] = {field: rest[0]}
             settings = set_remote(**updates)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         updated = settings[field]
         shown = str(updated) if updated not in ("", None) else "(none)"
@@ -2361,7 +2386,7 @@ def _config_acp(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_acp(permission_timeout=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]ACP permission timeout: "
@@ -2388,7 +2413,7 @@ def _config_commands(  # noqa: C901 - small parser, mirrors the other config sec
         table.add_column("Pattern")
         for kind in ("deny", "allow"):
             for pattern in rules[kind]:
-                table.add_row(kind, pattern)
+                table.add_row(kind, escape(pattern))
         console.print(table)
         return
 
@@ -2402,10 +2427,10 @@ def _config_commands(  # noqa: C901 - small parser, mirrors the other config sec
         try:
             rules = add_command_rule(action, pattern)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         session.command_rules = rules
-        console.print(f"[green]Added {action} rule:[/green] {pattern}")
+        console.print(f"[green]Added {action} rule:[/green] {escape(pattern)}")
         return
 
     if action in {"remove", "rm", "delete"}:
@@ -2418,13 +2443,13 @@ def _config_commands(  # noqa: C901 - small parser, mirrors the other config sec
         try:
             existed = remove_command_rule(kind, pattern)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         session.command_rules = get_command_rules()
         if existed:
-            console.print(f"[green]Removed {kind} rule:[/green] {pattern}")
+            console.print(f"[green]Removed {kind} rule:[/green] {escape(pattern)}")
         else:
-            console.print(f"[dim]No such {kind} rule: {pattern}[/dim]")
+            console.print(f"[dim]No such {kind} rule: {escape(pattern)}[/dim]")
         return
 
     if action in {"clear", "reset"}:
@@ -2449,7 +2474,10 @@ def _config_sampling(action_parts: list[str], console: Console) -> None:
             return
         console.print(
             "Sampling: "
-            + ", ".join(f"[cyan]{key}[/cyan]={value}" for key, value in sampling.items())
+            + ", ".join(
+                f"[cyan]{key}[/cyan]={escape(str(value))}"
+                for key, value in sampling.items()
+            )
         )
         return
 
@@ -2463,18 +2491,18 @@ def _config_sampling(action_parts: list[str], console: Console) -> None:
         updates: dict[str, str] = {}
         for item in rest:
             if "=" not in item:
-                console.print(f"[red]Expected key=value, got '{item}'.[/red]")
+                console.print(f"[red]Expected key=value, got '{escape(item)}'.[/red]")
                 return
             key, value = item.split("=", 1)
             updates[key.strip()] = value.strip()
         try:
             effective = set_sampling(updates)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             "[green]Sampling set:[/green] "
-            + ", ".join(f"{key}={value}" for key, value in effective.items())
+            + ", ".join(f"{key}={escape(str(value))}" for key, value in effective.items())
         )
         return
 
@@ -2510,7 +2538,7 @@ def _config_web(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_web(max_chars=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Web max chars:[/green] {settings['max_chars']}"
@@ -2524,7 +2552,7 @@ def _config_web(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_web(timeout=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Web timeout:[/green] {settings['timeout']:g}s")
         return
@@ -2561,8 +2589,8 @@ def _config_network(action_parts: list[str], console: Console) -> None:
     if action in {"show", "list", "ls", "status"}:
         settings = get_network()
         console.print(
-            f"Proxy: [cyan]{settings['proxy'] or 'none'}[/cyan]\n"
-            f"CA bundle: [cyan]{settings['ca_bundle'] or 'system default'}[/cyan]\n"
+            f"Proxy: [cyan]{escape(settings['proxy'] or 'none')}[/cyan]\n"
+            f"CA bundle: [cyan]{escape(settings['ca_bundle'] or 'system default')}[/cyan]\n"
             f"Offline mode: [cyan]{'on' if settings['offline'] else 'off'}[/cyan]"
         )
         return
@@ -2575,9 +2603,9 @@ def _config_network(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_network(proxy=value)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
-        console.print(f"[green]Proxy:[/green] {settings['proxy'] or 'none'}")
+        console.print(f"[green]Proxy:[/green] {escape(settings['proxy'] or 'none')}")
         return
 
     if action in {"ca", "ca-bundle", "ca_bundle"}:
@@ -2590,11 +2618,11 @@ def _config_network(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_network(ca_bundle=value)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]CA bundle:[/green] "
-            f"{settings['ca_bundle'] or 'system default'}"
+            f"{escape(settings['ca_bundle'] or 'system default')}"
         )
         return
 
@@ -2643,7 +2671,7 @@ def _config_vision(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_vision(max_image_bytes=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Vision max image bytes:[/green] "
@@ -2658,7 +2686,7 @@ def _config_vision(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_vision(max_images_per_turn=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Vision max images per turn:[/green] "
@@ -2675,14 +2703,14 @@ def _media_status_line(settings: dict[str, Any]) -> str:
     video_model = settings["video_model"] or "none chosen"
     return (
         f"Media: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan] "
-        f"(provider [cyan]{settings['provider']}[/cyan], "
-        f"image model [cyan]{settings['model']}[/cyan], "
+        f"(provider [cyan]{escape(settings['provider'])}[/cyan], "
+        f"image model [cyan]{escape(settings['model'])}[/cyan], "
         f"size [cyan]{settings['size']}[/cyan], "
         f"video model [cyan]{escape(video_model)}[/cyan], "
         f"video [cyan]{settings['video_duration']}s"
         f"{' ' + escape(settings['video_size']) if settings['video_size'] else ''}"
         f"[/cyan], "
-        f"output [cyan]{settings['output_dir']}[/cyan])"
+        f"output [cyan]{escape(settings['output_dir'])}[/cyan])"
     )
 
 
@@ -2719,7 +2747,7 @@ def _config_media(action_parts: list[str], console: Console) -> None:
         try:
             set_media(enabled=enabled)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Media generation {'enabled' if enabled else 'disabled'}.[/green]"
@@ -2771,7 +2799,7 @@ def _config_media(action_parts: list[str], console: Console) -> None:
             else:
                 set_media(output_dir=value)
         except (ValueError, KeyError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(_media_status_line(get_media()))
         return
@@ -2787,7 +2815,7 @@ def _telemetry_status_line(settings: dict[str, Any]) -> str:
     return (
         f"Telemetry: [cyan]{state}[/cyan] "
         f"(level [cyan]{settings['level']}[/cyan], "
-        f"log [cyan]{telemetry.current_log_path()}[/cyan], "
+        f"log [cyan]{escape(str(telemetry.current_log_path()))}[/cyan], "
         f"{crashes} crash report(s))"
     )
 
@@ -2822,7 +2850,7 @@ def _config_telemetry(action_parts: list[str], console: Console) -> None:
         try:
             set_telemetry(enabled=enabled)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         telemetry.configure()
         settings = get_telemetry()
@@ -2851,7 +2879,7 @@ def _config_telemetry(action_parts: list[str], console: Console) -> None:
             else:
                 set_telemetry(max_log_bytes=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         telemetry.configure()
         console.print(_telemetry_status_line(get_telemetry()))
@@ -2938,7 +2966,7 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
                     console.print("[yellow]Usage: /config ui ascii <on|off>[/yellow]")
                     return
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         current = get_ui()
         console.print(
@@ -2979,7 +3007,7 @@ def _config_style(action_parts: list[str], session: Session, console: Console) -
         try:
             style = set_output_style(rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         session.output_style = style
         console.print(f"[green]Output style set to {style}.[/green]")
@@ -3014,7 +3042,7 @@ def _config_prompt(action_parts: list[str], session: Session, console: Console) 
 
     if session.custom_system_prompt:
         console.print("[bold]Custom system prompt:[/bold]")
-        console.print(session.custom_system_prompt)
+        console.print(escape(session.custom_system_prompt))
     else:
         console.print("[dim]No custom system prompt set.[/dim]")
 
@@ -3069,10 +3097,10 @@ def _config_profile(
         for name in sorted(profiles):
             values = profiles[name]
             table.add_row(
-                name,
-                str(values.get("provider") or ""),
-                str(values.get("model") or "(provider's chosen model)"),
-                str(values.get("mode") or ""),
+                escape(name),
+                escape(str(values.get("provider") or "")),
+                escape(str(values.get("model") or "(provider's chosen model)")),
+                escape(str(values.get("mode") or "")),
             )
         console.print(table)
         return
@@ -3083,9 +3111,9 @@ def _config_profile(
             return
         profile = get_profile(rest[0])
         if profile is None:
-            console.print(f"[red]Unknown profile '{rest[0]}'.[/red]")
+            console.print(f"[red]Unknown profile '{escape(rest[0])}'.[/red]")
             return
-        console.print(f"[bold]{rest[0]}[/bold]")
+        console.print(f"[bold]{escape(rest[0])}[/bold]")
         console.print_json(data=profile)
         return
 
@@ -3096,10 +3124,10 @@ def _config_profile(
         try:
             profile = save_profile(rest[0])
         except (ValueError, KeyError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Saved profile [cyan]{rest[0]}[/cyan][/green] "
+            f"[green]Saved profile [cyan]{escape(rest[0])}[/cyan][/green] "
             f"({len(profile)} setting(s))."
         )
         return
@@ -3112,13 +3140,13 @@ def _config_profile(
         try:
             profile = apply_profile(name)
         except (ValueError, KeyError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         apply_session_profile(session, profile)
         console.print(
-            f"[green]Applied profile [cyan]{name}[/cyan][/green] — "
-            f"provider: [cyan]{session.provider_id}[/cyan], "
-            f"model: [cyan]{session.model or '(none chosen)'}[/cyan], "
+            f"[green]Applied profile [cyan]{escape(name)}[/cyan][/green] — "
+            f"provider: [cyan]{escape(session.provider_id)}[/cyan], "
+            f"model: [cyan]{escape(session.model or '(none chosen)')}[/cyan], "
             f"mode: [cyan]{session.mode.value}[/cyan]."
         )
         _warn_if_no_model(session, console)
@@ -3129,9 +3157,9 @@ def _config_profile(
             console.print("[yellow]Usage: /config profile remove <name>[/yellow]")
             return
         if remove_profile(rest[0]):
-            console.print(f"[green]Removed profile {rest[0]}.[/green]")
+            console.print(f"[green]Removed profile {escape(rest[0])}.[/green]")
         else:
-            console.print(f"[dim]No profile named {rest[0]}.[/dim]")
+            console.print(f"[dim]No profile named {escape(rest[0])}.[/dim]")
         return
 
     console.print(
@@ -3159,7 +3187,7 @@ def _config_team(action_parts: list[str], console: Console) -> None:
         )
         for issue in team_module.policy_issues():
             color = "red" if issue["level"] == "error" else "yellow"
-            console.print(f"[{color}]{issue['message']}[/{color}]")
+            console.print(f"[{color}]{escape(issue['message'])}[/{color}]")
         try:
             policy = team_module.load_policy()
         except team_module.PolicyError:
@@ -3178,7 +3206,7 @@ def _config_team(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_team(policy_path=" ".join(rest))
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if settings["policy_path"]:
             console.print(
@@ -3203,7 +3231,7 @@ def _config_team(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_team(enforce=rest[0].lower() in {"on", "true", "enable"})
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             "[green]Team policy "
@@ -3230,7 +3258,7 @@ def _config(arg: str, session: Session, console: Console,
     try:
         parts = shlex.split(arg)
     except ValueError as exc:
-        console.print(f"[red]Could not parse command: {exc}[/red]")
+        console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
 
     if not parts or parts[0] in {"show", "status"}:
@@ -4389,7 +4417,7 @@ def _menu_model(menu: _ConfigMenu) -> None:
         if choice == "choose":
             prompt = model_selection_prompt(session.provider, session.model, menu.console)
             if not prompt.options:
-                menu.console.print(f"[yellow]{prompt.empty_message}[/yellow]")
+                menu.console.print(f"[yellow]{escape(prompt.empty_message)}[/yellow]")
                 return
             picked = _run_selector(menu.selector, prompt)
             if picked is not None:
@@ -4874,7 +4902,7 @@ def _share(arg: str, session: Session, console: Console) -> str:
     try:
         parts = shlex.split(arg)
     except ValueError as exc:
-        console.print(f"[red]Could not parse command: {exc}[/red]")
+        console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     include_tool_output = "--include-tool-output" in parts
     parts = [part for part in parts if part != "--include-tool-output"]
@@ -4899,7 +4927,7 @@ def _share(arg: str, session: Session, console: Console) -> str:
         try:
             saved = share_module.import_share(path, name)
         except (share_module.ShareError, OSError, ValueError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return CommandResult.CONTINUE
         console.print(
             f"[green]Imported session as [cyan]{saved.stem}[/cyan].[/green] "
@@ -5106,7 +5134,7 @@ def _memory_append(
     try:
         path = memory_module.append_memory(scope, session.workspace_root, text)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     console.print(f"[green]Saved to {scope} memory:[/green] {path}")
     return CommandResult.CONTINUE
@@ -5207,7 +5235,7 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
     try:
         parts = shlex.split(arg)
     except ValueError as exc:
-        console.print(f"[red]Could not parse command: {exc}[/red]")
+        console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
 
     action = parts[0].lower() if parts else "list"
@@ -5307,7 +5335,7 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
                 model=session.model,
             )
         except (ValueError, KeyError, jobs_module.JobError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return CommandResult.CONTINUE
         console.print(
             f"[green]Started job[/green] [cyan]{record.id}[/cyan] "
