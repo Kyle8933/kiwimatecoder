@@ -1585,7 +1585,7 @@ def budget_cmd(
         try:
             set_budget(max_tokens=limit)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1)
         console.print(f"[green]{_check()} Token budget:[/green] {get_budget().get('max_tokens')}")
         return
@@ -1594,7 +1594,7 @@ def budget_cmd(
         try:
             set_budget(max_cost_usd=limit)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1)
         console.print(
             f"[green]{_check()} Cost budget:[/green] ${get_budget().get('max_cost_usd')}"

@@ -586,6 +586,14 @@ def test_budget_invalid_value_is_reported(session):
     assert config.get_budget() == {}
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "1e999"])
+def test_budget_cost_menu_rejects_non_finite_values(session, value):
+    console = _run(session, Script("budget", "cost"), Typed(value))
+
+    assert "finite number" in _output(console)
+    assert config.get_budget() == {}
+
+
 def test_budget_remove_both_limits_needs_confirmation(session):
     config.set_budget(max_tokens="1000", max_cost_usd="1")
 

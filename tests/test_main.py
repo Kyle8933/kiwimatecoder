@@ -578,6 +578,26 @@ def test_setup_reads_a_piped_key_from_stdin_as_before(monkeypatch):
     assert config.get_key("unsloth") == "sk-unsloth-piped", result.output
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "1e999"])
+def test_cli_budget_cost_rejects_non_finite_limits(value):
+    result = CliRunner().invoke(main.app, ["config", "budget", "cost", value])
+
+    assert result.exit_code == 1
+    assert "finite number" in result.output
+    assert config.get_budget() == {}
+
+
+@pytest.mark.parametrize("action", ["cost", "tokens"])
+def test_cli_budget_error_echoes_a_bracketed_value_literally(action):
+    # The message quotes the rejected value; Rich must not parse it as markup
+    # (an unmatched "[/x]" used to raise MarkupError).
+    result = CliRunner().invoke(main.app, ["config", "budget", action, "[/x]"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)  # a clean exit, not a crash
+    assert "[/x]" in result.output
+
+
 def test_setup_unsloth_with_key_saves_and_selects(monkeypatch):
     monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
 

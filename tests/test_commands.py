@@ -1437,6 +1437,41 @@ def test_config_commands_allow_deny_and_clear(session):
     assert session.command_rules == {"allow": [], "deny": []}
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "1e999"])
+def test_config_budget_cost_rejects_non_finite_limits(session, value):
+    console = _console()
+
+    dispatch(f"/config budget cost {value}", session, console)
+
+    assert "finite number" in _output(console)
+    assert config.get_budget() == {}
+    # Nothing was written (a rejected value does not even create the file), and
+    # certainly not the non-standard JSON NaN/Infinity.
+    if config.CONFIG_FILE.exists():
+        assert "NaN" not in config.CONFIG_FILE.read_text()
+        assert "Infinity" not in config.CONFIG_FILE.read_text()
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "1e999"])
+def test_config_budget_tokens_rejects_non_finite_limits(session, value):
+    console = _console()
+
+    dispatch(f"/config budget tokens {value}", session, console)
+
+    assert "whole number" in _output(console)
+    assert config.get_budget() == {}
+
+
+def test_config_budget_ignores_a_hand_edited_non_finite_limit(session):
+    config.CONFIG_FILE.write_text('{"budget": {"max_tokens": 1e999, "max_cost_usd": NaN}}')
+    console = _console()
+
+    dispatch("/config budget", session, console)
+    dispatch("/config", session, console)  # the overview reads it too
+
+    assert "No budget limits set" in _output(console)
+
+
 def test_config_sampling_set_show_reset(session):
     console = _console()
 
