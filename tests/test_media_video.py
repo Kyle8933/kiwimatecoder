@@ -24,6 +24,8 @@ PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64
 WEBM_BYTES = b"\x1a\x45\xdf\xa3" + b"\x00" * 64
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+# Paths are shown workspace-relative with the OS separator (``\`` on Windows).
+MEDIA_DIR = os.path.join(".kiwimatecoder", "media")
 
 
 @pytest.fixture(autouse=True)
@@ -628,7 +630,7 @@ def test_generate_video_tool_saves_file(session, monkeypatch):
     )
 
     assert result.ok, result.content
-    assert "Generated video saved to .kiwimatecoder/media/" in result.content
+    assert f"Generated video saved to {MEDIA_DIR}{os.sep}" in result.content
     assert "job job-1" in result.content
     assert "$0.50" in result.content
 
@@ -719,7 +721,7 @@ def test_video_command_generates_and_reports(session, monkeypatch):
     output = _output(console)
     assert "Job job-1 submitted" in output
     assert "Saved" in output
-    assert ".kiwimatecoder/media/" in output
+    assert f"{MEDIA_DIR}{os.sep}" in output
     assert "$0.10" in output
     assert "billed per second" in output
 
@@ -828,7 +830,7 @@ def test_image_command_accepts_size_and_model_options(session, monkeypatch):
         {"prompt": 'a cat\'s "hat"', "size": "512x512", "model": "gpt-image-1"}
     ]
     output = _output(console)
-    assert ".kiwimatecoder/media/gen.png" in output  # workspace-relative
+    assert os.path.join(MEDIA_DIR, "gen.png") in output  # workspace-relative
     assert "attached to your next message" in output
     assert len(session.pending_images) == 1
 
