@@ -3366,6 +3366,8 @@ class _Setting:
     clear_value: str | None = None
     # For ``run``: a question to confirm first (for destructive actions).
     confirm: str = ""
+    # For ``choice``: what to say when there is nothing to choose from.
+    empty: str = ""
 
 
 @dataclass(frozen=True)
@@ -3395,12 +3397,15 @@ def _toggle(
 def _choice(
     key: str,
     label: str,
-    current: Callable[[Session], str],
+    current: Callable[[Session], str] | None,
     choices: Callable[[], Sequence[CommandOption]],
     *action: str,
     fmt: str = "{}",
+    empty: str = "",
 ) -> _Setting:
-    return _Setting(key, label, "choice", action, current, choices, fmt=fmt)
+    return _Setting(
+        key, label, "choice", action, current, choices, fmt=fmt, empty=empty
+    )
 
 
 def _text(
@@ -3423,6 +3428,20 @@ def _action(key: str, label: str, *action: str, confirm: str = "") -> _Setting:
 
 def _sampling_value(key: str) -> Callable[[Session], str]:
     return lambda _session: _preview(get_sampling().get(key), "provider default")
+
+
+def _budget_value(key: str, unit: str) -> Callable[[Session], str]:
+    def current(_session: Session) -> str:
+        value = get_budget().get(key)
+        if value is None:
+            return "no limit"
+        return f"{value:,.0f} {unit}" if key == "max_tokens" else f"${value:g}"
+
+    return current
+
+
+def _sandbox_paths() -> list[str]:
+    return list(get_sandbox()["extra_writable"])
 
 
 def _media_provider_choices() -> tuple[CommandOption, ...]:
@@ -3468,6 +3487,80 @@ _CONFIG_SECTIONS: dict[str, _Section] = {
                     "trust",
                     "Trusted workspace",
                     lambda s: _onoff(s.trusted_workspace),
+                ),
+            ),
+        ),
+        _Section(
+            "verify",
+            "Auto-verify",
+            "A command (tests, linter) run after successful file edits; its "
+            "output is fed back to the model.",
+            (
+                _text(
+                    "set",
+                    "Set the command",
+                    lambda s: _preview(s.verify_command, "off"),
+                    "Command to run after file edits, e.g. pytest -q",
+                    "set",
+                ),
+                _action("clear", "Turn auto-verify off", "clear"),
+            ),
+            loop=False,
+        ),
+        _Section(
+            "budget",
+            "Session budget",
+            "Limits for one session. Type 'clear' to remove a limit.",
+            (
+                _text(
+                    "tokens",
+                    "Token limit",
+                    _budget_value("max_tokens", "tokens"),
+                    "Maximum tokens for the session",
+                    "tokens",
+                    clear="clear",
+                ),
+                _text(
+                    "cost",
+                    "Cost limit",
+                    _budget_value("max_cost_usd", "USD"),
+                    "Maximum estimated spend in USD, e.g. 2.50",
+                    "cost",
+                    clear="clear",
+                ),
+                _action(
+                    "clear",
+                    "Remove both limits",
+                    "clear",
+                    confirm="Remove the token and cost limits?",
+                ),
+            ),
+        ),
+        _Section(
+            "subagents",
+            "Subagents",
+            "The task tool that hands work to a fresh sub-conversation.",
+            (
+                _toggle(
+                    "enable",
+                    "Subagents",
+                    lambda _s: _onoff(get_subagents()["enabled"]),
+                    "enable",
+                ),
+                _text(
+                    "max-steps",
+                    "Max steps per subagent",
+                    lambda _s: str(get_subagents()["max_steps"]),
+                    "Maximum steps a subagent may take",
+                    "max-steps",
+                ),
+                _text(
+                    "model",
+                    "Subagent model",
+                    lambda _s: _preview(get_subagents()["model"], "session model"),
+                    "Model id for subagents",
+                    "model",
+                    clear="clear",
                 ),
             ),
         ),
@@ -3564,6 +3657,47 @@ _CONFIG_SECTIONS: dict[str, _Section] = {
                     lambda _s: str(get_shell_config()["max_jobs"]),
                     "Maximum concurrent background jobs",
                     "max-jobs",
+                ),
+            ),
+        ),
+        _Section(
+            "sandbox",
+            "Shell sandbox",
+            "Run shell commands in an OS sandbox (seatbelt on macOS, bubblewrap "
+            "on Linux).",
+            (
+                _toggle(
+                    "enable",
+                    "Sandbox",
+                    lambda _s: _onoff(get_sandbox()["enabled"]),
+                    "enable",
+                ),
+                _toggle(
+                    "network",
+                    "Network access inside the sandbox",
+                    lambda _s: _onoff(get_sandbox()["network"]),
+                    "network",
+                ),
+                _text(
+                    "add-path",
+                    "Add a writable path",
+                    lambda _s: _preview(", ".join(_sandbox_paths())),
+                    "Directory shell commands may write to",
+                    "add-path",
+                ),
+                _choice(
+                    "remove-path",
+                    "Remove a writable path",
+                    None,
+                    lambda: tuple(CommandOption(path, path) for path in _sandbox_paths()),
+                    "remove-path",
+                    empty="No extra writable paths are set.",
+                ),
+                _action(
+                    "clear-paths",
+                    "Remove every extra writable path",
+                    "clear-paths",
+                    confirm="Remove every extra writable path?",
                 ),
             ),
         ),
@@ -4054,9 +4188,13 @@ def _menu_apply_setting(menu: _ConfigMenu, section: _Section, setting: _Setting)
         )
     elif setting.kind == "choice":
         assert setting.choices is not None
-        value = menu.pick(
-            setting.label, section.text, setting.choices(), selected=current
-        )
+        options = setting.choices()
+        if not options:
+            menu.console.print(
+                f"[dim]{escape(setting.empty or 'Nothing to choose from.')}[/dim]"
+            )
+            return
+        value = menu.pick(setting.label, section.text, options, selected=current)
     else:
         clearable = setting.clear_value is not None
         value = menu.ask(setting.ask or setting.label, current=current,
@@ -4506,9 +4644,13 @@ def _config_interact(
             CommandOption("permissions", "Manage tools approved with 'always'"),
             CommandOption("commands", "Manage shell command allow/deny rules"),
             CommandOption("trust", "Allow reads outside the workspace root"),
+            CommandOption("verify", "Run a command after file edits (tests, linter)"),
+            CommandOption("budget", "Set session token and cost limits"),
+            CommandOption("subagents", "Subagent task tool and its step limit"),
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
             CommandOption("browser", "Optional Playwright browser automation"),
             CommandOption("shell", "Persistent shell and background job settings"),
+            CommandOption("sandbox", "OS sandbox for shell commands"),
             CommandOption("remote", "SSH/devcontainer command execution"),
             CommandOption("acp", "ACP editor-integration permission timeout"),
             CommandOption("web", "Web fetch/search limits and local access"),

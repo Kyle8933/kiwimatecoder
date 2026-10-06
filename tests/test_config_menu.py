@@ -10,7 +10,7 @@ import io
 import pytest
 from rich.console import Console
 
-from kiwimatecoder import catalog, config
+from kiwimatecoder import catalog, config, i18n
 from kiwimatecoder.commands import (
     _CONFIG_SECTIONS,
     _MENU_DONE,
@@ -39,6 +39,11 @@ def isolate_config(tmp_path, monkeypatch):
         monkeypatch.delenv(provider.key_env, raising=False)
     monkeypatch.delenv("LOCAL_API_KEY", raising=False)
     monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
+    # `/config ui locale` switches the process-wide language; put it back so
+    # later tests (in any file) still see English.
+    i18n.set_locale(i18n.DEFAULT_LOCALE)
+    yield
+    i18n.set_locale(i18n.DEFAULT_LOCALE)
 
 
 class Script:
@@ -119,18 +124,19 @@ def test_menu_lists_every_section_this_suite_knows_about(session):
     # If a section is added to the menu it must be added to the checks below.
     assert sections == {
         "show", "providers", "keys", "model", "models", "mode", "permissions",
-        "commands", "trust", "sampling", "browser", "shell", "remote", "acp", "web",
-        "network", "vision", "media", "telemetry", "style", "ui", "prompt",
-        "profile", "team", "cache", "help",
+        "commands", "trust", "verify", "budget", "subagents", "sampling", "browser",
+        "shell", "sandbox", "remote", "acp", "web", "network", "vision", "media",
+        "telemetry", "style", "ui", "prompt", "profile", "team", "cache", "help",
     }
 
 
 @pytest.mark.parametrize(
     "section",
     [
-        "providers", "model", "models", "mode", "commands", "trust", "sampling",
-        "browser", "shell", "remote", "acp", "web", "network", "vision", "media",
-        "telemetry", "style", "ui", "prompt", "profile", "team", "cache",
+        "providers", "model", "models", "mode", "commands", "trust", "verify",
+        "budget", "subagents", "sampling", "browser", "shell", "sandbox", "remote",
+        "acp", "web", "network", "vision", "media", "telemetry", "style", "ui",
+        "prompt", "profile", "team", "cache",
     ],
 )
 def test_picking_a_section_asks_what_to_change(section, session, monkeypatch):
@@ -507,6 +513,152 @@ def test_team_policy_path_and_enforce(session, tmp_path):
 
     _run(session, Script("team", "policy"), Typed("clear"))
     assert config.get_team()["policy_path"] == ""
+
+
+# ---------------------------------------------------------------------------
+# verify, budget, subagents, sandbox
+# ---------------------------------------------------------------------------
+
+
+def test_verify_command_is_typed_and_keeps_its_spaces_and_operators(session):
+    console = _run(session, Script("verify", "set"), Typed("pytest -q && ruff check ."))
+
+    assert config.get_verify_command() == "pytest -q && ruff check ."
+    assert session.verify_command == "pytest -q && ruff check ."
+    assert "Auto-verify command set" in _output(console)
+
+
+def test_verify_can_be_turned_off(session):
+    config.set_verify_command("pytest")
+    session.verify_command = "pytest"
+
+    console = _run(session, Script("verify", "clear"))
+
+    assert config.get_verify_command() == ""
+    assert session.verify_command == ""
+    assert "Auto-verify disabled" in _output(console)
+
+
+def test_verify_list_shows_the_current_command(session):
+    session.verify_command = "pytest -q"
+    script = Script("verify")
+
+    _run(session, script)
+
+    labels = {o.value: o.label for o in script.prompts[1].options}
+    assert labels["set"] == "Set the command — pytest -q"
+
+
+def test_budget_shows_no_limit_then_the_limits(session):
+    script = Script("budget")
+    _run(session, script)
+    labels = {o.value: o.label for o in script.prompts[1].options}
+    assert labels["tokens"] == "Token limit — no limit"
+    assert labels["cost"] == "Cost limit — no limit"
+
+    config.set_budget(max_tokens="50000", max_cost_usd="2.5")
+    script = Script("budget")
+    _run(session, script)
+    labels = {o.value: o.label for o in script.prompts[1].options}
+    assert labels["tokens"] == "Token limit — 50,000 tokens"
+    assert labels["cost"] == "Cost limit — $2.5"
+
+
+def test_budget_set_each_limit_and_clear_one(session):
+    script = Script("budget", "tokens", "cost", "tokens", "__done__")
+    typed = Typed("50000", "2.50", "clear")
+
+    _run(session, script, typed)
+
+    # The token limit was set, then cleared; the cost limit remains.
+    assert config.get_budget() == {"max_cost_usd": 2.5}
+
+
+def test_budget_invalid_value_is_reported(session):
+    console = _run(session, Script("budget", "tokens"), Typed("lots"))
+
+    assert config.get_budget() == {}
+    assert _output(console).strip() != ""
+
+
+def test_budget_remove_both_limits_needs_confirmation(session):
+    config.set_budget(max_tokens="1000", max_cost_usd="1")
+
+    _run(session, Script("budget", "clear", "no"))
+    assert config.get_budget() == {"max_tokens": 1000, "max_cost_usd": 1.0}
+
+    _run(session, Script("budget", "clear", "yes"))
+    assert config.get_budget() == {}
+
+
+def test_subagents_toggle_steps_and_model(session):
+    script = Script("subagents", "enable", "off", "max-steps", "model", "__done__")
+    typed = Typed("12", "vendor/small")
+
+    _run(session, script, typed)
+
+    subagents = config.get_subagents()
+    assert subagents["enabled"] is False
+    assert subagents["max_steps"] == 12
+    assert subagents["model"] == "vendor/small"
+
+
+def test_subagents_model_can_be_cleared(session):
+    config.set_subagents(model="vendor/small")
+
+    _run(session, Script("subagents", "model"), Typed("clear"))
+
+    assert config.get_subagents()["model"] in ("", None)
+
+
+def test_subagents_toggle_starts_on_the_current_value(session):
+    script = Script("subagents", "enable", "on")
+
+    _run(session, script)
+
+    # Subagents default to on, so the cursor starts there.
+    assert script.prompts[2].selected == "on"
+
+
+def test_sandbox_toggles(session):
+    script = Script("sandbox", "enable", "on", "network", "off", "__done__")
+
+    _run(session, script)
+
+    sandbox = config.get_sandbox()
+    assert sandbox["enabled"] is True
+    assert sandbox["network"] is False
+
+
+def test_sandbox_add_and_remove_a_writable_path(session):
+    script = Script("sandbox", "add-path", "add-path", "remove-path", "/data/cache")
+    typed = Typed("/data/cache", "/data/out")
+
+    _run(session, script, typed)
+
+    assert config.get_sandbox()["extra_writable"] == ["/data/out"]
+    # The remove list offered exactly what was set at that moment.
+    assert script.options(4) == ["/data/cache", "/data/out"]
+
+
+def test_sandbox_remove_path_with_none_set_says_so(session):
+    script = Script("sandbox", "remove-path")
+
+    console = _run(session, script)
+
+    assert "No extra writable paths" in _output(console)
+    # Only the top menu and the section list were shown; no empty picker.
+    assert len(script.prompts) == 3
+
+
+def test_sandbox_clear_paths_needs_confirmation(session):
+    config.set_sandbox(extra_writable=["/a", "/b"])
+
+    _run(session, Script("sandbox", "clear-paths", "no"))
+    assert config.get_sandbox()["extra_writable"] == ["/a", "/b"]
+
+    _run(session, Script("sandbox", "clear-paths", "yes"))
+    assert config.get_sandbox()["extra_writable"] == []
 
 
 # ---------------------------------------------------------------------------
