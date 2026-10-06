@@ -13,15 +13,18 @@ The detector is ``StrictConsole`` from test_config_markup: it sits at
 from __future__ import annotations
 
 import collections
+import json
+import os
 
 import pytest
 import typer
 import typer.testing
+from rich.text import Text
 from typer.testing import CliRunner
 
 from kiwimatecoder import config, i18n, main, ui
 from kiwimatecoder.providers import REGISTRY
-from tests.test_config_markup import HOSTILE, StrictConsole
+from tests.test_config_markup import HOSTILE, StrictConsole, hand_edit_config, seed_every_section
 
 # Anything that launches the agent, needs the network, or spawns processes.
 DENY_PREFIX = (
@@ -147,6 +150,15 @@ def test_the_sweep_covers_the_commands_that_took_typed_text(leaves):
     } <= driven
 
 
+# Leaves that wipe what the others show: run last, or `config prompt show` would
+# only ever see an empty prompt.
+WIPES = {"clear", "reset", "remove", "clear-paths", "unset", "disable", "forget"}
+
+
+def _is_wipe(path) -> bool:
+    return path[-1] in WIPES
+
+
 @pytest.mark.parametrize("hostile", HOSTILE)
 def test_cli_echoes_typed_values_literally(hostile, cli, monkeypatch, leaves):
     strict = _install(monkeypatch, hostile)
@@ -163,6 +175,12 @@ def test_cli_echoes_typed_values_literally(hostile, cli, monkeypatch, leaves):
         for problem in strict.problems:
             problems.setdefault(label, problem.replace(hostile, "<H>")[:140])
 
+    def show(*, wipes: bool) -> None:
+        for path, command in leaves:
+            required = [p for p in command.params if _is_argument(p) and p.required]
+            if _is_wipe(path) == wipes and (not _string_params(command) or not required):
+                run(list(path))
+
     for argv in SETUP:
         run(argv)
     serial = 0
@@ -170,11 +188,14 @@ def test_cli_echoes_typed_values_literally(hostile, cli, monkeypatch, leaves):
         for target in _string_params(command):
             serial += 1
             run(_argv(path, command, target, hostile, serial))
-    # Then everything that displays saved state.
-    for path, command in leaves:
-        required = [p for p in command.params if _is_argument(p) and p.required]
-        if not _string_params(command) or not required:
-            run(list(path))
+    # Then everything that displays saved state, wiping commands last ...
+    show(wipes=False)
+    # ... and again after the file is edited by hand, which no typed command
+    # checks: whatever the getters let through is displayed as is.
+    seed_every_section()
+    hand_edit_config(hostile)
+    show(wipes=False)
+    show(wipes=True)
 
     assert not crashes, "commands crashed:\n" + "\n".join(sorted(crashes))
     assert not problems, "echoed without escaping:\n" + "\n".join(
@@ -216,3 +237,79 @@ def test_cli_early_failures_echo_typed_values_literally(hostile, cli, monkeypatc
         bad += [f"{label}: {p.replace(hostile, '<H>')[:100]}" for p in strict.problems]
 
     assert not bad, "\n".join(bad)
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_the_quick_start_panel_shows_the_provider_and_key_variable_literally(
+    hostile, cli, monkeypatch
+):
+    # Printed on every bare launch when the chosen provider has no key.
+    strict = _install(monkeypatch, hostile)
+    config.add_provider("hp", hostile, "https://api.example.com/v1", "m")  # a cloud API needs a key
+    config.set_selected_provider("hp")
+    stored = json.loads(config.CONFIG_FILE.read_text(encoding="utf-8"))
+    stored["providers"]["hp"]["key_env"] = hostile  # as if edited by hand
+    config.CONFIG_FILE.write_text(json.dumps(stored), encoding="utf-8")
+
+    result = CliRunner().invoke(main.app, [], env={"HOME": str(cli)})
+
+    output = strict.file.getvalue()
+    assert result.exit_code == 2, result.output  # no terminal to start the REPL in
+    assert not strict.problems, strict.problems
+    assert f"No API key set for {hostile}." in output
+    assert f"export {hostile}." in output
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_the_saved_system_prompt_is_shown_as_typed(hostile, cli, monkeypatch):
+    strict = _install(monkeypatch, hostile)
+    runner = CliRunner()
+
+    runner.invoke(main.app, ["config", "prompt", "set", hostile], env={"HOME": str(cli)})
+    strict.file.truncate(0)
+    strict.file.seek(0)
+    result = runner.invoke(main.app, ["config", "prompt", "show"], env={"HOME": str(cli)})
+
+    assert result.exit_code == 0
+    assert not strict.problems, strict.problems
+    assert strict.file.getvalue().strip() == hostile
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_the_prompt_to_run_setup_keeps_its_y_n_hint(hostile, cli, monkeypatch):
+    # "[y/N]" was read as a style tag, so the question showed as "Run setup now? : ".
+    strict = _install(monkeypatch, hostile)
+    answers = []
+    monkeypatch.setattr(
+        strict, "input", lambda prompt="", **_kw: answers.append(prompt) or "n"
+    )
+
+    assert main._prompt_yes_no("Run setup now?") is False
+
+    rendered = Text.from_markup(answers[0]).plain
+    assert rendered == "Run setup now? [y/N]: "
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_lsp_show_lists_servers_and_overrides_literally(hostile, cli, monkeypatch):
+    # A server whose command can be run is listed as available, with its command.
+    strict = _install(monkeypatch, hostile)
+    program = cli / hostile  # found on PATH, or relative to the cwd for a value with "/"
+    program.parent.mkdir(parents=True, exist_ok=True)
+    program.write_text("#!/bin/sh\n")
+    program.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{cli}{os.pathsep}{os.environ['PATH']}")
+    stored = config.load_config()
+    stored["lsp"] = {
+        "enabled": True,
+        "servers": {hostile: {"command": hostile, "extensions": [".zz"]}},
+    }
+    config.save_config(stored)
+
+    result = CliRunner().invoke(main.app, ["config", "lsp", "show"], env={"HOME": str(cli)})
+
+    output = strict.file.getvalue()
+    assert result.exit_code == 0
+    assert not strict.problems, strict.problems
+    assert f"Available servers: {hostile} ({hostile})" in output
+    assert f"Overrides: {hostile}" in output

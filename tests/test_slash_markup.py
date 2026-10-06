@@ -442,3 +442,67 @@ def test_loading_a_session_that_names_a_hostile_provider(hostile, setup):
 
     assert not console.problems, console.problems
     assert f"provider={hostile}:{hostile}" in console.file.getvalue()
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+@pytest.mark.parametrize("hostile_first", [True, False], ids=["primary", "fallback"])
+def test_the_provider_checklist_summary_shows_ids_and_model_literally(
+    hostile, hostile_first, setup
+):
+    # Provider ids are lower-case; the model is whatever `/model` accepted.
+    provider_id = hostile.lower()
+    ids = [provider_id, "openrouter"] if hostile_first else ["openrouter", provider_id]
+    session = _session(setup(hostile), hostile)
+    config.add_provider(provider_id, "Name", "http://localhost:1/v1", "m1")
+    console = StrictConsole(provider_id)
+
+    dispatch("/provider", session, console, multi_selector=lambda _prompt: ids)
+
+    output = console.file.getvalue()
+    assert not console.problems, console.problems
+    assert f"Active providers: {', '.join(ids)} (primary: {ids[0]}, " in output
+    # a new primary brings its own model; otherwise the session's stays
+    assert f"model: {'m1' if hostile_first else hostile})." in output
+    assert f"Fallbacks in order: {ids[1]}" in output
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_state_read_from_a_saved_session_is_shown_literally(hostile, setup):
+    # /load takes a session file as it is: its output style and the status of its
+    # to-dos are not checked, and are shown by /config, /config style and /todos.
+    session = _session(setup(hostile), "m")
+    session.output_style = hostile
+    session.todos = [{"content": hostile, "status": hostile}]
+    console = StrictConsole(hostile)
+
+    for command in ("/todos", "/config", "/config style"):
+        console.problems.clear()
+        dispatch(command, session, console)
+        assert not console.problems, (command, console.problems)
+
+    assert f"Output style: {hostile}" in console.file.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("command", "hint"),
+    [
+        ("/mcp bogus", "[list|reload]"),
+        ("/lsp bogus", "[status|on|off|restart]"),
+        ("/dry-run bogus", "[on|off|toggle]"),
+        ("/undo bogus", "[count]"),
+        ("/compact bogus", "[token_budget]"),
+        ("/jobs bogus", "[list|show <id>|cancel <id>|tick|run <prompt>]"),
+        ("/media bogus", "[list [count]]"),
+        ("/config budget bogus", "[show|tokens <n>|cost <usd>|clear]"),
+        ("/config ui bogus", "[show|color <auto|always|never>|"),
+        ("/config media bogus", "[show|enable on|off|model <id>|"),
+        ("/config permissions bogus", "[list|remove <tool>|clear]"),
+    ],
+)
+def test_more_usage_lines_keep_their_argument_hints(command, hint, setup):
+    session = _session(setup("x"), "x")
+    console = StrictConsole("unused")
+
+    dispatch(command, session, console)
+
+    assert hint in console.file.getvalue()

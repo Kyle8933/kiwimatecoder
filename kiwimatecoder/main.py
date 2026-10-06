@@ -754,7 +754,7 @@ def _parse_header(raw: str) -> tuple[str, str]:
 
 @mcp_app.command("add")
 def mcp_add(
-    name: Annotated[str, typer.Argument(help="Server name ([a-z0-9][a-z0-9_-]*)")],
+    name: Annotated[str, typer.Argument(help="Server name (\\[a-z0-9]\\[a-z0-9_-]*)")],
     command: Annotated[
         str | None, typer.Option("--command", help="stdio command to run")
     ] = None,
@@ -841,7 +841,7 @@ def lsp_show() -> None:
         console.print(
             "Available servers: "
             + ", ".join(
-                f"[cyan]{name}[/cyan] ({spec.command})"
+                f"[cyan]{escape(name)}[/cyan] ({escape(str(spec.command))})"
                 for name, spec in sorted(installed.items())
             )
         )
@@ -851,7 +851,7 @@ def lsp_show() -> None:
     if overrides:
         console.print(
             "Overrides: "
-            + ", ".join(f"[cyan]{name}[/cyan]" for name in sorted(overrides))
+            + ", ".join(f"[cyan]{escape(name)}[/cyan]" for name in sorted(overrides))
         )
 
 
@@ -1975,7 +1975,11 @@ def _print_sampling(sampling: dict[str, object]) -> None:
         console.print("[dim]Sampling: provider defaults (nothing set).[/dim]")
         return
     console.print(
-        "Sampling: " + ", ".join(f"[cyan]{key}[/cyan]={value}" for key, value in sampling.items())
+        "Sampling: "
+        + ", ".join(
+            f"[cyan]{escape(str(key))}[/cyan]={escape(str(value))}"
+            for key, value in sampling.items()
+        )
     )
 
 
@@ -2005,7 +2009,7 @@ def sampling_set(
     except ValueError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]{_check()} Sampling set:[/green] {effective}")
+    console.print(f"[green]{_check()} Sampling set:[/green] {escape(str(effective))}")
 
 
 @sampling_app.command("reset")
@@ -2049,7 +2053,7 @@ def prompt_show() -> None:
     """Show the custom system-prompt addition."""
     text = get_system_prompt()
     if text:
-        console.print(text)
+        console.print(escape(text))
     else:
         console.print("[dim]No custom system prompt set.[/dim]")
 
@@ -2309,7 +2313,7 @@ def profile_use(name: Annotated[str, typer.Argument(help="Profile name")]) -> No
         f"[green]{_check()} Applied profile [cyan]{escape(str(name))}[/cyan][/green] — "
         f"provider: [cyan]{escape(str(provider_id))}[/cyan], "
         f"model: [cyan]{escape(str(get_provider_model(provider_id, cfg) or '(none chosen)'))}[/cyan], "
-        f"mode: [cyan]{get_default_mode(cfg)}[/cyan]."
+        f"mode: [cyan]{escape(get_default_mode(cfg))}[/cyan]."
     )
 
 
@@ -2385,7 +2389,7 @@ def config_show() -> None:
             or ("(from server)" if provider.is_local else "(none chosen)")
         )
         + "[/cyan]\n"
-        + f"Mode: [cyan]{get_default_mode(cfg)}[/cyan]\n"
+        + f"Mode: [cyan]{escape(get_default_mode(cfg))}[/cyan]\n"
         + f"Key: [cyan]{escape(str(describe_key(provider_id)))}[/cyan] ({escape(str(provider.key_env))})\n"
         + f"Model visibility: [cyan]{get_model_filter(provider_id)['mode']}[/cyan]"
     )
@@ -3141,9 +3145,9 @@ def main(
         if not get_key(provider_id) and provider.needs_key:
             console.print(
                 Panel(
-                    f"[yellow]No API key set for {provider.name}.[/yellow]\n"
+                    f"[yellow]No API key set for {escape(provider.name)}.[/yellow]\n"
                     + "Run [cyan]kiwimatecoder setup[/cyan] to choose a provider and "
-                    + f"enter a key, or export [cyan]{provider.key_env}[/cyan].",
+                    + f"enter a key, or export [cyan]{escape(provider.key_env)}[/cyan].",
                     title="Quick start",
                 )
             )
@@ -3225,7 +3229,7 @@ def _stdin_is_tty() -> bool:
 def _prompt_yes_no(question: str) -> bool:
     """Ask a yes/no question on the console; false on cancel/EOF/unknown."""
     try:
-        answer = console.input(f"{question} [y/N]: ").strip().lower()
+        answer = console.input(f"{question} \\[y/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         console.print()
         return False

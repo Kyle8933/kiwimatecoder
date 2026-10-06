@@ -703,12 +703,12 @@ def _apply_provider_checklist(
     primary = ids[0]
     fallbacks = ids[1:]
     summary = (
-        f"Active providers: [cyan]{', '.join(ids)}[/cyan] "
-        f"(primary: [cyan]{primary}[/cyan], "
-        f"model: [cyan]{session.model or '(none chosen)'}[/cyan])."
+        f"Active providers: [cyan]{escape(', '.join(ids))}[/cyan] "
+        f"(primary: [cyan]{escape(primary)}[/cyan], "
+        f"model: [cyan]{escape(session.model or '(none chosen)')}[/cyan])."
     )
     if fallbacks:
-        summary += f"\n[dim]Fallbacks in order: {', '.join(fallbacks)}[/dim]"
+        summary += f"\n[dim]Fallbacks in order: {escape(', '.join(fallbacks))}[/dim]"
     console.print(summary)
 
 
@@ -812,7 +812,7 @@ def _dry_run(arg: str, session: Session, console: Console) -> str:
     elif token == "toggle":
         session.dry_run = not session.dry_run
     else:
-        console.print("[yellow]Usage: /dry-run [on|off|toggle][/yellow]")
+        console.print("[yellow]Usage: /dry-run \\[on|off|toggle][/yellow]")
         return CommandResult.CONTINUE
     console.print(
         f"[green]Dry-run {'on' if session.dry_run else 'off'}.[/green]"
@@ -1047,7 +1047,7 @@ def _mcp(arg: str, session: Session, console: Console) -> str:
         )
         _mcp_show(manager, console)
         return CommandResult.CONTINUE
-    console.print("[yellow]Usage: /mcp [list|reload][/yellow]")
+    console.print("[yellow]Usage: /mcp \\[list|reload][/yellow]")
     return CommandResult.CONTINUE
 
 
@@ -1146,7 +1146,7 @@ def _lsp(arg: str, session: Session, console: Console) -> str:
             "failures cleared; they start again on first use."
         )
         return CommandResult.CONTINUE
-    console.print("[yellow]Usage: /lsp [status|on|off|restart][/yellow]")
+    console.print("[yellow]Usage: /lsp \\[status|on|off|restart][/yellow]")
     return CommandResult.CONTINUE
 
 
@@ -1378,7 +1378,7 @@ def _config_show(session: Session, console: Console) -> None:
         or "provider defaults"
     )
     console.print(
-        f"Output style: [cyan]{session.output_style}[/cyan]\n"
+        f"Output style: [cyan]{escape(session.output_style)}[/cyan]\n"
         f"Sampling: [cyan]{escape(sampling_line)}[/cyan]\n"
         f"Custom system prompt: [cyan]{'set' if session.custom_system_prompt else 'none'}[/cyan]\n"
         "Always-allowed tools: [cyan]"
@@ -1827,7 +1827,7 @@ def _config_mode(action_parts: list[str], session: Session, console: Console) ->
     rest = action_parts[1:]
 
     if action in {"show", "status"}:
-        console.print(f"Default mode: [cyan]{get_default_mode()}[/cyan]")
+        console.print(f"Default mode: [cyan]{escape(get_default_mode())}[/cyan]")
         return
     if action in {"set", "save"}:
         if not rest:
@@ -1960,7 +1960,7 @@ def _config_permissions(
         return
 
     console.print(
-        "[yellow]Usage: /config permissions [list|remove <tool>|clear][/yellow]"
+        "[yellow]Usage: /config permissions \\[list|remove <tool>|clear][/yellow]"
     )
 
 
@@ -1987,7 +1987,7 @@ def _config_trust(action_parts: list[str], session: Session, console: Console) -
         console.print(f"Trusted workspace: [cyan]{state}[/cyan]")
         return
 
-    console.print("[yellow]Usage: /config trust [on|off][/yellow]")
+    console.print("[yellow]Usage: /config trust \\[on|off][/yellow]")
 
 
 def _config_verify(action_parts: list[str], session: Session, console: Console) -> None:
@@ -2071,7 +2071,7 @@ def _config_budget(action_parts: list[str], session: Session, console: Console) 
         return
 
     console.print(
-        "[yellow]Usage: /config budget [show|tokens <n>|cost <usd>|clear][/yellow]"
+        "[yellow]Usage: /config budget \\[show|tokens <n>|cost <usd>|clear][/yellow]"
     )
 
 
@@ -2129,7 +2129,7 @@ def _config_subagents(action_parts: list[str], console: Console) -> None:
 
     console.print(
         "[yellow]Usage: /config subagents "
-        "[show|enable on|off|max-steps <n>][/yellow]"
+        "\\[show|enable on|off|max-steps <n>][/yellow]"
     )
 
 
@@ -2200,7 +2200,7 @@ def _config_browser(action_parts: list[str], console: Console) -> None:
 
     console.print(
         "[yellow]Usage: /config browser "
-        "[show|enable on|off|headless on|off|timeout <ms>][/yellow]"
+        "\\[show|enable on|off|headless on|off|timeout <ms>][/yellow]"
     )
 
 
@@ -2265,7 +2265,7 @@ def _config_shell(action_parts: list[str], console: Console) -> None:
 
     console.print(
         "[yellow]Usage: /config shell "
-        "[show|persistent on|off|timeout <s>|max-jobs <n>][/yellow]"
+        "\\[show|persistent on|off|timeout <s>|max-jobs <n>][/yellow]"
     )
 
 
@@ -2341,7 +2341,7 @@ def _config_sandbox(action_parts: list[str], console: Console) -> None:
 
     console.print(
         "[yellow]Usage: /config sandbox "
-        "[show|enable on|off|network on|off|add-path <path>|"
+        "\\[show|enable on|off|network on|off|add-path <path>|"
         "remove-path <path>|clear-paths][/yellow]"
     )
 
@@ -2414,7 +2414,7 @@ def _config_remote(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config remote [show|enable on|off|host <host>|"
+        "[yellow]Usage: /config remote \\[show|enable on|off|host <host>|"
         "user <user>|port <n>|identity <path>|workspace <path>|"
         "devcontainer <auto|off|name>][/yellow]"
     )
@@ -2443,7 +2443,7 @@ def _config_acp(action_parts: list[str], console: Console) -> None:
             f"{settings['permission_timeout']}s[/green]"
         )
         return
-    console.print("[yellow]Usage: /config acp [show|timeout <s>][/yellow]")
+    console.print("[yellow]Usage: /config acp \\[show|timeout <s>][/yellow]")
 
 
 def _config_commands(  # noqa: C901 - small parser, mirrors the other config sections
@@ -2508,7 +2508,7 @@ def _config_commands(  # noqa: C901 - small parser, mirrors the other config sec
         return
 
     console.print(
-        "[yellow]Usage: /config commands [list|allow <regex>|deny <regex>|"
+        "[yellow]Usage: /config commands \\[list|allow <regex>|deny <regex>|"
         "remove <allow|deny> <regex>|clear][/yellow]"
     )
 
@@ -2562,7 +2562,7 @@ def _config_sampling(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config sampling [show|set key=value ...|reset][/yellow]"
+        "[yellow]Usage: /config sampling \\[show|set key=value ...|reset][/yellow]"
     )
 
 
@@ -2624,7 +2624,7 @@ def _config_web(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config web [show|max-chars <n>|timeout <s>|"
+        "[yellow]Usage: /config web \\[show|max-chars <n>|timeout <s>|"
         "allow-local <on|off>][/yellow]"
     )
 
@@ -2696,7 +2696,7 @@ def _config_network(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config network [show|proxy <url|clear>|ca <path|clear>|"
+        "[yellow]Usage: /config network \\[show|proxy <url|clear>|ca <path|clear>|"
         "offline <on|off>][/yellow]"
     )
 
@@ -2745,7 +2745,7 @@ def _config_vision(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config vision [show|max-bytes <n>|max-images <n>][/yellow]"
+        "[yellow]Usage: /config vision \\[show|max-bytes <n>|max-images <n>][/yellow]"
     )
 
 
@@ -2765,9 +2765,9 @@ def _media_status_line(settings: dict[str, Any]) -> str:
 
 
 _MEDIA_USAGE = (
-    "[yellow]Usage: /config media [show|enable on|off|model <id>|provider <id>|"
+    "Usage: /config media [show|enable on|off|model <id>|provider <id>|"
     "size <WxH>|video-model <id|none>|duration <seconds>|video-size <WxH|720p|"
-    "default>|output-dir <path>][/yellow]"
+    "default>|output-dir <path>]"
 )
 
 
@@ -2854,7 +2854,7 @@ def _config_media(action_parts: list[str], console: Console) -> None:
         console.print(_media_status_line(get_media()))
         return
 
-    console.print(_MEDIA_USAGE)
+    console.print(f"[yellow]{escape(_MEDIA_USAGE)}[/yellow]")
 
 
 def _telemetry_status_line(settings: dict[str, Any]) -> str:
@@ -2937,7 +2937,7 @@ def _config_telemetry(action_parts: list[str], console: Console) -> None:
 
     console.print(
         "[yellow]Usage: /config telemetry "
-        "[show|enable on|off|level <off|error|info|debug>|"
+        "\\[show|enable on|off|level <off|error|info|debug>|"
         "log-file <path>|max-bytes <n>][/yellow]"
     )
 
@@ -3037,7 +3037,7 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
         )
         return
 
-    console.print(f"[yellow]Usage: {_UI_USAGE}[/yellow]")
+    console.print(f"[yellow]Usage: {escape(_UI_USAGE)}[/yellow]")
 
 
 def _config_style(action_parts: list[str], session: Session, console: Console) -> None:
@@ -3065,7 +3065,7 @@ def _config_style(action_parts: list[str], session: Session, console: Console) -
 
     console.print(
         "Output style: "
-        + f"[cyan]{session.output_style}[/cyan] "
+        + f"[cyan]{escape(session.output_style)}[/cyan] "
         + f"(available: {', '.join(OUTPUT_STYLES)})"
     )
 
@@ -3122,7 +3122,7 @@ def _config_cache(action_parts: list[str], console: Console) -> None:
         )
         return
 
-    console.print("[yellow]Usage: /config cache [on|off][/yellow]")
+    console.print("[yellow]Usage: /config cache \\[on|off][/yellow]")
 
 
 def _config_profile(
@@ -3214,7 +3214,7 @@ def _config_profile(
 
     console.print(
         "[yellow]Usage: /config profile "
-        "[list|show <name>|save <name>|use <name>|remove <name>][/yellow]"
+        "\\[list|show <name>|save <name>|use <name>|remove <name>][/yellow]"
     )
 
 
@@ -3291,7 +3291,7 @@ def _config_team(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config team [show|set-policy <path>|enforce on|off][/yellow]"
+        "[yellow]Usage: /config team \\[show|set-policy <path>|enforce on|off][/yellow]"
     )
 
 
@@ -5068,7 +5068,7 @@ def _undo(arg: str, session: Session, console: Console) -> str:
         try:
             count = int(token)
         except ValueError:
-            console.print("[yellow]Usage: /undo [count][/yellow]")
+            console.print("[yellow]Usage: /undo \\[count][/yellow]")
             return CommandResult.CONTINUE
     restored = session.undo_checkpoints(count)
     if not restored:
@@ -5101,7 +5101,7 @@ def _checkpoints(arg: str, session: Session, console: Console) -> str:
             item.created_at.split(".")[0].replace("T", " "),
         )
     console.print(table)
-    console.print("[dim]Use /undo [count] to restore.[/dim]")
+    console.print("[dim]Use /undo \\[count] to restore.[/dim]")
     return CommandResult.CONTINUE
 
 
@@ -5122,7 +5122,7 @@ def _todos(arg: str, session: Session, console: Console) -> str:
     for todo in session.todos:
         status = str(todo.get("status") or "pending")
         table.add_row(
-            labels.get(status, status), escape(str(todo.get("content") or ""))
+            labels.get(status) or escape(status), escape(str(todo.get("content") or ""))
         )
     console.print(table)
     return CommandResult.CONTINUE
@@ -5262,7 +5262,7 @@ def _compact(arg: str, session: Session, console: Console) -> str:
         try:
             target = int(token)
         except ValueError:
-            console.print("[yellow]Usage: /compact [token_budget][/yellow]")
+            console.print("[yellow]Usage: /compact \\[token_budget][/yellow]")
             return CommandResult.CONTINUE
 
     result = session.compact(target)
@@ -5401,7 +5401,7 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
         return CommandResult.CONTINUE
 
     console.print(
-        "[yellow]Usage: /jobs [list|show <id>|cancel <id>|tick|run <prompt>][/yellow]"
+        "[yellow]Usage: /jobs \\[list|show <id>|cancel <id>|tick|run <prompt>][/yellow]"
     )
     return CommandResult.CONTINUE
 
@@ -5688,14 +5688,14 @@ def _media(arg: str, session: Session, console: Console) -> str:
     """Show media readiness and recently generated files."""
     words = arg.split()
     if words and words[0].lower() not in {"list", "ls", "show", "status", "recent"}:
-        console.print("[yellow]Usage: /media [list [count]][/yellow]")
+        console.print("[yellow]Usage: /media \\[list \\[count]][/yellow]")
         return CommandResult.CONTINUE
     limit = 10
     if len(words) > 1:
         try:
             limit = max(1, min(int(words[1]), 100))
         except ValueError:
-            console.print("[yellow]Usage: /media [list [count]][/yellow]")
+            console.print("[yellow]Usage: /media \\[list \\[count]][/yellow]")
             return CommandResult.CONTINUE
 
     settings = get_media()

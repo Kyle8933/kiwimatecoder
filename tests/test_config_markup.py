@@ -25,6 +25,7 @@ What this does and does not prove:
 """
 
 import io
+import json
 import shlex
 
 import pytest
@@ -279,6 +280,97 @@ def test_typed_values_are_echoed_literally(hostile, tmp_path):
 
     for command in SET_COMMANDS:
         _run(command.format(V=quoted), session, console, crashes)
+    for command in SHOW_COMMANDS:
+        _run(command.format(V=quoted), session, console, crashes)
+
+    assert not crashes, "handlers crashed:\n" + "\n".join(crashes)
+    assert not console.problems, "echoed without escaping:\n" + "\n".join(
+        dict.fromkeys(console.problems)
+    )
+
+
+# Sections whose getters return the full set of settings, defaults included.
+SECTIONS = (
+    "acp", "browser", "budget", "index", "lsp", "media", "memory", "model_routing",
+    "network", "plugins", "remote", "sampling", "sandbox", "shell", "subagents",
+    "sync", "team", "telemetry", "ui", "vision", "web",
+)
+
+
+def seed_every_section() -> None:
+    """Store a value for every setting, so that hand-editing has something to edit."""
+    cfg = config.load_config()
+    for section in SECTIONS:
+        for name in (f"get_{section}", f"get_{section}_config"):
+            getter = getattr(config, name, None)
+            if callable(getter):
+                effective = getter()
+                if isinstance(effective, dict):
+                    cfg[section] = json.loads(json.dumps(effective, default=list))
+                break
+    cfg["sampling"] = {
+        "temperature": 0.5, "top_p": 0.9, "max_tokens": 100, "reasoning_effort": "low",
+    }
+    cfg["lsp"] = {
+        "enabled": True,
+        "servers": {"srv": {"command": "c", "args": ["a"], "extensions": [".x"]}},
+    }
+    cfg["mcp_servers"] = {"srv": {"command": "c", "args": ["a"], "env": {"K": "V"}}}
+    cfg["hooks"] = {"pre_tool": ["a"], "post_tool": ["b"], "session_start": ["c"]}
+    cfg["command_rules"] = {"allow": ["a"], "deny": ["b"]}
+    cfg["tool_permissions"] = {"always_allow": ["run_bash"]}
+    cfg["provider_models"] = {"openrouter": "m"}
+    cfg["profiles"] = {"p": {"output_style": "concise", "default_mode": "ask", "model": "m"}}
+    cfg.update(
+        default_mode="ask", output_style="concise", system_prompt="be brief",
+        verify_command="pytest", selected_provider="openrouter", selected_model="m",
+    )
+    config.save_config(cfg)
+
+
+def hand_edit_config(hostile: str) -> None:
+    """Rewrite the saved config as editing the file by hand could.
+
+    Every string, in every section, becomes ``hostile``, and so does every name
+    in a map of named entries (providers, profiles, language servers...). The
+    typed commands check what they store; a hand-edited file or a project
+    ``.kiwimatecoder.json`` is only checked by the getters that read it, so
+    whatever a getter lets through is shown as is.
+    """
+    stored = json.loads(config.CONFIG_FILE.read_text(encoding="utf-8"))
+
+    def rewrite(node):
+        if isinstance(node, dict):
+            named = bool(node) and all(isinstance(value, dict) for value in node.values())
+            return {(hostile if named else key): rewrite(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [rewrite(item) for item in node]
+        return hostile if isinstance(node, str) else node
+
+    edited = {
+        key: value if key == "version" else rewrite(value) for key, value in stored.items()
+    }
+    config.CONFIG_FILE.write_text(json.dumps(edited), encoding="utf-8")
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_a_hand_edited_config_is_shown_literally(hostile, tmp_path):
+    session = Session(
+        provider_id="openrouter",
+        model="test-model",
+        mode=PermissionMode.ASK,
+        workspace_root=tmp_path,
+    )
+    console = StrictConsole(hostile)
+    crashes: list[str] = []
+    quoted = shlex.quote(hostile)
+    for command in SET_COMMANDS:
+        _run(command.format(V=quoted), session, console, crashes)
+    crashes.clear()  # typed values are the other test's business
+    console.problems.clear()
+
+    seed_every_section()
+    hand_edit_config(hostile)
     for command in SHOW_COMMANDS:
         _run(command.format(V=quoted), session, console, crashes)
 
