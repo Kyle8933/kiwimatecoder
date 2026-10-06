@@ -1564,24 +1564,28 @@ def _budget_cost(value: Any) -> float:
 
 
 def get_budget(cfg: dict[str, Any] | None = None) -> dict[str, float]:
-    """Return the session budget: max_tokens and/or max_cost_usd."""
+    """Return the session budget: max_tokens and/or max_cost_usd.
+
+    A stored limit that :func:`set_budget` would reject (not a number, not
+    finite, below the minimum) is ignored, like a malformed value in any other
+    section. This matters beyond tidiness: the agent treats a negative limit as
+    already spent and would refuse every request as "Budget reached".
+    """
     cfg = cfg or load_config()
     stored = cfg.get("budget") or {}
     if not isinstance(stored, dict):
         return {}
     budget: dict[str, float] = {}
-    try:
-        if stored.get("max_tokens") is not None:
-            budget["max_tokens"] = int(stored["max_tokens"])
-    except _NUMBER_ERRORS:
-        pass
-    try:
-        if stored.get("max_cost_usd") is not None:
-            cost = float(stored["max_cost_usd"])
-            if math.isfinite(cost):  # a hand-edited NaN/Infinity is ignored
-                budget["max_cost_usd"] = cost
-    except _NUMBER_ERRORS:
-        pass
+    for key, validate in (
+        ("max_tokens", _budget_tokens),
+        ("max_cost_usd", _budget_cost),
+    ):
+        if stored.get(key) is None:
+            continue
+        try:
+            budget[key] = validate(stored[key])
+        except ValueError:
+            pass  # unusable: ignored here, reported by validate_config
     return budget
 
 

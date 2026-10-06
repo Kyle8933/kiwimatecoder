@@ -225,6 +225,36 @@ def test_verify_command_roundtrip():
     assert config.get_verify_command() == ""
 
 
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {"max_tokens": 0},
+        {"max_tokens": -5},
+        {"max_tokens": "lots"},
+        {"max_tokens": [1]},
+        {"max_cost_usd": 0},
+        {"max_cost_usd": -1.5},
+        {"max_cost_usd": "free"},
+        {"max_cost_usd": {"usd": 1}},
+    ],
+)
+def test_get_budget_ignores_a_stored_limit_that_set_budget_would_reject(stored):
+    # A negative limit is truthy, so the agent read it as already spent and
+    # refused every request; zero was shown as a limit but meant "none".
+    _write_raw_config({"budget": stored})
+
+    assert config.get_budget() == {}
+    assert any(i["key"] == "budget" for i in config.validate_config())  # still reported
+
+
+def test_get_budget_keeps_the_valid_limit_next_to_a_bad_one():
+    _write_raw_config({"budget": {"max_tokens": -5, "max_cost_usd": 2.5}})
+    assert config.get_budget() == {"max_cost_usd": 2.5}
+
+    _write_raw_config({"budget": {"max_tokens": "5000", "max_cost_usd": 0}})
+    assert config.get_budget() == {"max_tokens": 5000}
+
+
 def test_budget_roundtrip_and_validation():
     assert config.get_budget() == {}
 
