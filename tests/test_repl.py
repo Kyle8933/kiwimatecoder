@@ -1,7 +1,10 @@
 import base64
 import difflib
 import io
+import os
 import re
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,11 +21,14 @@ from rich.console import Console
 
 from kiwimatecoder import config
 from kiwimatecoder.commands import (
+    CONFIG_KEY_SECTIONS,
+    CONFIG_KEY_SET_ACTIONS,
     CommandOption,
     CommandResult,
     MultiSelectionPrompt,
     SelectionPrompt,
     dispatch,
+    line_carries_secret,
 )
 from kiwimatecoder.hunks import parse_hunk_selection
 from kiwimatecoder.permissions import ApprovalResult
@@ -35,6 +41,7 @@ from kiwimatecoder.repl import (
     _attach_images,
     _banner,
     _build_history,
+    _PrivateHistory,
     _dispatch_command,
     _extract_file_mentions,
     _extract_image_mentions,
@@ -1114,3 +1121,167 @@ def test_read_secret_input_ctrl_c_and_ctrl_d_cancel(key, error):
 
         with pytest.raises(error):
             _read_secret_input("key> ")
+
+
+# ---------------------------------------------------------------------------
+# The history file never holds an API key
+# ---------------------------------------------------------------------------
+
+SECRET_LINES = [
+    "/config key set openrouter sk-live-123",
+    "/config keys save openai sk-x",
+    "/config api-key add anthropic sk-ant",
+    "/config api-keys set a b",
+    "/CONFIG KEY SET openrouter sk-x",
+    "/ config key set openrouter sk-x",
+    '/config key set openrouter "sk-with space"',
+    "  /config key set openrouter sk-x  ",
+    "/config\tkey\tset\topenrouter\tsk-x",
+    "/config key set openrouter 'sk-unterminated",  # unparsable: err on the safe side
+    '/config "key" "set" openrouter sk-x',  # the real parser unquotes these
+    "/config 'keys' save openai sk-x",
+]
+ORDINARY_LINES = [
+    "/config key list",
+    "/config key remove openrouter",
+    "/config key edit openrouter",
+    "/config model set sk-looks-like-a-key",
+    "/config",
+    "/help",
+    "fix the bug in /config key set",
+    "how do I set a key?",
+    "/model key set",
+    "config key set openrouter sk-x",  # no slash: a message to the model, not a command
+]
+
+
+@pytest.mark.parametrize("line", SECRET_LINES)
+def test_a_key_setting_line_is_recognised(line):
+    assert line_carries_secret(line)
+
+
+@pytest.mark.parametrize("line", ORDINARY_LINES)
+def test_ordinary_lines_are_not_mistaken_for_a_key(line):
+    assert not line_carries_secret(line)
+
+
+@pytest.mark.parametrize("section", sorted(CONFIG_KEY_SECTIONS))
+@pytest.mark.parametrize("action", sorted(CONFIG_KEY_SET_ACTIONS))
+def test_every_spelling_the_parser_accepts_is_recognised_as_carrying_a_key(
+    section, action, session, tmp_path, monkeypatch
+):
+    # The history filter and /config share their alias lists; this fails if the
+    # parser ever accepts a spelling the filter would let through to disk.
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
+    key = f"sk-{section}-{action}"
+    line = f"/config {section} {action} openrouter {key}"
+
+    dispatch(line, session, Console(file=io.StringIO()))
+
+    assert config.get_key("openrouter") == key  # the parser really took it
+    assert line_carries_secret(line)
+
+
+@pytest.fixture
+def history_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    return tmp_path / "history"
+
+
+def test_history_keeps_a_key_out_of_the_file_but_not_out_of_the_session(history_file):
+    history = _build_history()
+
+    history.append_string("/config key set openrouter sk-live-Zx9f2Qk7")
+    history.append_string("/config model set vendor/x")
+
+    on_disk = history_file.read_text()
+    assert "sk-live-Zx9f2Qk7" not in on_disk
+    assert "/config model set vendor/x" in on_disk
+    # Still reachable with the up-arrow for the rest of this session.
+    assert "/config key set openrouter sk-live-Zx9f2Qk7" in history.get_strings()
+
+
+def test_history_survives_a_restart_without_the_key(history_file):
+    first = _build_history()
+    first.append_string("/help")
+    first.append_string("/config key set openrouter sk-live-Zx9f2Qk7")
+    first.append_string("/model x")
+
+    second = _build_history()
+
+    assert list(second.load_history_strings()) == ["/model x", "/help"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_history_file_is_private(history_file):
+    history = _build_history()
+    history.append_string("/help")
+
+    assert stat.S_IMODE(os.stat(history_file).st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_an_existing_world_readable_history_is_made_private(history_file):
+    history_file.write_text("\n# 2024-01-01 00:00:00\n+/help\n")
+    os.chmod(history_file, 0o644)
+
+    _build_history()
+
+    assert stat.S_IMODE(os.stat(history_file).st_mode) == 0o600
+    assert "/help" in history_file.read_text()  # content untouched
+
+
+def test_keys_saved_by_an_earlier_version_are_scrubbed_on_open(history_file):
+    from prompt_toolkit.history import FileHistory
+
+    old = FileHistory(str(history_file))  # what older versions used
+    for line in (
+        "/help",
+        "/config key set openrouter sk-OLD-SECRET",
+        "first line\nsecond line",  # multi-line entries must survive intact
+        "/config keys add openai sk-OTHER-SECRET",
+        "/model x",
+    ):
+        old.store_string(line)
+    os.chmod(history_file, 0o644)
+
+    history = _build_history()
+
+    assert list(history.load_history_strings()) == [
+        "/model x",
+        "first line\nsecond line",
+        "/help",
+    ]
+    text = history_file.read_text()
+    assert "SECRET" not in text
+    assert not history_file.with_name("history.tmp").exists()
+    if sys.platform != "win32":
+        assert stat.S_IMODE(os.stat(history_file).st_mode) == 0o600
+
+
+def test_a_clean_history_is_not_rewritten(history_file):
+    from prompt_toolkit.history import FileHistory
+
+    FileHistory(str(history_file)).store_string("/help")
+    before = (history_file.read_bytes(), os.stat(history_file).st_ino)
+
+    _build_history()
+
+    assert (history_file.read_bytes(), os.stat(history_file).st_ino) == before
+
+
+def test_history_falls_back_to_memory_when_the_directory_is_unwritable(monkeypatch):
+    from prompt_toolkit.history import InMemoryHistory
+
+    def broken():
+        raise OSError("read-only home")
+
+    monkeypatch.setattr(config, "ensure_config_dir", broken)
+
+    assert isinstance(_build_history(), InMemoryHistory)
+
+
+def test_the_private_history_is_what_the_repl_uses(history_file):
+    assert isinstance(_build_history(), _PrivateHistory)

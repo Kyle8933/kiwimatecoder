@@ -184,6 +184,35 @@ CommandSelector = Callable[[SelectionPrompt], str | None]
 CommandMultiSelector = Callable[[MultiSelectionPrompt], list[str] | None]
 
 
+# The spellings /config accepts for "set an API key": /config <section> <action>
+# <provider> <key>. Shared by the parser and by line_carries_secret so the two
+# cannot drift apart.
+CONFIG_KEY_SECTIONS = frozenset({"keys", "key", "api-key", "api-keys"})
+CONFIG_KEY_SET_ACTIONS = frozenset({"set", "save", "add"})
+
+
+def line_carries_secret(line: str) -> bool:
+    """Whether a typed line is a ``/config key set <provider> <key>`` command.
+
+    Such a line contains an API key, so it must not be written to the history
+    file. Matches how ``dispatch`` reads it: any spacing after the slash, any
+    letter case, quotes honoured.
+    """
+    text = line.strip()
+    if not text.startswith("/"):
+        return False
+    try:
+        parts = shlex.split(text[1:])
+    except ValueError:  # an unterminated quote: be conservative, not exact
+        parts = text[1:].split()
+    return (
+        len(parts) >= 3
+        and parts[0].lower() == "config"
+        and parts[1].lower() in CONFIG_KEY_SECTIONS
+        and parts[2].lower() in CONFIG_KEY_SET_ACTIONS
+    )
+
+
 def dispatch(
     line: str,
     session: Session,
@@ -1607,7 +1636,7 @@ def _config_keys(
         )
         return
 
-    if action in {"set", "save", "add"}:
+    if action in CONFIG_KEY_SET_ACTIONS:
         if len(rest) < 2:
             if rest and selector is not None:
                 _config_key_enter(rest[0], console, selector, prompt_input, secret_input)
@@ -3289,7 +3318,7 @@ def _config(arg: str, session: Session, console: Console,
         _config_help(console)
     elif section in {"providers", "provider"}:
         _config_providers(rest, session, console)
-    elif section in {"keys", "key", "api-key", "api-keys"}:
+    elif section in CONFIG_KEY_SECTIONS:
         _config_keys(rest, console, selector, prompt_input, secret_input)
     elif section == "use":
         _config_providers(["use", *rest], session, console)

@@ -67,6 +67,7 @@ from kiwimatecoder.commands import (
     SelectionPrompt,
     dispatch,
     has_command,
+    line_carries_secret,
     slash_argument_completions,
     slash_command_completions,
 )
@@ -674,12 +675,57 @@ def _make_confirm(session: Session) -> ConfirmFn:
     return confirm
 
 
+def _make_private(path: str | Path) -> None:
+    """Create ``path`` if needed and restrict it to its owner (0600)."""
+    try:
+        os.close(os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600))
+        os.chmod(path, 0o600)
+    except OSError:
+        pass  # best effort: an unwritable history is handled where it is written
+
+
+class _PrivateHistory(FileHistory):
+    """A history file that never holds an API key and is readable only by you.
+
+    ``/config key set <provider> <key>`` carries a secret, so that line stays in
+    memory (the up-arrow still finds it this session) but is not written to disk.
+    Older versions did write such lines; they are removed when the file is opened.
+    """
+
+    def __init__(self, filename: str | Path) -> None:
+        super().__init__(str(filename))
+        _make_private(filename)
+        self._scrub()
+
+    def store_string(self, string: str) -> None:
+        if line_carries_secret(string):
+            return
+        super().store_string(string)
+
+    def _scrub(self) -> None:
+        """Drop keys that an earlier version saved, keeping everything else."""
+        try:
+            entries = list(self.load_history_strings())  # newest first
+            kept = [entry for entry in entries if not line_carries_secret(entry)]
+            if len(kept) == len(entries):
+                return
+            clean = Path(str(self.filename) + ".tmp")
+            _make_private(clean)
+            clean.write_bytes(b"")
+            rewritten = FileHistory(str(clean))
+            for entry in reversed(kept):  # oldest first, as they were written
+                rewritten.store_string(entry)
+            os.replace(clean, self.filename)
+        except OSError:
+            pass  # leave the history as it is rather than lose it
+
+
 def _build_history() -> History:
     """Return the prompt history, persisted between sessions when possible."""
     try:
         from kiwimatecoder.config import ensure_config_dir
 
-        return FileHistory(str(ensure_config_dir() / "history"))
+        return _PrivateHistory(ensure_config_dir() / "history")
     except OSError:
         # Unwritable home directory: keep history for this session only.
         return InMemoryHistory()
