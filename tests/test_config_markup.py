@@ -15,8 +15,8 @@ run so values that were saved get displayed too.
 What this does and does not prove:
 
 * It sees everything rendered through ``render_str`` (``console.print``
-  strings and table cells). Rich spinners (``console.status``) parse markup
-  elsewhere, so they have their own tests below.
+  strings and table cells), plus the label of every ``console.status`` spinner
+  and each of its updates, which Rich parses elsewhere.
 * A few ``[red]{escape(str(exc))}[/red]`` sites guard setters whose messages
   are fixed text (browser/shell/web/vision timeouts, enable flags...). Escaping
   there is defensive and no input here can fail it; the sites whose messages do
@@ -55,10 +55,8 @@ class StrictConsole(Console):
         self.hostile = hostile
         self.problems: list[str] = []
 
-    def render_str(self, text, *args, **kwargs):  # type: ignore[override]
-        markup = kwargs.get("markup")
-        parsed = self._markup if markup is None else markup
-        if parsed and isinstance(text, str) and self.hostile in text:
+    def _check(self, text) -> None:
+        if isinstance(text, str) and self.hostile in text:
             try:
                 plain = Text.from_markup(text).plain
             except MarkupError as exc:
@@ -66,7 +64,26 @@ class StrictConsole(Console):
             else:
                 if self.hostile not in plain:
                     self.problems.append(f"{self.hostile!r} lost: {text!r} -> {plain!r}")
+
+    def render_str(self, text, *args, **kwargs):  # type: ignore[override]
+        markup = kwargs.get("markup")
+        if self._markup if markup is None else markup:
+            self._check(text)
         return super().render_str(text, *args, **kwargs)
+
+    def status(self, status, **kwargs):  # type: ignore[override]
+        # A spinner parses its label as markup too, at creation and on every update,
+        # but not through render_str.
+        self._check(status)
+        handle = super().status(status, **kwargs)
+        update = handle.update
+
+        def checked(new_status=None, **options):
+            self._check(new_status)
+            return update(new_status, **options)
+
+        handle.update = checked  # type: ignore[method-assign,assignment]
+        return handle
 
 
 # Every value-taking typed command. ``{V}`` is the shell-quoted hostile value.

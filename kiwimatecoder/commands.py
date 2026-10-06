@@ -233,7 +233,7 @@ def dispatch(
 
     handler = _COMMANDS.get(name)
     if handler is None:
-        console.print(f"[yellow]{t('error.unknown_command', name=name)}[/yellow]")
+        console.print(f"[yellow]{escape(str(t('error.unknown_command', name=name)))}[/yellow]")
         return CommandResult.CONTINUE
 
     if name == "config" and not arg and selector is not None:
@@ -840,7 +840,7 @@ def _tools(arg: str, session: Session, console: Console) -> str:
         else:
             perm = "[dim green]read-only[/dim green]"
         desc = tool.description.split(". ")[0] + "."
-        table.add_row(tool.name, perm, desc)
+        table.add_row(escape(tool.name), perm, escape(desc))
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -869,7 +869,7 @@ def _files(arg: str, session: Session, console: Console) -> str:
         else:
             size_str = "-"
             status = "[red]deleted/missing[/red]"
-        table.add_row(rel, status, size_str)
+        table.add_row(escape(rel), status, size_str)
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -923,28 +923,28 @@ def _add_context(paths: list[str], session: Session, console: Console) -> None:
         matches, errors = _expand_context_input(raw_path, session)
         for error in errors:
             skipped += 1
-            console.print(f"[yellow]Skipped {raw_path}: {error}[/yellow]")
+            console.print(f"[yellow]Skipped {escape(str(raw_path))}: {escape(str(error))}[/yellow]")
 
         for resolved in matches:
             rel = display_path(resolved, session.workspace_root)
             if not resolved.exists():
                 skipped += 1
-                console.print(f"[yellow]Skipped {rel}: file not found[/yellow]")
+                console.print(f"[yellow]Skipped {escape(str(rel))}: file not found[/yellow]")
                 continue
             if resolved.is_dir():
                 skipped += 1
-                console.print(f"[yellow]Skipped {rel}: is a directory[/yellow]")
+                console.print(f"[yellow]Skipped {escape(str(rel))}: is a directory[/yellow]")
                 continue
             if _looks_binary(resolved):
                 skipped += 1
-                console.print(f"[yellow]Skipped {rel}: appears to be binary[/yellow]")
+                console.print(f"[yellow]Skipped {escape(str(rel))}: appears to be binary[/yellow]")
                 continue
             if session.add_context_file(rel):
                 added += 1
-                console.print(f"[green]Added context:[/green] {rel}")
+                console.print(f"[green]Added context:[/green] {escape(str(rel))}")
             else:
                 skipped += 1
-                console.print(f"[dim]Already in context:[/dim] {rel}")
+                console.print(f"[dim]Already in context:[/dim] {escape(str(rel))}")
 
     if added or skipped:
         console.print(
@@ -963,13 +963,13 @@ def _remove_context(paths: list[str], session: Session, console: Console) -> Non
         try:
             rel = _context_ref(raw_path, session)
         except PathError as exc:
-            console.print(f"[yellow]Skipped {raw_path}: {exc}[/yellow]")
+            console.print(f"[yellow]Skipped {escape(str(raw_path))}: {escape(str(exc))}[/yellow]")
             continue
         if session.remove_context_file(rel):
             removed += 1
-            console.print(f"[green]Removed context:[/green] {rel}")
+            console.print(f"[green]Removed context:[/green] {escape(str(rel))}")
         else:
-            console.print(f"[dim]Not in context:[/dim] {rel}")
+            console.print(f"[dim]Not in context:[/dim] {escape(str(rel))}")
 
     console.print(
         f"[dim]Context files: {len(session.context_files)} "
@@ -989,16 +989,16 @@ def _show_context(session: Session, console: Console) -> None:
         try:
             resolved = resolve_in_workspace(path, session.workspace_root)
         except PathError as exc:
-            table.add_row(path, f"[red]{escape(str(exc))}[/red]")
+            table.add_row(escape(str(path)), f"[red]{escape(str(exc))}[/red]")
             continue
         if not resolved.exists():
-            table.add_row(path, "[yellow]missing[/yellow]")
+            table.add_row(escape(str(path)), "[yellow]missing[/yellow]")
         elif resolved.is_dir():
-            table.add_row(path, "[yellow]directory[/yellow]")
+            table.add_row(escape(str(path)), "[yellow]directory[/yellow]")
         elif _looks_binary(resolved):
-            table.add_row(path, "[yellow]binary[/yellow]")
+            table.add_row(escape(str(path)), "[yellow]binary[/yellow]")
         else:
-            table.add_row(path, f"{resolved.stat().st_size} bytes")
+            table.add_row(escape(str(path)), f"{resolved.stat().st_size} bytes")
     console.print(table)
 
 
@@ -1080,7 +1080,7 @@ def _mcp_show(manager: "McpManager | None", console: Console) -> None:
         registered = manager.tools_for(name) if manager is not None else []
         resources = manager.resource_count(name) if manager is not None else None
         table.add_row(
-            name,
+            escape(name),
             transport,
             status,
             str(len(registered)) if manager is not None else "-",
@@ -1166,7 +1166,7 @@ def _lsp_show(manager: "LspManager | None", console: Console) -> None:
         console.print(
             "Available servers: "
             + ", ".join(
-                f"[cyan]{name}[/cyan] ({spec.command})"
+                f"[cyan]{escape(name)}[/cyan] ({escape(str(spec.command))})"
                 for name, spec in sorted(installed.items())
             )
         )
@@ -1180,13 +1180,17 @@ def _lsp_show(manager: "LspManager | None", console: Console) -> None:
     if missing:
         console.print(
             "[dim]Not installed: "
-            + ", ".join(f"{name} ({servers[name].command})" for name in missing)
+            + ", ".join(
+                f"{escape(name)} ({escape(str(servers[name].command))})"
+                for name in missing
+            )
             + "[/dim]"
         )
     running = sorted(manager.clients) if manager is not None else []
     if running:
         console.print(
-            "Running clients: " + ", ".join(f"[cyan]{name}[/cyan]" for name in running)
+            "Running clients: "
+            + ", ".join(f"[cyan]{escape(name)}[/cyan]" for name in running)
         )
     else:
         console.print("[dim]Running clients: none[/dim]")
@@ -4805,7 +4809,7 @@ def _cost(arg: str, session: Session, console: Console) -> str:
     table = Table(title="Session Token & Cost Usage", show_header=True)
     table.add_column("Metric", style="cyan")
     table.add_column("Value", justify="right")
-    table.add_row("Model", f"{session.provider_id}:{session.model}")
+    table.add_row("Model", escape(f"{session.provider_id}:{session.model}"))
     table.add_row("Prompt Tokens", f"{session.prompt_tokens:,}")
     table.add_row("Completion Tokens", f"{session.completion_tokens:,}")
     table.add_row("Total Tokens", f"[bold]{total:,}[/bold]")
@@ -4833,11 +4837,11 @@ def _save(arg: str, session: Session, console: Console) -> str:
     try:
         dest = save_session(session, arg.strip() or None)
         console.print(
-            f"[green]Session saved to [bold]{dest.name}[/bold] "
+            f"[green]Session saved to [bold]{escape(str(dest.name))}[/bold] "
             f"({len(session.messages)} messages, {session.total_tokens:,} tokens).[/green]"
         )
     except Exception as exc:
-        console.print(f"[red]Failed to save session: {exc}[/red]")
+        console.print(f"[red]Failed to save session: {escape(str(exc))}[/red]")
     return CommandResult.CONTINUE
 
 
@@ -4868,12 +4872,12 @@ def _load(arg: str, session: Session, console: Console) -> str:
         session.compact_at_tokens = loaded.compact_at_tokens
         session.context_window = loaded.context_window
         console.print(
-            f"[green]Loaded session [bold]{arg.strip()}[/bold]: "
-            f"{len(session.messages)} messages, provider={session.provider_id}:{session.model}[/green]"
+            f"[green]Loaded session [bold]{escape(str(arg.strip()))}[/bold]: "
+            f"{len(session.messages)} messages, provider={escape(str(session.provider_id))}:{escape(str(session.model))}[/green]"
         )
         _warn_if_no_model(session, console)
     except Exception as exc:
-        console.print(f"[red]Failed to load session: {exc}[/red]")
+        console.print(f"[red]Failed to load session: {escape(str(exc))}[/red]")
     return CommandResult.CONTINUE
 
 
@@ -4891,8 +4895,8 @@ def _sessions(arg: str, session: Session, console: Console) -> str:
     for s in saved:
         prov_model = f"{s['provider']}:{s['model']}" if s["model"] else s["provider"]
         table.add_row(
-            s["name"],
-            prov_model,
+            escape(s["name"]),
+            escape(prov_model),
             str(s["messages"]),
             f"{s['tokens']:,}",
             str(s["saved_at"]).split(".")[0].replace("T", " "),
@@ -4906,10 +4910,10 @@ def _fork(arg: str, session: Session, console: Console) -> str:
     try:
         path = fork_session(session, arg.strip() or None)
     except Exception as exc:
-        console.print(f"[red]Failed to fork session: {exc}[/red]")
+        console.print(f"[red]Failed to fork session: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     console.print(
-        f"[green]Forked session to [bold]{path.name}[/bold][/green] "
+        f"[green]Forked session to [bold]{escape(str(path.name))}[/bold][/green] "
         f"({len(session.messages)} messages)."
     )
     return CommandResult.CONTINUE
@@ -4931,9 +4935,9 @@ def _export(arg: str, session: Session, console: Console) -> str:
             export_session_markdown(session), encoding="utf-8"
         )
     except OSError as exc:
-        console.print(f"[red]Failed to export session: {exc}[/red]")
+        console.print(f"[red]Failed to export session: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
-    console.print(f"[green]Exported session to [bold]{destination}[/bold].[/green]")
+    console.print(f"[green]Exported session to [bold]{escape(str(destination))}[/bold].[/green]")
     return CommandResult.CONTINUE
 
 
@@ -4970,7 +4974,7 @@ def _share(arg: str, session: Session, console: Console) -> str:
             else:
                 index += 1
         if not path:
-            console.print(f"[yellow]Usage: {_SHARE_USAGE}[/yellow]")
+            console.print(f"[yellow]Usage: {escape(str(_SHARE_USAGE))}[/yellow]")
             return CommandResult.CONTINUE
         try:
             saved = share_module.import_share(path, name)
@@ -4978,33 +4982,33 @@ def _share(arg: str, session: Session, console: Console) -> str:
             console.print(f"[red]{escape(str(exc))}[/red]")
             return CommandResult.CONTINUE
         console.print(
-            f"[green]Imported session as [cyan]{saved.stem}[/cyan].[/green] "
-            f"Load it with /load {saved.stem}."
+            f"[green]Imported session as [cyan]{escape(str(saved.stem))}[/cyan].[/green] "
+            f"Load it with /load {escape(str(saved.stem))}."
         )
         return CommandResult.CONTINUE
 
     to_gist = bool(parts) and parts[0].lower() == "gist"
     if parts and not to_gist:
-        console.print(f"[yellow]Usage: {_SHARE_USAGE}[/yellow]")
+        console.print(f"[yellow]Usage: {escape(str(_SHARE_USAGE))}[/yellow]")
         return CommandResult.CONTINUE
     if to_gist:
         ok, detail = share_module.share_to_gist(
             session, include_tool_output=include_tool_output
         )
         if not ok:
-            console.print(f"[red]{detail}[/red]")
+            console.print(f"[red]{escape(str(detail))}[/red]")
             return CommandResult.CONTINUE
-        console.print(f"[green]Shared as a secret gist:[/green] {detail}")
+        console.print(f"[green]Shared as a secret gist:[/green] {escape(str(detail))}")
         return CommandResult.CONTINUE
     try:
         bundle_path = share_module.write_share(
             session, include_tool_output=include_tool_output
         )
     except OSError as exc:
-        console.print(f"[red]Failed to write share bundle: {exc}[/red]")
+        console.print(f"[red]Failed to write share bundle: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     console.print(
-        f"[green]Wrote redacted share bundle to [bold]{bundle_path}[/bold].[/green]"
+        f"[green]Wrote redacted share bundle to [bold]{escape(str(bundle_path))}[/bold].[/green]"
     )
     console.print(
         "[dim]Tool output is omitted by default; pass --include-tool-output "
@@ -5037,15 +5041,15 @@ def _sync(arg: str, session: Session, console: Console) -> str:
         elif action == "pull":
             report = sync_module.pull()
         else:
-            console.print(f"[yellow]Usage: {_SYNC_USAGE}[/yellow]")
+            console.print(f"[yellow]Usage: {escape(str(_SYNC_USAGE))}[/yellow]")
             return CommandResult.CONTINUE
     except sync_module.SyncError as exc:
-        console.print(f"[yellow]{exc}[/yellow]")
+        console.print(f"[yellow]{escape(str(exc))}[/yellow]")
         return CommandResult.CONTINUE
     for line in report.lines:
         console.print(line, markup=False, highlight=False)
     for error in report.errors:
-        console.print(f"[yellow]{error}[/yellow]")
+        console.print(f"[yellow]{escape(str(error))}[/yellow]")
     console.print(
         report.summary(), markup=False, highlight=False
     )
@@ -5071,10 +5075,12 @@ def _undo(arg: str, session: Session, console: Console) -> str:
         console.print("[dim]Nothing to undo.[/dim]")
         return CommandResult.CONTINUE
     for item in restored:
-        console.print(f"[green]Undid[/green] {item.label} [dim](#{item.id})[/dim]")
+        console.print(f"[green]Undid[/green] {escape(str(item.label))} [dim](#{escape(str(item.id))})[/dim]")
     paths = sorted({path for item in restored for path in item.paths})
     if paths:
-        console.print("[dim]Restored:[/dim] " + ", ".join(paths))
+        console.print(
+            "[dim]Restored:[/dim] " + ", ".join(escape(path) for path in paths)
+        )
     return CommandResult.CONTINUE
 
 
@@ -5090,8 +5096,8 @@ def _checkpoints(arg: str, session: Session, console: Console) -> str:
     for item in session.checkpoints:
         table.add_row(
             str(item.id),
-            item.label,
-            ", ".join(item.paths) or "-",
+            escape(item.label),
+            escape(", ".join(item.paths) or "-"),
             item.created_at.split(".")[0].replace("T", " "),
         )
     console.print(table)
@@ -5115,7 +5121,9 @@ def _todos(arg: str, session: Session, console: Console) -> str:
     table.add_column("Task")
     for todo in session.todos:
         status = str(todo.get("status") or "pending")
-        table.add_row(labels.get(status, status), str(todo.get("content") or ""))
+        table.add_row(
+            labels.get(status, status), escape(str(todo.get("content") or ""))
+        )
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -5140,7 +5148,7 @@ def _memory(arg: str, session: Session, console: Console) -> str:
             text = memory_module.read_memory(
                 scope, session.workspace_root, settings["max_bytes"]
             )
-            console.print(f"\n[bold]{scope}[/bold] [dim]{path}[/dim]")
+            console.print(f"\n[bold]{scope}[/bold] [dim]{escape(str(path))}[/dim]")
             if text:
                 console.print(text, markup=False, highlight=False)
             else:
@@ -5163,7 +5171,7 @@ def _memory(arg: str, session: Session, console: Console) -> str:
         scope = rest.lower() or "project"
         if scope not in memory_module.SCOPES:
             console.print(
-                f"[red]Unknown memory scope '{scope}'. Choose: project, user.[/red]"
+                f"[red]Unknown memory scope '{escape(scope)}'. Choose: project, user.[/red]"
             )
             return CommandResult.CONTINUE
         if memory_module.clear_memory(scope, session.workspace_root):
@@ -5172,7 +5180,7 @@ def _memory(arg: str, session: Session, console: Console) -> str:
             console.print(f"[dim]No {scope} memory to clear.[/dim]")
         return CommandResult.CONTINUE
 
-    console.print(f"[yellow]Usage: {_MEMORY_USAGE}[/yellow]")
+    console.print(f"[yellow]Usage: {escape(str(_MEMORY_USAGE))}[/yellow]")
     return CommandResult.CONTINUE
 
 
@@ -5184,7 +5192,7 @@ def _memory_append(
     except ValueError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
-    console.print(f"[green]Saved to {scope} memory:[/green] {path}")
+    console.print(f"[green]Saved to {scope} memory:[/green] {escape(str(path))}")
     return CommandResult.CONTINUE
 
 
@@ -5215,7 +5223,7 @@ def _index(arg: str, session: Session, console: Console) -> str:
                 f"([yellow]{status.stale}[/yellow] stale)\n"
                 f"Terms: [cyan]{status.terms}[/cyan]\n"
                 f"Store: [cyan]{_format_bytes(status.size_bytes)}[/cyan] "
-                f"[dim]{status.path}[/dim]\n"
+                f"[dim]{escape(str(status.path))}[/dim]\n"
                 f"Embeddings: [cyan]{'on' if status.embeddings else 'off'}[/cyan]"
             )
             return CommandResult.CONTINUE
@@ -5241,9 +5249,9 @@ def _index(arg: str, session: Session, console: Console) -> str:
                 console.print("[dim]No codebase index to clear.[/dim]")
             return CommandResult.CONTINUE
     except OSError as exc:
-        console.print(f"[red]Codebase index unavailable: {exc}[/red]")
+        console.print(f"[red]Codebase index unavailable: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
-    console.print(f"[yellow]Usage: {_INDEX_USAGE}[/yellow]")
+    console.print(f"[yellow]Usage: {escape(str(_INDEX_USAGE))}[/yellow]")
     return CommandResult.CONTINUE
 
 
@@ -5321,13 +5329,13 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
             return CommandResult.CONTINUE
         record = jobs_module.refresh_job(rest[0]) or jobs_module.get_job(rest[0])
         if record is None:
-            console.print(f"[red]Unknown job '{rest[0]}'.[/red]")
+            console.print(f"[red]Unknown job '{escape(str(rest[0]))}'.[/red]")
             return CommandResult.CONTINUE
-        console.print(f"ID: [cyan]{record.id}[/cyan]")
+        console.print(f"ID: [cyan]{escape(str(record.id))}[/cyan]")
         console.print(f"Status: [bold]{record.status}[/bold]")
         console.print(f"Prompt: {escape(record.prompt)}")
         console.print(f"Workspace: {escape(record.workspace)}")
-        console.print(f"Mode: {record.mode}")
+        console.print(f"Mode: {escape(str(record.mode))}")
         if record.finished_at:
             console.print(f"Finished: {record.finished_at}")
         if record.exit_code is not None:
@@ -5336,7 +5344,7 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
             console.print(f"[red]Error: {escape(record.error)}[/red]")
         if record.result:
             console.print(Panel(escape(record.result), title="Result"))
-        console.print(f"[dim]Output: {record.output_path}[/dim]")
+        console.print(f"[dim]Output: {escape(str(record.output_path))}[/dim]")
         return CommandResult.CONTINUE
 
     if action == "cancel":
@@ -5345,10 +5353,10 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
             return CommandResult.CONTINUE
         record = jobs_module.cancel_job(rest[0])
         if record is None:
-            console.print(f"[red]Unknown job '{rest[0]}'.[/red]")
+            console.print(f"[red]Unknown job '{escape(str(rest[0]))}'.[/red]")
             return CommandResult.CONTINUE
         console.print(
-            f"[green]Job[/green] [cyan]{record.id}[/cyan] is now "
+            f"[green]Job[/green] [cyan]{escape(str(record.id))}[/cyan] is now "
             f"[bold]{record.status}[/bold]."
         )
         return CommandResult.CONTINUE
@@ -5361,12 +5369,12 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
             return CommandResult.CONTINUE
         for job in started:
             console.print(
-                f"[green]Started[/green] [cyan]{job.id}[/cyan] "
+                f"[green]Started[/green] [cyan]{escape(str(job.id))}[/cyan] "
                 f"([dim]{escape(_shorten(job.prompt, 60))}[/dim])"
             )
         for job, reason in skipped:
             console.print(
-                f"[yellow]Skipped[/yellow] [cyan]{job.id}[/cyan]: {escape(reason)}"
+                f"[yellow]Skipped[/yellow] [cyan]{escape(str(job.id))}[/cyan]: {escape(reason)}"
             )
         return CommandResult.CONTINUE
 
@@ -5386,9 +5394,9 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
             console.print(f"[red]{escape(str(exc))}[/red]")
             return CommandResult.CONTINUE
         console.print(
-            f"[green]Started job[/green] [cyan]{record.id}[/cyan] "
+            f"[green]Started job[/green] [cyan]{escape(str(record.id))}[/cyan] "
             f"([dim]{escape(_shorten(record.prompt, 60))}[/dim]). "
-            f"Use /jobs show {record.id} to track it."
+            f"Use /jobs show {escape(str(record.id))} to track it."
         )
         return CommandResult.CONTINUE
 
@@ -5450,8 +5458,10 @@ def _run_media_call(
     label. Exceptions (including Ctrl+C) propagate to the caller.
     """
     started = time.monotonic()
-    with console.status(f"{label}…") as status:
-        result = work(lambda text: status.update(f"{text}"))
+    # Spinner text is parsed as markup by Rich, outside render_str. The label and
+    # the progress updates carry model names, job ids and server status text.
+    with console.status(f"{escape(label)}…") as status:
+        result = work(lambda text: status.update(escape(text)))
     return result, time.monotonic() - started
 
 
@@ -5485,7 +5495,7 @@ def _image(arg: str, session: Session, console: Console) -> str:
     if not prompt:
         console.print(
             "[yellow]Usage: /image [--size WxH] [--model <id>] <prompt>[/yellow]\n"
-            f"[dim]Now: {settings['provider']}/{settings['model']} at "
+            f"[dim]Now: {escape(str(settings['provider']))}/{escape(str(settings['model']))} at "
             f"{settings['size']}. Example: /image a red fox reading a book[/dim]"
         )
         return CommandResult.CONTINUE
@@ -5555,7 +5565,7 @@ def _video(arg: str, session: Session, console: Console) -> str:
                 "[yellow]Usage: /video [--duration <s>] [--size <WxH|720p>] "
                 "[--model <id>] [--image <path>] <prompt>[/yellow]\n"
                 "[yellow]       /video resume <job-id>[/yellow]\n"
-                f"[dim]Now: {settings['provider']}/{escape(video_model)}, "
+                f"[dim]Now: {escape(str(settings['provider']))}/{escape(video_model)}, "
                 f"{settings['video_duration']}s. Video is billed per second and "
                 "takes minutes to render. Example: /video a paper boat drifting "
                 "down a rainy street[/dim]"
@@ -5614,7 +5624,7 @@ def _video(arg: str, session: Session, console: Console) -> str:
         model = options.get("model") or settings["video_model"]
         seconds = duration or settings["video_duration"]
         console.print(
-            f"[dim]Requesting a video ({seconds}s) from {settings['provider']}/"
+            f"[dim]Requesting a video ({seconds}s) from {escape(str(settings['provider']))}/"
             f"{escape(model)}. It is billed per second and usually takes a "
             "few minutes.[/dim]"
         )
