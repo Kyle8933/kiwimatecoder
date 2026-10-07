@@ -255,9 +255,49 @@ def load_project_config(project_root: Path | str | None = None) -> dict[str, Any
     return stored
 
 
+# Sections the rest of the module indexes as maps (``cfg["keys"][provider_id]``).
+_MAP_SECTIONS = ("keys", "providers", "model_filters")
+
+
+def _as_map(value: object) -> dict[str, Any]:
+    """A copy of ``value`` when it is a map, else an empty map.
+
+    A hand-edited file, a project ``.kiwimatecoder.json`` or a team policy can
+    hold a list or a string where a section belongs. Such a value counts as
+    empty (``validate_config`` still reports it) instead of failing every
+    command that loads the config.
+    """
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _malformed_map_sections() -> dict[str, Any]:
+    """Raw values of the map sections that are not maps, as stored on disk.
+
+    ``load_config`` replaces them with empty maps, so ``validate_config`` reads
+    the files again to report them.
+    """
+    found: dict[str, Any] = {}
+    stored: Any = {}
+    if CONFIG_FILE.exists():
+        try:
+            stored = json.loads(CONFIG_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            stored = {}
+    for source in (stored, load_project_config()):
+        if not isinstance(source, dict):
+            continue
+        for section in _MAP_SECTIONS:
+            value = source.get(section)
+            if value is not None and not isinstance(value, dict):
+                found[section] = value
+    return found
+
+
 def _apply_project_overlay(cfg: dict[str, Any], project: dict[str, Any]) -> None:
     """Deep-merge the project config onto ``cfg`` (project values win)."""
     for key, value in project.items():
+        if key in _MAP_SECTIONS and not isinstance(value, dict):
+            continue  # reported by validate_config; never replaces the global map
         if isinstance(value, dict) and isinstance(cfg.get(key), dict):
             merged = dict(cfg[key])
             for sub_key, sub_value in value.items():
@@ -298,9 +338,8 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
                     if v is not None or k == "selected_model"
                 }
             )
-            cfg["keys"] = dict(stored.get("keys") or {})
-            cfg["providers"] = dict(stored.get("providers") or {})
-            cfg["model_filters"] = dict(stored.get("model_filters") or {})
+            for section in _MAP_SECTIONS:
+                cfg[section] = _as_map(stored.get(section))
     else:
         legacy_key = _read_legacy_key()
         if legacy_key:
@@ -379,6 +418,8 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
             {"active_providers": cfg.get("active_providers")},
             str(cfg.get("selected_provider") or DEFAULT_PROVIDER_ID),
         )
+    for section in _MAP_SECTIONS:  # a team policy may also carry a wrong type
+        cfg[section] = _as_map(cfg.get(section))
     cfg["version"] = CONFIG_VERSION
     return cfg
 
@@ -723,10 +764,11 @@ def update_provider(
         raise ValueError(f"'{provider_id}' is built in and cannot be edited.")
 
     cfg = load_config()
-    if provider_id not in cfg["providers"]:
+    entry = cfg["providers"].get(provider_id)
+    if not isinstance(entry, dict):  # missing, or unusable (get_provider_config agrees)
         raise ValueError(f"Unknown custom provider '{provider_id}'.")
 
-    data = dict(cfg["providers"][provider_id])
+    data = dict(entry)
     if name is not None:
         if not name.strip():
             raise ValueError("Provider name is required.")
@@ -777,7 +819,13 @@ def get_key(provider_id: str) -> str | None:
     env_key = os.environ.get(provider.key_env)
     if env_key is not None:
         return env_key or None  # exported empty string -> treat as "no key"
-    return load_config()["keys"].get(provider_id)
+    return _stored_key(provider_id)
+
+
+def _stored_key(provider_id: str) -> str | None:
+    """The key stored for ``provider_id``, or None when it is not a string."""
+    value = load_config()["keys"].get(provider_id)
+    return value if isinstance(value, str) else None
 
 
 def get_key_env_override(provider_id: str) -> str | None:
@@ -808,7 +856,7 @@ def key_source(provider_id: str) -> dict[str, Any]:
     env_key = os.environ.get(provider.key_env)
     if env_key is not None:
         return {"origin": "env", "env": provider.key_env, "value": env_key or None}
-    stored = load_config()["keys"].get(provider_id)
+    stored = _stored_key(provider_id)
     if stored:
         # A key read from the flat legacy file sits in the keys map too, so
         # distinguish it for messaging when the JSON config has never been written.
@@ -1036,11 +1084,16 @@ def get_model_filter(provider_id: str) -> dict[str, Any]:
     """Return the model visibility filter for a provider."""
     get_provider_config(provider_id)
     cfg = load_config()
-    stored = (cfg.get("model_filters") or {}).get(provider_id) or {}
+    stored = cfg["model_filters"].get(provider_id)
+    if not isinstance(stored, dict):
+        stored = {}
     mode = stored.get("mode") or "all"
     if mode not in {"all", "allow", "deny"}:
         mode = "all"
-    models = [str(model) for model in stored.get("models", []) if str(model).strip()]
+    raw_models = stored.get("models")
+    if not isinstance(raw_models, list):
+        raw_models = []
+    models = [str(model) for model in raw_models if str(model).strip()]
     return {"mode": mode, "models": models}
 
 
@@ -1096,8 +1149,7 @@ def _permissions_section(cfg: dict[str, Any]) -> dict[str, Any]:
     approvals"; the writers do the same instead of failing on it, so a
     hand-edited list or string is replaced by a proper map on the next write.
     """
-    stored = cfg.get("tool_permissions")
-    return dict(stored) if isinstance(stored, dict) else {}
+    return _as_map(cfg.get("tool_permissions"))
 
 
 def get_always_allowed_tools(cfg: dict[str, Any] | None = None) -> list[str]:
@@ -3888,6 +3940,9 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
     top-level keys are warnings so configs written by newer releases still
     pass; every other structural problem is an error.
     """
+    # load_config() hands back empty maps for sections of the wrong type; what
+    # is on disk is checked for them so that they are reported.
+    on_disk = _malformed_map_sections() if cfg is None else {}
     cfg = cfg if cfg is not None else load_config()
     issues: list[dict[str, str]] = []
 
@@ -3902,7 +3957,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
         if key not in _KNOWN_CONFIG_KEYS:
             add("warning", str(key), f"Unknown top-level key '{key}' is ignored.")
 
-    keys = cfg.get("keys")
+    keys = on_disk.get("keys", cfg.get("keys"))
     if not isinstance(keys, dict):
         add("error", "keys", "'keys' must be an object mapping provider -> key.")
     else:
@@ -3910,7 +3965,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if not isinstance(value, str):
                 add("error", f"keys.{provider_id}", "API key must be a string.")
 
-    providers = cfg.get("providers")
+    providers = on_disk.get("providers", cfg.get("providers"))
     if not isinstance(providers, dict):
         add("error", "providers", "'providers' must be an object.")
     else:
@@ -3922,7 +3977,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                     "Provider needs non-empty name and base_url.",
                 )
 
-    filters = cfg.get("model_filters")
+    filters = on_disk.get("model_filters", cfg.get("model_filters"))
     if not isinstance(filters, dict):
         add("error", "model_filters", "'model_filters' must be an object.")
     else:
