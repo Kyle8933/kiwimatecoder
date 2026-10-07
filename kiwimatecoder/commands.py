@@ -4849,7 +4849,9 @@ def _load(arg: str, session: Session, console: Console) -> str:
     if not arg.strip():
         return _sessions("", session, console)
     try:
-        loaded = load_session(arg.strip(), workspace_root=session.workspace_root)
+        loaded = load_session(
+            arg.strip(), workspace_root=session.workspace_root, require_provider=True
+        )
         session.messages = loaded.messages
         session.provider_id = loaded.provider_id
         session.model = loaded.model

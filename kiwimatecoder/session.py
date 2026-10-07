@@ -433,11 +433,23 @@ def save_session(session: Session, name: str | None = None) -> Path:
     return dest
 
 
-def load_session(name_or_path: str, workspace_root: Path | None = None) -> Session:
+def load_session(
+    name_or_path: str,
+    workspace_root: Path | None = None,
+    *,
+    require_provider: bool = False,
+) -> Session:
     """Load session state from name or path.
 
     ``"last"``/``"latest"`` resolve to the end-of-session autosave, falling
     back to the newest saved session when that file is missing.
+
+    A session saved with a custom provider that has since been removed cannot
+    be continued: every request, ``/cost`` and ``/provider`` need that
+    provider's config. With ``require_provider`` such a session raises
+    ``ValueError`` here, before the caller has applied any of it. Callers that
+    only read the conversation (``share create``) leave it off. Fallback
+    providers that are gone are not a problem: the roster skips them.
     """
     target = Path(name_or_path)
     if not target.is_file():
@@ -454,6 +466,15 @@ def load_session(name_or_path: str, workspace_root: Path | None = None) -> Sessi
 
     data: dict[str, Any] = json.loads(target.read_text(encoding="utf-8"))
     sess = Session.from_dict(data)
+    if require_provider:
+        try:
+            get_provider_config(sess.provider_id)
+        except KeyError:
+            raise ValueError(
+                f"Session '{name_or_path}' uses provider '{sess.provider_id}', "
+                "which is not configured. Add it again with /config provider add "
+                "(same id), then load the session."
+            ) from None
     if workspace_root is not None:
         sess.workspace_root = workspace_root
     return sess

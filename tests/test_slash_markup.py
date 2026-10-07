@@ -427,21 +427,44 @@ def test_a_hand_edited_media_provider_is_shown_literally(hostile, setup):
         assert not console.problems, (command, console.problems)
 
 
-@pytest.mark.parametrize("hostile", HOSTILE)
-def test_loading_a_session_that_names_a_hostile_provider(hostile, setup):
-    # A saved session is a file anyone can edit; /load echoes the provider it names.
-    session = _session(setup(hostile), hostile)
+def _write_session_naming(provider_id: str, session) -> str:
     data = session.to_dict()
-    data["provider_id"] = hostile
-    data["active_provider_ids"] = [hostile]
+    data["provider_id"] = provider_id
+    data["active_provider_ids"] = [provider_id]
     saved = session_module._sessions_dir() / "edited.json"
     saved.write_text(json.dumps(data), encoding="utf-8")
+    return str(saved)
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_loading_a_session_that_names_a_provider_with_a_hostile_id(hostile, setup):
+    # A saved session is a file anyone can edit; /load echoes the provider it names.
+    provider_id = hostile.lower()  # ids are stored lower-case
+    session = _session(setup(hostile), hostile)
+    config.add_provider(provider_id, "Name", "http://localhost:1/v1", "m1")
+    saved = _write_session_naming(provider_id, session)
+    console = StrictConsole(provider_id)
+
+    dispatch(f"/load {saved}", session, console)
+
+    assert not console.problems, console.problems
+    assert f"provider={provider_id}:{hostile}" in " ".join(console.file.getvalue().split())
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_refusing_a_session_whose_provider_is_not_configured_shows_its_id_literally(
+    hostile, setup
+):
+    session = _session(setup(hostile), hostile)
+    saved = _write_session_naming(hostile, session)
     console = StrictConsole(hostile)
 
     dispatch(f"/load {saved}", session, console)
 
     assert not console.problems, console.problems
-    assert f"provider={hostile}:{hostile}" in console.file.getvalue()
+    shown = " ".join(console.file.getvalue().split())  # the line may wrap
+    assert f"uses provider '{hostile}', which is not configured" in shown
+    assert session.provider_id == "openrouter"  # nothing was applied
 
 
 @pytest.mark.parametrize("hostile", HOSTILE)

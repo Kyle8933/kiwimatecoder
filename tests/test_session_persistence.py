@@ -350,3 +350,73 @@ def test_runtime_steering_queues_are_not_persisted(tmp_path):
     assert "deferred_commands" not in data
     assert list(restored.steering) == []
     assert list(restored.deferred_commands) == []
+
+
+def _saved_with_removed_provider(tmp_path, monkeypatch, *, primary=True):
+    """Save a session that uses a custom provider, then remove that provider."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+    config.add_provider("foo", "Foo", "https://api.example.com/v1", "foo-model")
+    if primary:
+        sess = Session(provider_id="foo", model="foo-model", workspace_root=tmp_path)
+    else:
+        sess = Session(
+            provider_id="openrouter",
+            model="m",
+            workspace_root=tmp_path,
+            active_provider_ids=["openrouter", "foo"],
+        )
+    save_session(sess, "stale")
+    config.remove_provider("foo")
+
+
+def test_loading_a_session_whose_provider_was_removed_is_refused_on_request(
+    tmp_path, monkeypatch
+):
+    _saved_with_removed_provider(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError) as caught:
+        load_session("stale", workspace_root=tmp_path, require_provider=True)
+
+    message = str(caught.value)
+    assert "'stale'" in message
+    assert "'foo'" in message
+    assert "not configured" in message
+
+
+def test_the_conversation_can_still_be_read_without_its_provider(tmp_path, monkeypatch):
+    # `share create` only reads the messages, so it does not ask for the provider.
+    _saved_with_removed_provider(tmp_path, monkeypatch)
+
+    loaded = load_session("stale", workspace_root=tmp_path)
+
+    assert loaded.provider_id == "foo"
+
+
+def test_a_session_loads_once_its_provider_is_added_again(tmp_path, monkeypatch):
+    _saved_with_removed_provider(tmp_path, monkeypatch)
+    config.add_provider("foo", "Foo", "https://api.example.com/v1", "foo-model")
+
+    loaded = load_session("stale", workspace_root=tmp_path, require_provider=True)
+
+    assert loaded.provider.id == "foo"
+
+
+def test_a_removed_fallback_provider_does_not_stop_a_session_loading(tmp_path, monkeypatch):
+    _saved_with_removed_provider(tmp_path, monkeypatch, primary=False)
+
+    loaded = load_session("stale", workspace_root=tmp_path, require_provider=True)
+
+    assert [p.id for p in loaded.active_providers] == ["openrouter"]
+
+
+def test_a_built_in_provider_always_loads(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+    save_session(Session(provider_id="anthropic", model="m", workspace_root=tmp_path), "ok")
+
+    loaded = load_session("ok", workspace_root=tmp_path, require_provider=True)
+
+    assert loaded.provider_id == "anthropic"

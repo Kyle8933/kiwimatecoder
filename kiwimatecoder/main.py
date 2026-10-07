@@ -3123,7 +3123,9 @@ def main(
 
         target = resume or "last"
         try:
-            session = load_session(target, workspace_root=Path.cwd())
+            session = load_session(
+                target, workspace_root=Path.cwd(), require_provider=True
+            )
             resumed = True
             console.print(
                 f"[bold green]{escape(str(t('cli.session_resumed', name=target)))}[/bold green] "

@@ -1866,3 +1866,61 @@ def test_config_action_descriptions_include_ui():
     from kiwimatecoder.commands import _CONFIG_ACTION_DESCRIPTIONS
 
     assert "ui" in _CONFIG_ACTION_DESCRIPTIONS
+
+
+def _save_session_using_removed_provider(session, tmp_path):
+    """A saved session whose custom provider was removed afterwards."""
+    from kiwimatecoder.session import Session, save_session
+
+    config.add_provider("foo", "Foo", "https://api.example.com/v1", "foo-model")
+    save_session(
+        Session(
+            provider_id="foo",
+            model="foo-model",
+            workspace_root=tmp_path,
+            messages=[{"role": "user", "content": "from the saved session"}],
+        ),
+        "stale",
+    )
+    config.remove_provider("foo")
+
+
+def test_load_refuses_a_session_whose_provider_was_removed(session, tmp_path):
+    _save_session_using_removed_provider(session, tmp_path)
+    console = _console(width=300)
+    before = (session.provider_id, session.model, list(session.messages), session.mode)
+
+    assert dispatch("/load stale", session, console) == CommandResult.CONTINUE
+
+    output = _output(console)
+    assert "Failed to load session" in output
+    assert "provider 'foo'" in output
+    assert "/config provider add" in output
+    assert "Loaded session" not in output
+    # nothing from the file was applied
+    assert (session.provider_id, session.model, list(session.messages), session.mode) == before
+
+
+def test_commands_still_work_after_a_refused_load(session, tmp_path):
+    # These raised UnknownProviderError once the stale provider had been copied in.
+    _save_session_using_removed_provider(session, tmp_path)
+    dispatch("/load stale", session, _console())
+    console = _console()
+
+    dispatch("/cost", session, console)
+    dispatch("/provider", session, console)
+
+    assert session.provider.id == "openrouter"
+    assert "Providers" in _output(console)
+
+
+def test_load_works_again_once_the_provider_is_back(session, tmp_path):
+    _save_session_using_removed_provider(session, tmp_path)
+    config.add_provider("foo", "Foo", "https://api.example.com/v1", "foo-model")
+    console = _console()
+
+    dispatch("/load stale", session, console)
+
+    assert session.provider_id == "foo"
+    assert session.messages == [{"role": "user", "content": "from the saved session"}]
+    assert "Loaded session" in _output(console)

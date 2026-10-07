@@ -1561,3 +1561,51 @@ def test_launch_quick_start_setup_model_is_used_without_asking_again(monkeypatch
     assert asked == ["openrouter"]
     assert captured["session"].model == "vendor/from-setup"
     assert "No model chosen" not in result.output
+
+
+def _save_stale_session(tmp_path, monkeypatch, name):
+    from kiwimatecoder.session import Session, save_session
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+    config.add_provider("foo", "Foo", "https://api.example.com/v1", "foo-model")
+    save_session(
+        Session(
+            provider_id="foo",
+            model="foo-model",
+            workspace_root=tmp_path,
+            messages=[{"role": "user", "content": "hi"}],
+        ),
+        name,
+    )
+    config.remove_provider("foo")
+
+
+def test_resume_of_a_session_whose_provider_was_removed_exits_nonzero(tmp_path, monkeypatch):
+    _save_stale_session(tmp_path, monkeypatch, "stale")
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
+
+    result = CliRunner().invoke(main.app, ["--resume", "stale"])
+
+    assert result.exit_code == 1
+    assert "Could not resume session 'stale'" in result.output
+    assert "provider 'foo'" in result.output
+
+
+def test_continue_with_a_session_whose_provider_was_removed_starts_fresh(tmp_path, monkeypatch):
+    from kiwimatecoder import repl
+
+    _save_stale_session(tmp_path, monkeypatch, "last")
+    config.set_provider_model("openrouter", "test-model")
+    captured = {}
+    monkeypatch.setattr(repl, "run", lambda session: captured.setdefault("session", session))
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
+
+    result = CliRunner().invoke(main.app, ["--continue"])
+
+    assert result.exit_code == 0
+    assert "Starting fresh" in result.output
+    assert "provider 'foo'" in result.output
+    assert captured["session"].provider_id == "openrouter"
+    assert captured["session"].messages == []
