@@ -1466,6 +1466,35 @@ def test_config_budget_tokens_rejects_non_finite_limits(session, value):
     assert config.get_budget() == {}
 
 
+@pytest.mark.parametrize(
+    "value", ["1000000000000001", "1" + "0" * 400], ids=["cap+1", "10**400"]
+)
+def test_config_budget_tokens_rejects_a_limit_above_the_cap(session, value):
+    console = _console()
+
+    dispatch(f"/config budget tokens {value}", session, console)
+
+    assert "at most 1,000,000,000,000,000" in _output(console)
+    assert config.get_budget() == {}
+
+
+def test_config_budget_tokens_accepts_the_cap_and_the_menu_label_renders_it(session):
+    console = _console()
+
+    dispatch("/config budget tokens 1000000000000000", session, console)
+
+    assert config.get_budget() == {"max_tokens": config.BUDGET_TOKENS_MAX}
+    label = commands_module._budget_value("max_tokens", "tokens")(session)
+    assert label == "1,000,000,000,000,000 tokens"
+
+
+def test_config_budget_label_survives_a_hand_edited_huge_token_limit(session):
+    # The label formats the stored value with ":,.0f", which raised OverflowError.
+    config.CONFIG_FILE.write_text('{"budget": {"max_tokens": %s}}' % ("1" + "0" * 400))
+
+    assert commands_module._budget_value("max_tokens", "tokens")(session) == "no limit"
+
+
 def test_config_budget_ignores_a_hand_edited_non_finite_limit(session):
     config.CONFIG_FILE.write_text('{"budget": {"max_tokens": 1e999, "max_cost_usd": NaN}}')
     console = _console()

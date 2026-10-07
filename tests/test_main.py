@@ -587,6 +587,14 @@ def test_cli_budget_cost_rejects_non_finite_limits(value):
     assert config.get_budget() == {}
 
 
+def test_cli_budget_tokens_rejects_a_limit_above_the_cap():
+    result = CliRunner().invoke(main.app, ["config", "budget", "tokens", "1" + "0" * 400])
+
+    assert result.exit_code == 1
+    assert "at most 1,000,000,000,000,000" in result.output
+    assert config.get_budget() == {}
+
+
 @pytest.mark.parametrize("action", ["cost", "tokens"])
 def test_cli_budget_error_echoes_a_bracketed_value_literally(action):
     # The message quotes the rejected value; Rich must not parse it as markup

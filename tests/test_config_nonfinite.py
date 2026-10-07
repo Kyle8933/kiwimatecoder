@@ -82,6 +82,48 @@ def test_set_budget_rejects_a_non_whole_token_count_with_a_clear_message(value):
     assert config.get_budget() == {}
 
 
+HUGE_TOKENS = [
+    pytest.param(config.BUDGET_TOKENS_MAX + 1, id="cap+1"),
+    pytest.param(10**400, id="int-10**400"),
+    pytest.param("1" + "0" * 400, id="str-10**400"),
+]
+
+
+@pytest.mark.parametrize("value", HUGE_TOKENS)
+def test_set_budget_rejects_a_token_limit_above_the_cap(value):
+    # Past about 1.8e308 an int no longer converts to a float, so the label and the
+    # 80% warning raised OverflowError; the cap rejects it long before that.
+    with pytest.raises(ValueError, match="at most 1,000,000,000,000,000"):
+        config.set_budget(max_tokens=value)
+
+    assert config.get_budget() == {}
+    assert "0" * 20 not in _stored_text()
+
+
+def test_set_budget_accepts_a_token_limit_at_the_cap():
+    assert config.set_budget(max_tokens=config.BUDGET_TOKENS_MAX) == {
+        "max_tokens": config.BUDGET_TOKENS_MAX
+    }
+    assert config.set_budget(max_tokens=config.BUDGET_TOKENS_MAX - 1) == {
+        "max_tokens": config.BUDGET_TOKENS_MAX - 1
+    }
+
+
+def test_a_hand_edited_token_limit_above_the_cap_is_ignored_and_reported():
+    _write('{"budget": {"max_tokens": %s, "max_cost_usd": 2.5}}' % ("1" + "0" * 400))
+
+    assert config.get_budget() == {"max_cost_usd": 2.5}  # the valid limit survives
+    messages = [issue["message"] for issue in config.validate_config()]
+    assert any("at most 1,000,000,000,000,000" in message for message in messages)
+
+
+def test_a_profile_cannot_carry_a_token_limit_above_the_cap():
+    with pytest.raises(ValueError, match="at most"):
+        config.save_profile("work", {"budget": {"max_tokens": 10**400}})
+
+    assert config.get_profiles() == {}
+
+
 @pytest.mark.parametrize("value", ["lots", "$3", "1,5", ""])
 def test_set_budget_cost_not_a_number_is_a_clear_error(value):
     with pytest.raises(ValueError, match="must be a number"):

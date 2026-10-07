@@ -1613,6 +1613,9 @@ kiwimatecoder config budget show
 kiwimatecoder config budget clear
 ```
 
+A token limit is a whole number from 1 to 1,000,000,000,000,000; use `clear`
+for no limit.
+
 ## Audit log
 
 Every tool decision (allowed, denied, dry-run, auto-verify) is appended to

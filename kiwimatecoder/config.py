@@ -1590,8 +1590,15 @@ def set_verify_command(command: str | None) -> str:
 _NUMBER_ERRORS = (TypeError, ValueError, OverflowError)
 
 
+# A token budget this large is no limit at all. The cap also keeps the number
+# usable: past about 1.8e308 an int no longer converts to a float, so the
+# ``0.8 * max_tokens`` warning and the ``:,.0f`` label raised OverflowError. At
+# 10**15 (below 2**53) the conversion is exact.
+BUDGET_TOKENS_MAX = 10**15
+
+
 def _budget_tokens(value: Any) -> int:
-    """Validate a ``max_tokens`` budget: a whole number of at least 1."""
+    """Validate a ``max_tokens`` budget: a whole number from 1 to ``BUDGET_TOKENS_MAX``."""
     try:
         tokens = int(value)
     except _NUMBER_ERRORS as exc:
@@ -1600,6 +1607,10 @@ def _budget_tokens(value: Any) -> int:
         ) from exc
     if tokens < 1:
         raise ValueError("max_tokens budget must be at least 1.")
+    if tokens > BUDGET_TOKENS_MAX:
+        raise ValueError(
+            f"max_tokens budget must be at most {BUDGET_TOKENS_MAX:,}."
+        )
     return tokens
 
 
