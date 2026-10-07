@@ -24,7 +24,7 @@ from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import REGISTRY
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
-from tests.test_config_markup import HOSTILE, StrictConsole
+from tests.test_config_markup import HOSTILE, StrictConsole, path_safe
 
 # Each command with the hostile value as its argument. Left out on purpose:
 # /config (its own test), /exit and /quit, /doctor (probes services), /model
@@ -75,7 +75,7 @@ def setup(tmp_path, monkeypatch):
     registered: list[str] = []
 
     def build(hostile: str):
-        home = tmp_path / f"home{hostile}"
+        home = tmp_path / f"home{path_safe(hostile)}"
         home.mkdir(parents=True)
         monkeypatch.setattr(config, "CONFIG_DIR", home)
         monkeypatch.setattr(config, "CONFIG_FILE", home / "config.json")
@@ -83,7 +83,7 @@ def setup(tmp_path, monkeypatch):
         monkeypatch.delenv(config.PROJECT_CONFIG_ENV, raising=False)
         for provider in REGISTRY.values():
             monkeypatch.delenv(provider.key_env, raising=False)
-        root = tmp_path / f"ws{hostile}"
+        root = tmp_path / f"ws{path_safe(hostile)}"
         root.mkdir(parents=True)
         monkeypatch.chdir(root)
         i18n.set_locale(i18n.DEFAULT_LOCALE)
@@ -138,11 +138,12 @@ def _populate(root, hostile, monkeypatch) -> None:
     # Entries named like the value: a text file, a directory, a binary file and a
     # dangling symlink. A value with a "/" in it (``[/x]``) is a nested path, so
     # create the parents.
+    safe = path_safe(hostile)  # Windows cannot create "C:\\[x]"
     entries = (
-        (hostile, lambda path: path.write_text("hello\n")),
-        (f"dir{hostile}", lambda path: path.mkdir()),
-        (f"bin{hostile}", lambda path: path.write_bytes(b"\x00\x01\x02")),
-        (f"link{hostile}", lambda path: path.symlink_to(root / f"gone{hostile}")),
+        (safe, lambda path: path.write_text("hello\n")),
+        (f"dir{safe}", lambda path: path.mkdir()),
+        (f"bin{safe}", lambda path: path.write_bytes(b"\x00\x01\x02")),
+        (f"link{safe}", lambda path: path.symlink_to(root / f"gone{safe}")),
     )
     for name, make in entries:
         target = root / name
@@ -150,7 +151,7 @@ def _populate(root, hostile, monkeypatch) -> None:
         make(target)
     # The text file doubles as the runnable language-server command: it is found
     # on PATH (or, for a value with a "/", relative to the working directory).
-    (root / hostile).chmod(0o755)
+    (root / safe).chmod(0o755)
     monkeypatch.setenv("PATH", f"{root}{os.pathsep}{os.environ['PATH']}")
     from kiwimatecoder.lsp import manager as lsp_manager
 
@@ -162,7 +163,7 @@ def _populate(root, hostile, monkeypatch) -> None:
     session_module.save_session(_session(root, hostile), "ok")
     # A saved session named like the value (a "/" cannot be part of a file name).
     if "/" not in hostile:
-        saved = session_module._sessions_dir() / f"{hostile}.json"
+        saved = session_module._sessions_dir() / f"{safe}.json"
         saved.write_text(json.dumps(_session(root, hostile).to_dict()), encoding="utf-8")
     # A finished background job whose fields are all the value.
     jobs.save_job(

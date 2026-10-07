@@ -1924,3 +1924,44 @@ def test_load_works_again_once_the_provider_is_back(session, tmp_path):
     assert session.provider_id == "foo"
     assert session.messages == [{"role": "user", "content": "from the saved session"}]
     assert "Loaded session" in _output(console)
+
+
+def test_context_add_reports_a_glob_pattern_that_cannot_be_matched(session):
+    # Path.glob raises ValueError for "a**b" on every platform.
+    console = _console(width=200)
+
+    dispatch("/context add a**b src/**x/*.py", session, console)
+
+    output = _output(console)
+    assert output.count("Invalid glob pattern") == 2
+    assert "Context files: 0 (0 added, 2 skipped)." in output
+    assert session.context_files == []
+
+
+def test_context_add_reports_a_pattern_the_platform_cannot_glob(session, monkeypatch):
+    # On Windows "/src/*.py" is rooted but not absolute, and Path.glob raises
+    # NotImplementedError ("Non-relative patterns are unsupported") for it.
+    import pathlib
+
+    def refuse(self, pattern, *args, **kwargs):
+        raise NotImplementedError("Non-relative patterns are unsupported")
+
+    monkeypatch.setattr(pathlib.Path, "glob", refuse)
+    console = _console(width=200)
+
+    dispatch("/context add src/*.py", session, console)
+
+    assert "Invalid glob pattern: Non-relative patterns are unsupported" in _output(console)
+    assert session.context_files == []
+
+
+@pytest.mark.parametrize("pattern", ["/src/*.py", "//host/share/*.py"])
+def test_context_add_refuses_a_rooted_glob(session, pattern):
+    # Rooted on POSIX and on Windows; on Windows it is not "absolute" (no drive),
+    # which is what used to let it reach Path.glob.
+    console = _console(width=200)
+
+    dispatch(f"/context add {pattern}", session, console)
+
+    assert "Glob patterns must be relative to the workspace" in _output(console)
+    assert session.context_files == []

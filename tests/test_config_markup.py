@@ -26,7 +26,9 @@ What this does and does not prove:
 
 import io
 import json
+import re
 import shlex
+import sys
 
 import pytest
 from rich.console import Console
@@ -46,6 +48,16 @@ HOSTILE = [
     "[slow]",  # an unknown tag: silently swallowed
     "C:\\[x]",  # a backslash before a bracket: the backslash is eaten
 ]
+
+
+def path_safe(name: str) -> str:
+    """``name`` as something that can be a file or directory name on this platform.
+
+    Windows rejects ``< > : " | ? *`` in a name and reads a backslash as a
+    separator, so a value such as ``C:\\[x]`` cannot be created there; elsewhere
+    the value is used as it is.
+    """
+    return re.sub(r'[<>:"|?*\\]', "_", name) if sys.platform == "win32" else name
 
 
 class StrictConsole(Console):
@@ -379,6 +391,16 @@ def test_a_hand_edited_config_is_shown_literally(hostile, tmp_path):
     assert not console.problems, "echoed without escaping:\n" + "\n".join(
         dict.fromkeys(console.problems)
     )
+
+
+def test_path_safe_only_changes_what_windows_cannot_name(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert path_safe("C:\\[x]") == "C:\\[x]"
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert path_safe("C:\\[x]") == "C__[x]"
+    assert path_safe("a[/b]c") == "a[/b]c"  # "/" is a separator there too
+    assert path_safe("[bold]x[/bold]") == "[bold]x[/bold]"
 
 
 def test_the_detector_sees_an_unescaped_value():

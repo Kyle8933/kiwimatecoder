@@ -896,13 +896,21 @@ def _expand_context_input(
         except PathError as exc:
             return [], [str(exc)]
 
-    if Path(raw_path).is_absolute():
+    pattern = Path(raw_path)
+    # A rooted or drive-qualified pattern ("/src/*.py" is not absolute on Windows)
+    # cannot be matched under the workspace; Path.glob raises on it.
+    if pattern.is_absolute() or pattern.root or pattern.drive:
         return [], [f"Glob patterns must be relative to the workspace: {raw_path}"]
 
     root = session.workspace_root.resolve()
     errors: list[str] = []
     matches: list[Path] = []
-    for candidate in sorted(root.glob(raw_path)):
+    try:
+        candidates = sorted(root.glob(raw_path))
+    except (NotImplementedError, ValueError, OSError) as exc:
+        # e.g. "a**b": '**' can only be an entire path component
+        return [], [f"Invalid glob pattern: {exc}"]
+    for candidate in candidates:
         try:
             matches.append(resolve_in_workspace(str(candidate), session.workspace_root))
         except PathError as exc:

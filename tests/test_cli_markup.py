@@ -15,6 +15,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import sys
 
 import pytest
 import typer
@@ -290,6 +291,10 @@ def test_the_prompt_to_run_setup_keeps_its_y_n_hint(hostile, cli, monkeypatch):
     assert rendered == "Run setup now? [y/N]: "
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a program is only found on Windows with an extension such as .exe",
+)
 @pytest.mark.parametrize("hostile", HOSTILE)
 def test_lsp_show_lists_servers_and_overrides_literally(hostile, cli, monkeypatch):
     # A server whose command can be run is listed as available, with its command.

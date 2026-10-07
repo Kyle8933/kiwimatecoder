@@ -23,6 +23,7 @@ import io
 import json
 import re
 import shlex
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -44,7 +45,7 @@ from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import REGISTRY
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
-from tests.test_config_markup import HOSTILE, StrictConsole
+from tests.test_config_markup import HOSTILE, StrictConsole, path_safe
 
 
 @pytest.fixture(autouse=True)
@@ -138,6 +139,11 @@ def _stream(rounds):
     return stream_chat
 
 
+def _exits_with(code: int, hostile: str) -> str:
+    """A hook command that exits with ``code`` in sh and in cmd.exe, and carries the value."""
+    return f'"{sys.executable}" -c "import sys; sys.exit({code})" {shlex.quote(hostile)}'
+
+
 def _tool_round(name, args):
     return [
         ToolCallDelta(index=0, id="c1", name=name, args_fragment=json.dumps(args)),
@@ -229,7 +235,7 @@ async def test_a_pre_tool_hook_block_shows_the_hook_command_literally(
     hostile, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(FunctionTool, "execute", lambda self, args, session: ToolResult(content="ok"))
-    command = f"echo {shlex.quote(hostile)}; exit 3"
+    command = _exits_with(3, hostile)
     config.add_hook("pre_tool", command)
     agent, console = _strict_agent(tmp_path, hostile)
 
@@ -338,7 +344,7 @@ def test_the_banner_shows_the_provider_model_and_folder_literally(
 ):
     config.add_provider("hp1", hostile, "http://localhost:1/v1", hostile)
     config.add_provider("hp2", hostile, "http://localhost:1/v1", hostile)
-    workspace = tmp_path / f"w{hostile.replace('/', '')}"
+    workspace = tmp_path / f"w{path_safe(hostile.replace('/', ''))}"
     workspace.mkdir()
     session = Session(
         provider_id="hp1", model=hostile, mode=PermissionMode.ASK, workspace_root=workspace
@@ -414,11 +420,12 @@ def test_image_attachment_notes_show_file_names_literally(
     console = strict_repl(hostile)
     session = _session(tmp_path)
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
-    names = [f"a{hostile}.png", f"b{hostile}.png", f"c{hostile}.png"]
+    safe = path_safe(hostile)
+    names = [f"a{safe}.png", f"b{safe}.png", f"c{safe}.png"]
     for name in names:
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_bytes(png)
-    bad = f"bad{hostile}.png"
+    bad = f"bad{path_safe(hostile)}.png"
     (tmp_path / bad).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / bad).write_bytes(b"not an image")
     monkeypatch.setattr(
@@ -441,7 +448,7 @@ def test_an_unreadable_image_error_shows_the_name_literally(
 ):
     console = strict_repl(hostile)
     session = _session(tmp_path)
-    bad = f"bad{hostile}.png"
+    bad = f"bad{path_safe(hostile)}.png"
     (tmp_path / bad).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / bad).write_bytes(b"not an image")
     monkeypatch.setattr(
@@ -470,7 +477,7 @@ def test_deferred_commands_are_echoed_literally(hostile, tmp_path, strict_repl):
 def test_session_hooks_report_their_command_literally(hostile, tmp_path, strict_repl):
     from kiwimatecoder import events
 
-    command = f"echo {shlex.quote(hostile)}; exit 2"
+    command = _exits_with(2, hostile)
     config.add_hook("session_start", command)
     console = strict_repl(hostile)
 
@@ -500,7 +507,7 @@ def test_a_session_hook_that_raises_is_reported_literally(hostile, tmp_path, str
 def test_a_plugin_that_fails_to_load_is_reported_literally(hostile, tmp_path, strict_repl):
     from kiwimatecoder import events
 
-    stem = hostile.replace("/", "")
+    stem = path_safe(hostile.replace("/", ""))
     plugin_dir = config.ensure_config_dir() / plugins.PLUGINS_DIR_NAME
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / f"{stem}.py").write_text(f"raise RuntimeError({hostile!r})\n")
@@ -593,11 +600,12 @@ def test_updater_commands_and_errors_are_shown_literally(hostile):
 
     code = updater._run([hostile], console)  # no such program: FileNotFoundError
 
+    output = console.file.getvalue().replace("\n", "")
     assert code == 1
     assert not console.problems, console.problems
-    assert f"Could not start command: [Errno 2] No such file or directory: {hostile!r}" in (
-        console.file.getvalue().replace("\n", "")
-    )
+    assert "Could not start command:" in output
+    if sys.platform != "win32":  # Windows words the error differently ([WinError 2] ...)
+        assert f"[Errno 2] No such file or directory: {hostile!r}" in output
 
 
 def _stub_checkout(monkeypatch, root, *, branch, checkout_code, shas):
@@ -627,7 +635,7 @@ def test_updating_to_a_ref_shows_the_ref_and_checkout_path_literally(
     hostile, scenario, tmp_path, monkeypatch
 ):
     on_branch, checkout_code, shas, expected = UPDATE_SCENARIOS[scenario]
-    root = tmp_path / f"src{hostile}"
+    root = tmp_path / f"src{path_safe(hostile)}"
     root.mkdir(parents=True)
     _stub_checkout(
         monkeypatch,
@@ -669,7 +677,7 @@ def test_updating_the_current_branch_shows_the_branch_literally(hostile, tmp_pat
 def test_the_fetch_step_shows_its_command_and_error_literally(
     hostile, outcome, tmp_path, monkeypatch
 ):
-    root = tmp_path / f"src{hostile}"
+    root = tmp_path / f"src{path_safe(hostile)}"
     root.mkdir(parents=True)
 
     def fake_run(command, **_kwargs):
