@@ -1,22 +1,34 @@
 import base64
 import difflib
 import io
+import os
+import re
+import stat
+import sys
 from pathlib import Path
 
+import pytest
+from prompt_toolkit.application import create_app_session
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.output import ColorDepth, DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
 from kiwimatecoder import config
 from kiwimatecoder.commands import (
+    CONFIG_KEY_SECTIONS,
+    CONFIG_KEY_SET_ACTIONS,
     CommandOption,
     CommandResult,
     MultiSelectionPrompt,
     SelectionPrompt,
     dispatch,
+    line_carries_secret,
 )
 from kiwimatecoder.hunks import parse_hunk_selection
 from kiwimatecoder.permissions import ApprovalResult
@@ -29,6 +41,8 @@ from kiwimatecoder.repl import (
     _attach_images,
     _banner,
     _build_history,
+    _PrivateHistory,
+    _dispatch_command,
     _extract_file_mentions,
     _extract_image_mentions,
     _make_confirm,
@@ -36,6 +50,8 @@ from kiwimatecoder.repl import (
     _option_groups,
     _process_deferred_commands,
     _prompt_text,
+    _read_command_input,
+    _read_secret_input,
     _resolve_slash_line,
     _route_steering_line,
     _select_command_option,
@@ -385,7 +401,11 @@ def test_option_groups_all_grouped_leaves_plain_group_empty():
 
 
 def test_checkbox_choice_keyboard_interaction():
-    with create_pipe_input() as pipe_input:
+    # An explicit DummyOutput keeps prompt_toolkit from opening a real console
+    # output, which fails on Windows CI runners that have no console attached.
+    with create_pipe_input() as pipe_input, create_app_session(
+        input=pipe_input, output=DummyOutput()
+    ):
         # Initial focus is on 'openrouter' (default checked)
         # Send: down to openai, space (toggle openai), enter (confirm)
         pipe_input.send_text("\x1b[B \r")
@@ -397,7 +417,6 @@ def test_checkbox_choice_keyboard_interaction():
                 ("anthropic", "Anthropic"),
             ],
             default_values=["openrouter"],
-            input=pipe_input,
         )
         assert result == ["openrouter", "openai"]
 
@@ -1009,3 +1028,263 @@ def test_notify_turn_finished_bell_mode_rings(monkeypatch):
     _notify_turn_finished(3)
 
     assert stream.getvalue() == "\a"
+
+
+def test_read_command_input_returns_the_typed_line():
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        pipe.send_text("pytest -q\r")
+
+        assert _read_command_input("value> ") == "pytest -q"
+
+
+@pytest.mark.parametrize(
+    ("key", "error"), [("\x03", KeyboardInterrupt), ("\x04", EOFError)]
+)
+def test_read_command_input_ctrl_c_and_ctrl_d_cancel(key, error):
+    # Commands run in a worker thread, where a plain input() never sees Ctrl-C
+    # (it goes to the event loop) and the REPL exited on the next Enter. The
+    # reader must raise instead so the command can say "Cancelled."
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        pipe.send_text(key)
+
+        with pytest.raises(error):
+            _read_command_input("value> ")
+
+
+async def test_dispatch_command_reads_typed_answers_through_prompt_toolkit(
+    session, monkeypatch
+):
+    seen = {}
+
+    def fake_dispatch(line, _session, _console, selector, reader, multi, secret):
+        seen.update(selector=selector, reader=reader, multi=multi, secret=secret)
+        return CommandResult.CONTINUE
+
+    monkeypatch.setattr("kiwimatecoder.repl.dispatch", fake_dispatch)
+
+    assert await _dispatch_command("/config", session) == CommandResult.CONTINUE
+
+    assert seen["selector"] is _select_command_option
+    assert seen["reader"] is _read_command_input
+    assert seen["multi"] is _select_command_options
+    # An API key is read by a different reader, one that does not echo.
+    assert seen["secret"] is _read_secret_input
+    assert seen["secret"] is not seen["reader"]
+
+
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _typed_on_screen(reader, keys: str) -> tuple[str, str]:
+    """Run ``reader`` on a captured vt100 screen; return (value, text it drew)."""
+    stdout = io.StringIO()
+    output = Vt100_Output(
+        stdout,
+        get_size=lambda: Size(rows=24, columns=80),
+        default_color_depth=ColorDepth.DEPTH_8_BIT,
+    )
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+        pipe.send_text(keys)
+        value = reader("key> ")
+    return value, _ANSI.sub("", stdout.getvalue())
+
+
+def test_the_capture_sees_ordinary_typed_text():
+    # Control for the test below: the visible reader does draw what is typed,
+    # so "the key is absent from the screen" cannot pass for lack of a screen.
+    value, drawn = _typed_on_screen(_read_command_input, "pytest -q\r")
+
+    assert value == "pytest -q"
+    assert "pytest -q" in drawn
+
+
+def test_read_secret_input_returns_the_key_but_never_draws_it():
+    key = "sk-live-Zx9f2Qk7"
+
+    value, drawn = _typed_on_screen(_read_secret_input, key + "\r")
+
+    assert value == key
+    assert "key> " in drawn  # the prompt is shown
+    assert key not in drawn
+    assert "Zx9f2Qk7" not in drawn  # nor any recognisable part of it
+
+
+@pytest.mark.parametrize(
+    ("key", "error"), [("\x03", KeyboardInterrupt), ("\x04", EOFError)]
+)
+def test_read_secret_input_ctrl_c_and_ctrl_d_cancel(key, error):
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        pipe.send_text(key)
+
+        with pytest.raises(error):
+            _read_secret_input("key> ")
+
+
+# ---------------------------------------------------------------------------
+# The history file never holds an API key
+# ---------------------------------------------------------------------------
+
+SECRET_LINES = [
+    "/config key set openrouter sk-live-123",
+    "/config keys save openai sk-x",
+    "/config api-key add anthropic sk-ant",
+    "/config api-keys set a b",
+    "/CONFIG KEY SET openrouter sk-x",
+    "/ config key set openrouter sk-x",
+    '/config key set openrouter "sk-with space"',
+    "  /config key set openrouter sk-x  ",
+    "/config\tkey\tset\topenrouter\tsk-x",
+    "/config key set openrouter 'sk-unterminated",  # unparsable: err on the safe side
+    '/config "key" "set" openrouter sk-x',  # the real parser unquotes these
+    "/config 'keys' save openai sk-x",
+]
+ORDINARY_LINES = [
+    "/config key list",
+    "/config key remove openrouter",
+    "/config key edit openrouter",
+    "/config model set sk-looks-like-a-key",
+    "/config",
+    "/help",
+    "fix the bug in /config key set",
+    "how do I set a key?",
+    "/model key set",
+    "config key set openrouter sk-x",  # no slash: a message to the model, not a command
+]
+
+
+@pytest.mark.parametrize("line", SECRET_LINES)
+def test_a_key_setting_line_is_recognised(line):
+    assert line_carries_secret(line)
+
+
+@pytest.mark.parametrize("line", ORDINARY_LINES)
+def test_ordinary_lines_are_not_mistaken_for_a_key(line):
+    assert not line_carries_secret(line)
+
+
+@pytest.mark.parametrize("section", sorted(CONFIG_KEY_SECTIONS))
+@pytest.mark.parametrize("action", sorted(CONFIG_KEY_SET_ACTIONS))
+def test_every_spelling_the_parser_accepts_is_recognised_as_carrying_a_key(
+    section, action, session, tmp_path, monkeypatch
+):
+    # The history filter and /config share their alias lists; this fails if the
+    # parser ever accepts a spelling the filter would let through to disk.
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "config")
+    key = f"sk-{section}-{action}"
+    line = f"/config {section} {action} openrouter {key}"
+
+    dispatch(line, session, Console(file=io.StringIO()))
+
+    assert config.get_key("openrouter") == key  # the parser really took it
+    assert line_carries_secret(line)
+
+
+@pytest.fixture
+def history_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    return tmp_path / "history"
+
+
+def test_history_keeps_a_key_out_of_the_file_but_not_out_of_the_session(history_file):
+    history = _build_history()
+
+    history.append_string("/config key set openrouter sk-live-Zx9f2Qk7")
+    history.append_string("/config model set vendor/x")
+
+    on_disk = history_file.read_text()
+    assert "sk-live-Zx9f2Qk7" not in on_disk
+    assert "/config model set vendor/x" in on_disk
+    # Still reachable with the up-arrow for the rest of this session.
+    assert "/config key set openrouter sk-live-Zx9f2Qk7" in history.get_strings()
+
+
+def test_history_survives_a_restart_without_the_key(history_file):
+    first = _build_history()
+    first.append_string("/help")
+    first.append_string("/config key set openrouter sk-live-Zx9f2Qk7")
+    first.append_string("/model x")
+
+    second = _build_history()
+
+    assert list(second.load_history_strings()) == ["/model x", "/help"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_history_file_is_private(history_file):
+    history = _build_history()
+    history.append_string("/help")
+
+    assert stat.S_IMODE(os.stat(history_file).st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_an_existing_world_readable_history_is_made_private(history_file):
+    history_file.write_text("\n# 2024-01-01 00:00:00\n+/help\n")
+    os.chmod(history_file, 0o644)
+
+    _build_history()
+
+    assert stat.S_IMODE(os.stat(history_file).st_mode) == 0o600
+    assert "/help" in history_file.read_text()  # content untouched
+
+
+def test_keys_saved_by_an_earlier_version_are_scrubbed_on_open(history_file):
+    from prompt_toolkit.history import FileHistory
+
+    old = FileHistory(str(history_file))  # what older versions used
+    for line in (
+        "/help",
+        "/config key set openrouter sk-OLD-SECRET",
+        "first line\nsecond line",  # multi-line entries must survive intact
+        "/config keys add openai sk-OTHER-SECRET",
+        "/model x",
+    ):
+        old.store_string(line)
+    os.chmod(history_file, 0o644)
+
+    history = _build_history()
+
+    assert list(history.load_history_strings()) == [
+        "/model x",
+        "first line\nsecond line",
+        "/help",
+    ]
+    text = history_file.read_text()
+    assert "SECRET" not in text
+    assert not history_file.with_name("history.tmp").exists()
+    if sys.platform != "win32":
+        assert stat.S_IMODE(os.stat(history_file).st_mode) == 0o600
+
+
+def test_a_clean_history_is_not_rewritten(history_file):
+    from prompt_toolkit.history import FileHistory
+
+    FileHistory(str(history_file)).store_string("/help")
+    before = (history_file.read_bytes(), os.stat(history_file).st_ino)
+
+    _build_history()
+
+    assert (history_file.read_bytes(), os.stat(history_file).st_ino) == before
+
+
+def test_history_falls_back_to_memory_when_the_directory_is_unwritable(monkeypatch):
+    from prompt_toolkit.history import InMemoryHistory
+
+    def broken():
+        raise OSError("read-only home")
+
+    monkeypatch.setattr(config, "ensure_config_dir", broken)
+
+    assert isinstance(_build_history(), InMemoryHistory)
+
+
+def test_the_private_history_is_what_the_repl_uses(history_file):
+    assert isinstance(_build_history(), _PrivateHistory)

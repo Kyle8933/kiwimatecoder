@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import datetime
+import os
 import shlex
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from glob import has_magic
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from rich.console import Console
 from rich.markup import escape
@@ -28,6 +30,9 @@ from kiwimatecoder.config import (
     clear_always_allowed_tools,
     clear_budget,
     clear_command_rules,
+    OUTPUT_STYLES,
+    REASONING_EFFORTS,
+    TELEMETRY_LEVELS,
     describe_key,
     get_acp,
     get_always_allowed_tools,
@@ -99,7 +104,7 @@ from kiwimatecoder.config import (
     set_web,
     update_provider,
 )
-from kiwimatecoder.i18n import t
+from kiwimatecoder.i18n import LOCALES, t
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import DEFAULT_PROVIDER_ID, REGISTRY, ProviderConfig
 from kiwimatecoder.session import (
@@ -112,12 +117,22 @@ from kiwimatecoder.session import (
     save_session,
 )
 from kiwimatecoder.templates import discover_templates
-from kiwimatecoder.ui import glyph
+from kiwimatecoder import ui
+from kiwimatecoder.ui import (
+    COLOR_MODES,
+    KEYBINDINGS,
+    NOTIFY_MODES,
+    OUTPUT_MODES,
+    SPINNER_MODES,
+    THEMES,
+    glyph,
+)
 from kiwimatecoder.tools.paths import (
     PathError,
     display_path,
     resolve_for_read,
     resolve_in_workspace,
+    workspace_ref,
 )
 
 if TYPE_CHECKING:
@@ -171,6 +186,55 @@ CommandSelector = Callable[[SelectionPrompt], str | None]
 CommandMultiSelector = Callable[[MultiSelectionPrompt], list[str] | None]
 
 
+# The spellings /config accepts for "set an API key": /config <section> <action>
+# <provider> <key>. Shared by the parser and by line_carries_secret so the two
+# cannot drift apart.
+CONFIG_KEY_SECTIONS = frozenset({"keys", "key", "api-key", "api-keys"})
+CONFIG_KEY_SET_ACTIONS = frozenset({"set", "save", "add"})
+
+
+def split_args(text: str, *, windows: bool | None = None) -> list[str]:
+    """Split a typed slash-command argument the way ``shlex.split`` does.
+
+    On Windows a backslash is the path separator, not an escape: POSIX
+    ``shlex.split`` turns ``C:\\Users\\me\\ca.pem`` into ``C:Usersmeca.pem``. There
+    the backslash is kept literally, so quoting is the only way to keep a space, a
+    quote or ``#`` in one argument. Both ``"..."`` and ``'...'`` still quote, so the
+    single-quoted output of ``shlex.quote``/``shlex.join`` (the /config menu runs its
+    commands through ``shlex.join``) reads back unchanged. Everywhere else this is
+    exactly ``shlex.split``. ``windows`` overrides the platform test (for tests).
+    Raises ``ValueError`` for an unterminated quote, as ``shlex.split`` does.
+    """
+    lex = shlex.shlex(text, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    if (os.name == "nt") if windows is None else windows:
+        lex.escape = ""
+    return list(lex)
+
+
+def line_carries_secret(line: str) -> bool:
+    """Whether a typed line is a ``/config key set <provider> <key>`` command.
+
+    Such a line contains an API key, so it must not be written to the history
+    file. Matches how ``dispatch`` reads it: any spacing after the slash, any
+    letter case, quotes honoured.
+    """
+    text = line.strip()
+    if not text.startswith("/"):
+        return False
+    try:
+        parts = split_args(text[1:])
+    except ValueError:  # an unterminated quote: be conservative, not exact
+        parts = text[1:].split()
+    return (
+        len(parts) >= 3
+        and parts[0].lower() == "config"
+        and parts[1].lower() in CONFIG_KEY_SECTIONS
+        and parts[2].lower() in CONFIG_KEY_SET_ACTIONS
+    )
+
+
 def dispatch(
     line: str,
     session: Session,
@@ -178,25 +242,32 @@ def dispatch(
     selector: CommandSelector | None = None,
     prompt_input: Callable[[str], str] | None = None,
     multi_selector: CommandMultiSelector | None = None,
+    secret_input: Callable[[str], str] | None = None,
 ) -> str:
-    """Run a slash command. Returns CommandResult.CONTINUE or .EXIT."""
+    """Run a slash command. Returns CommandResult.CONTINUE or .EXIT.
+
+    ``prompt_input`` reads an ordinary typed answer; ``secret_input`` reads one
+    that must not be echoed (an API key). Either may be omitted.
+    """
     parts = line[1:].strip().split(maxsplit=1)
     name = parts[0].lower() if parts else ""
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     handler = _COMMANDS.get(name)
     if handler is None:
-        console.print(f"[yellow]{t('error.unknown_command', name=name)}[/yellow]")
+        console.print(f"[yellow]{escape(str(t('error.unknown_command', name=name)))}[/yellow]")
         return CommandResult.CONTINUE
 
     if name == "config" and not arg and selector is not None:
-        return _config_interact(session, console, selector, prompt_input)
+        return _config_interact(
+            session, console, selector, prompt_input, multi_selector, secret_input
+        )
 
     if name == "provider" and not arg and multi_selector is not None:
         checklist = _multi_selection_prompt(session)
         if checklist is not None:
             if not checklist.options:
-                console.print(f"[yellow]{checklist.empty_message}[/yellow]")
+                console.print(f"[yellow]{escape(checklist.empty_message)}[/yellow]")
                 return CommandResult.CONTINUE
             chosen = multi_selector(checklist)
             if chosen is None:
@@ -212,7 +283,7 @@ def dispatch(
         prompt = _selection_prompt(name, session, console)
         if prompt is not None:
             if not prompt.options:
-                console.print(f"[yellow]{prompt.empty_message}[/yellow]")
+                console.print(f"[yellow]{escape(prompt.empty_message)}[/yellow]")
                 return CommandResult.CONTINUE
             selected = selector(prompt)
             if selected is None:
@@ -338,32 +409,32 @@ def _report_catalog(
     if catalog.source == "live":
         if verbose:
             console.print(
-                f"[green]Refreshed {provider.name} models[/green] — "
+                f"[green]Refreshed {escape(provider.name)} models[/green] — "
                 f"{len(catalog.models)} offered."
             )
         if catalog.added:
             console.print(
                 f"[green]New ({len(catalog.added)}):[/green] "
-                f"{summarize_ids(catalog.added)}"
+                f"{escape(summarize_ids(catalog.added))}"
             )
         if catalog.removed:
             console.print(
                 f"[yellow]Deprecated, removed ({len(catalog.removed)}):[/yellow] "
-                f"{summarize_ids(catalog.removed)}"
+                f"{escape(summarize_ids(catalog.removed))}"
             )
         if verbose and not catalog.added and not catalog.removed:
             console.print("[dim]No changes since the last check.[/dim]")
         if current and current not in catalog.models:
             console.print(
-                f"[yellow]Current model[/yellow] [cyan]{current}[/cyan] "
-                f"[yellow]is no longer offered by {provider.name}.[/yellow] "
+                f"[yellow]Current model[/yellow] [cyan]{escape(current)}[/cyan] "
+                f"[yellow]is no longer offered by {escape(provider.name)}.[/yellow] "
                 "Pick another with /model."
             )
         return
 
     if catalog.error:
         console.print(
-            f"[dim]Could not refresh models ({catalog.error}); "
+            f"[dim]Could not refresh models ({escape(str(catalog.error))}); "
             f"using the {'cached' if catalog.source == 'cache' else 'built-in'} "
             "list.[/dim]"
         )
@@ -380,7 +451,7 @@ def _provider_catalog(
     verbose: bool = False,
 ) -> ModelCatalog:
     """Resolve ``provider``'s catalog (``current`` pinned first) and report changes."""
-    with console.status(f"Checking {provider.name} for new models…"):
+    with console.status(f"Checking {escape(provider.name)} for new models…"):
         catalog = get_model_catalog(provider.id, refresh=True, force=force, keep=(current,))
     _report_catalog(catalog, provider, current, console, verbose=verbose)
     return catalog
@@ -432,8 +503,8 @@ def _warn_if_no_model(session: Session, console: Console) -> None:
     """Point at /model when the session's provider has no chosen model."""
     if not session.model:
         console.print(
-            f"[yellow]No model chosen for {session.provider.name} — choose one "
-            "with /model.[/yellow]"
+            f"[yellow]No model chosen for {escape(session.provider.name)} — choose "
+            "one with /model.[/yellow]"
         )
 
 
@@ -462,8 +533,8 @@ def _choose_provider_model(
             set_provider_model(provider.id, chosen)
             return chosen
     console.print(
-        f"[yellow]No model chosen for {provider.name} — choose one with "
-        f"{_model_hint(provider, session)}.[/yellow]"
+        f"[yellow]No model chosen for {escape(provider.name)} — choose one with "
+        f"{escape(_model_hint(provider, session))}.[/yellow]"
     )
     return ""
 
@@ -471,17 +542,17 @@ def _choose_provider_model(
 def _print_model_catalog(session: Session, console: Console, catalog: ModelCatalog) -> None:
     visible = apply_model_filter(session.provider_id, catalog.models)
     table = Table(
-        title=f"{session.provider.name} models ({_catalog_status(catalog)})",
+        title=escape(f"{session.provider.name} models ({_catalog_status(catalog)})"),
         show_header=True,
     )
     table.add_column("model", style="cyan")
     table.add_column("")
     for model in visible:
-        table.add_row(model, "active" if model == session.model else "")
+        table.add_row(escape(model), "active" if model == session.model else "")
     console.print(table)
     if not visible:
         console.print(
-            f"[yellow]{t('error.no_models', provider=session.provider_id)}[/yellow] "
+            f"[yellow]{escape(t('error.no_models', provider=session.provider_id))}[/yellow] "
             "Use /config models clear or /model <name>."
         )
 
@@ -490,14 +561,16 @@ def _print_model_search(
     session: Session, console: Console, models: Sequence[str], query: str
 ) -> None:
     table = Table(
-        title=f"{len(models)} match(es) for '{query}' "
-        f"({_catalog_status(get_model_catalog(session.provider_id))})",
+        title=escape(
+            f"{len(models)} match(es) for '{query}' "
+            f"({_catalog_status(get_model_catalog(session.provider_id))})"
+        ),
         show_header=True,
     )
     table.add_column("model", style="cyan")
     table.add_column("")
     for model in models:
-        table.add_row(model, "active" if model == session.model else "")
+        table.add_row(escape(model), "active" if model == session.model else "")
     console.print(table)
 
 
@@ -508,18 +581,22 @@ def _model_search(
     selector: CommandSelector | None,
 ) -> None:
     """Search the full catalog and offer the matches for selection."""
-    with console.status(f"Searching {session.provider.name} models for '{query}'…"):
+    with console.status(
+        f"Searching {escape(session.provider.name)} models for '{escape(query)}'…"
+    ):
         matches = search_model_catalog(
             session.provider_id, query, refresh=True, keep=(session.model,)
         )
     if not matches:
         console.print(
             "[yellow]"
-            + t(
-                "error.no_model_matches",
-                query=query,
-                provider=session.provider.name,
-                provider_id=session.provider_id,
+            + escape(
+                t(
+                    "error.no_model_matches",
+                    query=query,
+                    provider=session.provider.name,
+                    provider_id=session.provider_id,
+                )
             )
             + "[/yellow]"
         )
@@ -546,7 +623,7 @@ def _model_search(
 
 def _model(arg: str, session: Session, console: Console, selector: CommandSelector | None = None) -> str:
     if not arg:
-        console.print(f"Current model: [cyan]{session.model or '(none chosen)'}[/cyan]")
+        console.print(f"Current model: [cyan]{escape(session.model or '(none chosen)')}[/cyan]")
         return CommandResult.CONTINUE
 
     parts = arg.strip().split(maxsplit=1)
@@ -578,7 +655,7 @@ def _apply_model(session: Session, model: str, console: Console) -> None:
         set_provider_model(session.provider_id, model)
     except KeyError:
         pass  # a loaded session's provider may no longer exist in config
-    console.print(f"Model set to [cyan]{model}[/cyan].")
+    console.print(f"Model set to [cyan]{escape(model)}[/cyan].")
 
 
 def _provider(
@@ -598,20 +675,24 @@ def _provider(
                 marker = " (primary)" if p.id == session.provider_id else " (active)"
             else:
                 marker = ""
-            table.add_row(p.id + marker, _provider_display_name(p), _table_model(p))
+            table.add_row(
+                escape(p.id + marker),
+                escape(_provider_display_name(p)),
+                escape(_table_model(p)),
+            )
         console.print(table)
         return CommandResult.CONTINUE
     try:
         provider = get_provider_config(arg)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     session.set_active_providers(set_active_providers([arg]))
     if not session.model:
         session.model = _choose_provider_model(provider, session, console, selector)
     console.print(
-        f"Provider set to [cyan]{session.provider_id}[/cyan] "
-        f"(model: [cyan]{session.model or '(none chosen)'}[/cyan])."
+        f"Provider set to [cyan]{escape(session.provider_id)}[/cyan] "
+        f"(model: [cyan]{escape(session.model or '(none chosen)')}[/cyan])."
     )
     return CommandResult.CONTINUE
 
@@ -630,7 +711,7 @@ def _apply_provider_checklist(
     try:
         ids = set_active_providers(provider_ids)
     except (KeyError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return
     session.set_active_providers(ids)
     for provider_id in ids:
@@ -644,12 +725,12 @@ def _apply_provider_checklist(
     primary = ids[0]
     fallbacks = ids[1:]
     summary = (
-        f"Active providers: [cyan]{', '.join(ids)}[/cyan] "
-        f"(primary: [cyan]{primary}[/cyan], "
-        f"model: [cyan]{session.model or '(none chosen)'}[/cyan])."
+        f"Active providers: [cyan]{escape(', '.join(ids))}[/cyan] "
+        f"(primary: [cyan]{escape(primary)}[/cyan], "
+        f"model: [cyan]{escape(session.model or '(none chosen)')}[/cyan])."
     )
     if fallbacks:
-        summary += f"\n[dim]Fallbacks in order: {', '.join(fallbacks)}[/dim]"
+        summary += f"\n[dim]Fallbacks in order: {escape(', '.join(fallbacks))}[/dim]"
     console.print(summary)
 
 
@@ -734,7 +815,7 @@ def _mode(arg: str, session: Session, console: Console) -> str:
     try:
         session.mode = PermissionMode.from_str(arg)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     console.print(f"Mode set to [cyan]{session.mode.value}[/cyan].")
     return CommandResult.CONTINUE
@@ -753,7 +834,7 @@ def _dry_run(arg: str, session: Session, console: Console) -> str:
     elif token == "toggle":
         session.dry_run = not session.dry_run
     else:
-        console.print("[yellow]Usage: /dry-run [on|off|toggle][/yellow]")
+        console.print("[yellow]Usage: /dry-run \\[on|off|toggle][/yellow]")
         return CommandResult.CONTINUE
     console.print(
         f"[green]Dry-run {'on' if session.dry_run else 'off'}.[/green]"
@@ -781,7 +862,7 @@ def _tools(arg: str, session: Session, console: Console) -> str:
         else:
             perm = "[dim green]read-only[/dim green]"
         desc = tool.description.split(". ")[0] + "."
-        table.add_row(tool.name, perm, desc)
+        table.add_row(escape(tool.name), perm, escape(desc))
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -810,7 +891,7 @@ def _files(arg: str, session: Session, console: Console) -> str:
         else:
             size_str = "-"
             status = "[red]deleted/missing[/red]"
-        table.add_row(rel, status, size_str)
+        table.add_row(escape(rel), status, size_str)
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -825,7 +906,7 @@ def _looks_binary(path: Path) -> bool:
 
 def _context_ref(path: str, session: Session) -> str:
     resolved = resolve_in_workspace(path, session.workspace_root)
-    return display_path(resolved, session.workspace_root)
+    return workspace_ref(resolved, session.workspace_root)
 
 
 def _expand_context_input(
@@ -837,13 +918,21 @@ def _expand_context_input(
         except PathError as exc:
             return [], [str(exc)]
 
-    if Path(raw_path).is_absolute():
+    pattern = Path(raw_path)
+    # A rooted or drive-qualified pattern ("/src/*.py" is not absolute on Windows)
+    # cannot be matched under the workspace; Path.glob raises on it.
+    if pattern.is_absolute() or pattern.root or pattern.drive:
         return [], [f"Glob patterns must be relative to the workspace: {raw_path}"]
 
     root = session.workspace_root.resolve()
     errors: list[str] = []
     matches: list[Path] = []
-    for candidate in sorted(root.glob(raw_path)):
+    try:
+        candidates = sorted(root.glob(raw_path))
+    except (NotImplementedError, ValueError, OSError) as exc:
+        # e.g. "a**b": '**' can only be an entire path component
+        return [], [f"Invalid glob pattern: {exc}"]
+    for candidate in candidates:
         try:
             matches.append(resolve_in_workspace(str(candidate), session.workspace_root))
         except PathError as exc:
@@ -864,28 +953,28 @@ def _add_context(paths: list[str], session: Session, console: Console) -> None:
         matches, errors = _expand_context_input(raw_path, session)
         for error in errors:
             skipped += 1
-            console.print(f"[yellow]Skipped {raw_path}: {error}[/yellow]")
+            console.print(f"[yellow]Skipped {escape(str(raw_path))}: {escape(str(error))}[/yellow]")
 
         for resolved in matches:
-            rel = display_path(resolved, session.workspace_root)
+            rel = workspace_ref(resolved, session.workspace_root)
             if not resolved.exists():
                 skipped += 1
-                console.print(f"[yellow]Skipped {rel}: file not found[/yellow]")
+                console.print(f"[yellow]Skipped {escape(str(rel))}: file not found[/yellow]")
                 continue
             if resolved.is_dir():
                 skipped += 1
-                console.print(f"[yellow]Skipped {rel}: is a directory[/yellow]")
+                console.print(f"[yellow]Skipped {escape(str(rel))}: is a directory[/yellow]")
                 continue
             if _looks_binary(resolved):
                 skipped += 1
-                console.print(f"[yellow]Skipped {rel}: appears to be binary[/yellow]")
+                console.print(f"[yellow]Skipped {escape(str(rel))}: appears to be binary[/yellow]")
                 continue
             if session.add_context_file(rel):
                 added += 1
-                console.print(f"[green]Added context:[/green] {rel}")
+                console.print(f"[green]Added context:[/green] {escape(str(rel))}")
             else:
                 skipped += 1
-                console.print(f"[dim]Already in context:[/dim] {rel}")
+                console.print(f"[dim]Already in context:[/dim] {escape(str(rel))}")
 
     if added or skipped:
         console.print(
@@ -904,13 +993,13 @@ def _remove_context(paths: list[str], session: Session, console: Console) -> Non
         try:
             rel = _context_ref(raw_path, session)
         except PathError as exc:
-            console.print(f"[yellow]Skipped {raw_path}: {exc}[/yellow]")
+            console.print(f"[yellow]Skipped {escape(str(raw_path))}: {escape(str(exc))}[/yellow]")
             continue
         if session.remove_context_file(rel):
             removed += 1
-            console.print(f"[green]Removed context:[/green] {rel}")
+            console.print(f"[green]Removed context:[/green] {escape(str(rel))}")
         else:
-            console.print(f"[dim]Not in context:[/dim] {rel}")
+            console.print(f"[dim]Not in context:[/dim] {escape(str(rel))}")
 
     console.print(
         f"[dim]Context files: {len(session.context_files)} "
@@ -930,24 +1019,24 @@ def _show_context(session: Session, console: Console) -> None:
         try:
             resolved = resolve_in_workspace(path, session.workspace_root)
         except PathError as exc:
-            table.add_row(path, f"[red]{exc}[/red]")
+            table.add_row(escape(str(path)), f"[red]{escape(str(exc))}[/red]")
             continue
         if not resolved.exists():
-            table.add_row(path, "[yellow]missing[/yellow]")
+            table.add_row(escape(str(path)), "[yellow]missing[/yellow]")
         elif resolved.is_dir():
-            table.add_row(path, "[yellow]directory[/yellow]")
+            table.add_row(escape(str(path)), "[yellow]directory[/yellow]")
         elif _looks_binary(resolved):
-            table.add_row(path, "[yellow]binary[/yellow]")
+            table.add_row(escape(str(path)), "[yellow]binary[/yellow]")
         else:
-            table.add_row(path, f"{resolved.stat().st_size} bytes")
+            table.add_row(escape(str(path)), f"{resolved.stat().st_size} bytes")
     console.print(table)
 
 
 def _context(arg: str, session: Session, console: Console) -> str:
     try:
-        parts = shlex.split(arg)
+        parts = split_args(arg)
     except ValueError as exc:
-        console.print(f"[red]Could not parse command: {exc}[/red]")
+        console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
 
     if not parts or parts[0] in {"list", "ls"}:
@@ -988,7 +1077,7 @@ def _mcp(arg: str, session: Session, console: Console) -> str:
         )
         _mcp_show(manager, console)
         return CommandResult.CONTINUE
-    console.print("[yellow]Usage: /mcp [list|reload][/yellow]")
+    console.print("[yellow]Usage: /mcp \\[list|reload][/yellow]")
     return CommandResult.CONTINUE
 
 
@@ -1021,7 +1110,7 @@ def _mcp_show(manager: "McpManager | None", console: Console) -> None:
         registered = manager.tools_for(name) if manager is not None else []
         resources = manager.resource_count(name) if manager is not None else None
         table.add_row(
-            name,
+            escape(name),
             transport,
             status,
             str(len(registered)) if manager is not None else "-",
@@ -1087,7 +1176,7 @@ def _lsp(arg: str, session: Session, console: Console) -> str:
             "failures cleared; they start again on first use."
         )
         return CommandResult.CONTINUE
-    console.print("[yellow]Usage: /lsp [status|on|off|restart][/yellow]")
+    console.print("[yellow]Usage: /lsp \\[status|on|off|restart][/yellow]")
     return CommandResult.CONTINUE
 
 
@@ -1107,7 +1196,7 @@ def _lsp_show(manager: "LspManager | None", console: Console) -> None:
         console.print(
             "Available servers: "
             + ", ".join(
-                f"[cyan]{name}[/cyan] ({spec.command})"
+                f"[cyan]{escape(name)}[/cyan] ({escape(str(spec.command))})"
                 for name, spec in sorted(installed.items())
             )
         )
@@ -1121,13 +1210,17 @@ def _lsp_show(manager: "LspManager | None", console: Console) -> None:
     if missing:
         console.print(
             "[dim]Not installed: "
-            + ", ".join(f"{name} ({servers[name].command})" for name in missing)
+            + ", ".join(
+                f"{escape(name)} ({escape(str(servers[name].command))})"
+                for name in missing
+            )
             + "[/dim]"
         )
     running = sorted(manager.clients) if manager is not None else []
     if running:
         console.print(
-            "Running clients: " + ", ".join(f"[cyan]{name}[/cyan]" for name in running)
+            "Running clients: "
+            + ", ".join(f"[cyan]{escape(name)}[/cyan]" for name in running)
         )
     else:
         console.print("[dim]Running clients: none[/dim]")
@@ -1297,27 +1390,29 @@ def _config_show(session: Session, console: Console) -> None:
     model_filter = get_model_filter(provider.id)
     active = [item.id for item in session.active_providers]
     active_line = ", ".join(
-        f"[cyan]{pid}[/cyan]" + (" (primary)" if pid == active[0] else "")
+        f"[cyan]{escape(pid)}[/cyan]" + (" (primary)" if pid == active[0] else "")
         for pid in active
     )
     console.print(
         f"Active providers: {active_line}\n"
-        f"Model: [cyan]{session.model or '(none chosen)'}[/cyan]\n"
-        f"Key: [cyan]{describe_key(provider.id)}[/cyan] ({provider.key_env})\n"
+        f"Model: [cyan]{escape(session.model or '(none chosen)')}[/cyan]\n"
+        f"Key: [cyan]{escape(describe_key(provider.id))}[/cyan] "
+        f"({escape(provider.key_env)})\n"
         f"Model visibility: [cyan]{model_filter['mode']}[/cyan]"
     )
     if model_filter["models"]:
-        console.print("Models: " + ", ".join(model_filter["models"]))
+        console.print("Models: " + escape(", ".join(model_filter["models"])))
     sampling = get_sampling()
     sampling_line = (
         ", ".join(f"{key}={value}" for key, value in sampling.items())
         or "provider defaults"
     )
     console.print(
-        f"Output style: [cyan]{session.output_style}[/cyan]\n"
-        f"Sampling: [cyan]{sampling_line}[/cyan]\n"
+        f"Output style: [cyan]{escape(session.output_style)}[/cyan]\n"
+        f"Sampling: [cyan]{escape(sampling_line)}[/cyan]\n"
         f"Custom system prompt: [cyan]{'set' if session.custom_system_prompt else 'none'}[/cyan]\n"
-        f"Always-allowed tools: [cyan]{', '.join(sorted(session.always_allowed)) or 'none'}[/cyan]\n"
+        "Always-allowed tools: [cyan]"
+        f"{escape(', '.join(sorted(session.always_allowed)) or 'none')}[/cyan]\n"
         f"Trusted workspace: [cyan]{'on' if session.trusted_workspace else 'off'}[/cyan]"
     )
     ui_config = get_ui()
@@ -1334,8 +1429,8 @@ def _config_show(session: Session, console: Console) -> None:
     network_config = get_network()
     console.print(
         "Network: proxy "
-        f"[cyan]{network_config['proxy'] or 'none'}[/cyan], "
-        f"CA [cyan]{network_config['ca_bundle'] or 'system'}[/cyan], "
+        f"[cyan]{escape(network_config['proxy'] or 'none')}[/cyan], "
+        f"CA [cyan]{escape(network_config['ca_bundle'] or 'system')}[/cyan], "
         f"offline [cyan]{'on' if network_config['offline'] else 'off'}[/cyan]"
     )
     remote_config = get_remote()
@@ -1349,7 +1444,9 @@ def _config_show(session: Session, console: Console) -> None:
     console.print(_telemetry_status_line(get_telemetry()))
     project_path = project_config_path()
     if project_path is not None:
-        console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
+        console.print(
+            f"Project config: [cyan]{escape(str(project_path))}[/cyan] (overrides global)"
+        )
     command_rules = get_command_rules()
     if command_rules["allow"] or command_rules["deny"]:
         console.print(
@@ -1389,12 +1486,12 @@ def _config_providers(
             if provider.key_prefix:
                 auth += f": {provider.key_prefix.strip()}"
             table.add_row(
-                provider.id + marker,
+                escape(provider.id + marker),
                 kind,
-                provider.name,
-                _table_model(provider),
-                auth,
-                provider.base_url,
+                escape(provider.name),
+                escape(_table_model(provider)),
+                escape(auth),
+                escape(provider.base_url),
             )
         console.print(table)
         return
@@ -1418,7 +1515,7 @@ def _config_providers(
         for pair in extras:
             if "=" not in pair:
                 console.print(
-                    f"[yellow]Expected field=value, got '{pair}'. "
+                    f"[yellow]Expected field=value, got '{escape(pair)}'. "
                     "Known fields: key_header, key_prefix, api_version.[/yellow]"
                 )
                 return
@@ -1426,7 +1523,7 @@ def _config_providers(
             field = field.strip()
             if field not in provider_add_fields:
                 console.print(
-                    f"[yellow]Unknown provider field '{field}'. "
+                    f"[yellow]Unknown provider field '{escape(field)}'. "
                     "Known fields: key_header, key_prefix, api_version.[/yellow]"
                 )
                 return
@@ -1441,11 +1538,11 @@ def _config_providers(
                 **options,
             )
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Added provider[/green] [cyan]{provider.id}[/cyan] "
-            f"({provider.name}) with model [cyan]{model}[/cyan]."
+            f"[green]Added provider[/green] [cyan]{escape(provider.id)}[/cyan] "
+            f"({escape(provider.name)}) with model [cyan]{escape(model)}[/cyan]."
         )
         return
 
@@ -1459,12 +1556,14 @@ def _config_providers(
         try:
             remove_provider(provider_id)
         except (KeyError, ValueError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if was_in_roster:
             remaining = [pid for pid in roster if pid != provider_id]
             session.set_active_providers(remaining or [DEFAULT_PROVIDER_ID])
-        console.print(f"[green]Removed provider[/green] [cyan]{provider_id}[/cyan].")
+        console.print(
+            f"[green]Removed provider[/green] [cyan]{escape(provider_id)}[/cyan]."
+        )
         _warn_if_no_model(session, console)
         return
 
@@ -1477,11 +1576,11 @@ def _config_providers(
             set_selected_provider(provider_id)
             session.set_active_providers([provider_id])
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"Provider set to [cyan]{session.provider_id}[/cyan] "
-            f"(model: [cyan]{session.model or '(none chosen)'}[/cyan])."
+            f"Provider set to [cyan]{escape(session.provider_id)}[/cyan] "
+            f"(model: [cyan]{escape(session.model or '(none chosen)')}[/cyan])."
         )
         _warn_if_no_model(session, console)
         return
@@ -1510,7 +1609,7 @@ def _config_providers(
         for pair in rest[1:]:
             if "=" not in pair:
                 console.print(
-                    f"[yellow]Expected field=value, got '{pair}'. "
+                    f"[yellow]Expected field=value, got '{escape(pair)}'. "
                     "Known fields: name, base_url, model, key_env, "
                     "compat, key_header, key_prefix, api_version.[/yellow]"
                 )
@@ -1519,7 +1618,7 @@ def _config_providers(
             field = field.strip()
             if field not in known_fields:
                 console.print(
-                    f"[yellow]Unknown provider field '{field}'. "
+                    f"[yellow]Unknown provider field '{escape(field)}'. "
                     "Known fields: name, base_url, model, key_env, "
                     "compat, key_header, key_prefix, api_version.[/yellow]"
                 )
@@ -1528,7 +1627,7 @@ def _config_providers(
         try:
             provider = update_provider(provider_id, **kwargs)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if "model" in kwargs:
             if provider.id == session.provider_id:
@@ -1536,7 +1635,7 @@ def _config_providers(
             else:
                 session.models.pop(provider.id, None)
         console.print(
-            f"[green]Updated provider[/green] [cyan]{provider.id}[/cyan]."
+            f"[green]Updated provider[/green] [cyan]{escape(provider.id)}[/cyan]."
         )
         return
 
@@ -1548,6 +1647,7 @@ def _config_keys(
     console: Console,
     selector: CommandSelector | None = None,
     prompt_input: Callable[[str], str] | None = None,
+    secret_input: Callable[[str], str] | None = None,
 ) -> None:
     action = action_parts[0].lower() if action_parts else "list"
     rest = action_parts[1:]
@@ -1558,7 +1658,11 @@ def _config_keys(
         table.add_column("env var")
         table.add_column("status")
         for provider in list_provider_configs():
-            table.add_row(provider.id, provider.key_env, describe_key(provider.id))
+            table.add_row(
+                escape(provider.id),
+                escape(provider.key_env),
+                escape(describe_key(provider.id)),
+            )
         console.print(table)
         console.print(
             "[dim]Change a key with /config key set <provider> <key> or from "
@@ -1566,10 +1670,10 @@ def _config_keys(
         )
         return
 
-    if action in {"set", "save", "add"}:
+    if action in CONFIG_KEY_SET_ACTIONS:
         if len(rest) < 2:
             if rest and selector is not None:
-                _config_key_enter(rest[0], console, selector, prompt_input)
+                _config_key_enter(rest[0], console, selector, prompt_input, secret_input)
                 return
             console.print("[yellow]Usage: /config key set <provider> <key>[/yellow]")
             return
@@ -1577,14 +1681,14 @@ def _config_keys(
         try:
             warning = set_key(provider_id, key)
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Saved API key for[/green] [cyan]{provider_id}[/cyan] — "
-            f"now {describe_key(provider_id)}."
+            f"[green]Saved API key for[/green] [cyan]{escape(provider_id)}[/cyan] — "
+            f"now {escape(describe_key(provider_id))}."
         )
         if warning:
-            console.print(f"[yellow]{warning}[/yellow]")
+            console.print(f"[yellow]{escape(warning)}[/yellow]")
         return
 
     if action in {"remove", "rm", "delete", "clear"}:
@@ -1595,14 +1699,14 @@ def _config_keys(
         try:
             existed = remove_key(provider_id)
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if existed:
             console.print(
-                f"[green]Removed stored API key for[/green] [cyan]{provider_id}[/cyan]."
+                f"[green]Removed stored API key for[/green] [cyan]{escape(provider_id)}[/cyan]."
             )
         else:
-            console.print(f"[dim]No stored API key for {provider_id}.[/dim]")
+            console.print(f"[dim]No stored API key for {escape(provider_id)}.[/dim]")
         return
 
     if action in {"edit", "change"}:
@@ -1617,7 +1721,7 @@ def _config_keys(
                 "Run /config and pick Keys.[/yellow]"
             )
             return
-        _config_key_enter(rest[0], console, selector, prompt_input)
+        _config_key_enter(rest[0], console, selector, prompt_input, secret_input)
         return
 
     console.print("[yellow]Unknown key config action. Try /config help.[/yellow]")
@@ -1628,12 +1732,18 @@ def _config_key_enter(
     console: Console,
     selector: CommandSelector,
     prompt_input: Callable[[str], str] | None,
+    secret_input: Callable[[str], str] | None = None,
 ) -> None:
-    """Interactive 'change this key' flow: set or remove, then a text entry."""
+    """Interactive 'change this key' flow: set or remove, then a text entry.
+
+    The key is read with ``secret_input`` so it is not echoed. Callers that only
+    inject ``prompt_input`` (tests, embedders) keep working; with neither, the
+    console's hidden-input prompt is used.
+    """
     try:
         get_provider_config(provider_id)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return
 
     action_prompt = SelectionPrompt(
@@ -1655,17 +1765,20 @@ def _config_key_enter(
         existed = remove_key(provider_id)
         if existed:
             console.print(
-                f"[green]Removed stored API key for[/green] [cyan]{provider_id}[/cyan]."
+                f"[green]Removed stored API key for[/green] [cyan]{escape(provider_id)}[/cyan]."
             )
         else:
-            console.print(f"[dim]No stored API key for {provider_id}.[/dim]")
+            console.print(f"[dim]No stored API key for {escape(provider_id)}.[/dim]")
         return
 
-    if prompt_input is None:
-        prompt_input = console.input
+    read_key = (
+        secret_input
+        or prompt_input
+        or partial(console.input, password=ui.hide_typed_secrets())
+    )
     console.print("[bold]Enter the new API key:[/bold]")
     try:
-        new_key = prompt_input("key> ").strip()
+        new_key = read_key("key> ").strip()
     except (EOFError, KeyboardInterrupt):
         console.print("[yellow]Cancelled.[/yellow]")
         return
@@ -1674,11 +1787,11 @@ def _config_key_enter(
         return
     warning = set_key(provider_id, new_key)
     console.print(
-        f"[green]Saved API key for[/green] [cyan]{provider_id}[/cyan] — "
-        f"now {describe_key(provider_id)}."
+        f"[green]Saved API key for[/green] [cyan]{escape(provider_id)}[/cyan] — "
+        f"now {escape(describe_key(provider_id))}."
     )
     if warning:
-        console.print(f"[yellow]{warning}[/yellow]")
+        console.print(f"[yellow]{escape(warning)}[/yellow]")
 
 
 def _config_model(action_parts: list[str], session: Session, console: Console) -> None:
@@ -1686,7 +1799,7 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
     rest = action_parts[1:]
 
     if action == "show":
-        console.print(f"Current model: [cyan]{session.model or '(none chosen)'}[/cyan]")
+        console.print(f"Current model: [cyan]{escape(session.model or '(none chosen)')}[/cyan]")
         return
     if action == "set":
         if not rest:
@@ -1698,7 +1811,7 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
             provider = get_provider_config(provider_id)
             set_provider_model(provider_id, model)
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if provider_id == session.provider_id:
             session.model = model
@@ -1707,7 +1820,8 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
             # uses the choice just saved.
             session.models.pop(provider_id, None)
         console.print(
-            f"[green]Model for {provider.name} set to[/green] [cyan]{model}[/cyan]."
+            f"[green]Model for {escape(provider.name)} set to[/green] "
+            f"[cyan]{escape(model)}[/cyan]."
         )
         return
     if action in {"reset", "clear"}:
@@ -1716,21 +1830,22 @@ def _config_model(action_parts: list[str], session: Session, console: Console) -
             provider = get_provider_config(provider_id)
             set_provider_model(provider_id, None)
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         session.models.pop(provider_id, None)
         if provider_id != session.provider_id:
-            console.print(f"[green]Model choice for {provider.name} cleared.[/green]")
+            console.print(f"[green]Model choice for {escape(provider.name)} cleared.[/green]")
             return
         session.model = resolve_model(provider)
         if session.model:
             console.print(
                 f"[green]Model choice cleared.[/green] Using "
-                f"[cyan]{session.model}[/cyan] from the {provider.name} server."
+                f"[cyan]{escape(session.model)}[/cyan] from the "
+                f"{escape(provider.name)} server."
             )
         else:
             console.print(
-                f"[green]Model choice for {provider.name} cleared.[/green] "
+                f"[green]Model choice for {escape(provider.name)} cleared.[/green] "
                 "Choose one with /model before chatting."
             )
         return
@@ -1742,7 +1857,7 @@ def _config_mode(action_parts: list[str], session: Session, console: Console) ->
     rest = action_parts[1:]
 
     if action in {"show", "status"}:
-        console.print(f"Default mode: [cyan]{get_default_mode()}[/cyan]")
+        console.print(f"Default mode: [cyan]{escape(get_default_mode())}[/cyan]")
         return
     if action in {"set", "save"}:
         if not rest:
@@ -1753,7 +1868,7 @@ def _config_mode(action_parts: list[str], session: Session, console: Console) ->
         try:
             effective = set_default_mode(rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Default mode set to[/green] [cyan]{effective}[/cyan]."
@@ -1779,14 +1894,16 @@ def _config_models(action_parts: list[str], session: Session, console: Console) 
         catalog = get_model_catalog(provider_id)
         visible = apply_model_filter(provider_id, catalog.models)
         console.print(
-            f"Model visibility for [cyan]{provider_id}[/cyan]: "
+            f"Model visibility for [cyan]{escape(provider_id)}[/cyan]: "
             f"[cyan]{model_filter['mode']}[/cyan]\n"
             f"Catalog: [cyan]{_catalog_status(catalog)}[/cyan] "
             f"({len(catalog.models)} models)"
         )
         if model_filter["models"]:
-            console.print("Configured list: " + ", ".join(model_filter["models"]))
-        console.print("Shown in completions: " + (", ".join(visible) or "[none]"))
+            console.print("Configured list: " + escape(", ".join(model_filter["models"])))
+        console.print(
+            "Shown in completions: " + (escape(", ".join(visible)) or "\\[none]")
+        )
         return
 
     if action in {"refresh", "update", "fetch"}:
@@ -1801,11 +1918,11 @@ def _config_models(action_parts: list[str], session: Session, console: Console) 
         try:
             set_model_filter(provider_id, "allow", models)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Only showing these models for {provider_id}:[/green] "
-            + ", ".join(models)
+            f"[green]Only showing these models for {escape(provider_id)}:[/green] "
+            + escape(", ".join(models))
         )
         return
 
@@ -1816,17 +1933,17 @@ def _config_models(action_parts: list[str], session: Session, console: Console) 
         try:
             set_model_filter(provider_id, "deny", models)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Hiding these models for {provider_id}:[/green] "
-            + ", ".join(models)
+            f"[green]Hiding these models for {escape(provider_id)}:[/green] "
+            + escape(", ".join(models))
         )
         return
 
     if action in {"clear", "reset", "all"}:
         set_model_filter(provider_id, "all", [])
-        console.print(f"[green]Cleared model visibility for {provider_id}.[/green]")
+        console.print(f"[green]Cleared model visibility for {escape(provider_id)}.[/green]")
         return
 
     console.print("[yellow]Unknown models config action. Try /config help.[/yellow]")
@@ -1849,7 +1966,7 @@ def _config_permissions(
         table = Table(title="Always-allowed tools", show_header=True)
         table.add_column("Tool", style="cyan")
         for name in allowed:
-            table.add_row(name)
+            table.add_row(escape(name))
         console.print(table)
         return
 
@@ -1861,9 +1978,9 @@ def _config_permissions(
         removed = remove_always_allowed_tool(name)
         session.always_allowed.discard(name)
         if removed:
-            console.print(f"[green]Removed persisted approval for {name}.[/green]")
+            console.print(f"[green]Removed persisted approval for {escape(name)}.[/green]")
         else:
-            console.print(f"[dim]No persisted approval for {name}.[/dim]")
+            console.print(f"[dim]No persisted approval for {escape(name)}.[/dim]")
         return
 
     if action in {"clear", "reset"}:
@@ -1873,7 +1990,7 @@ def _config_permissions(
         return
 
     console.print(
-        "[yellow]Usage: /config permissions [list|remove <tool>|clear][/yellow]"
+        "[yellow]Usage: /config permissions \\[list|remove <tool>|clear][/yellow]"
     )
 
 
@@ -1900,7 +2017,7 @@ def _config_trust(action_parts: list[str], session: Session, console: Console) -
         console.print(f"Trusted workspace: [cyan]{state}[/cyan]")
         return
 
-    console.print("[yellow]Usage: /config trust [on|off][/yellow]")
+    console.print("[yellow]Usage: /config trust \\[on|off][/yellow]")
 
 
 def _config_verify(action_parts: list[str], session: Session, console: Console) -> None:
@@ -1915,7 +2032,7 @@ def _config_verify(action_parts: list[str], session: Session, console: Console) 
         set_verify_command(command)
         session.verify_command = command
         console.print(
-            f"[green]Auto-verify command set:[/green] {command}\n"
+            f"[green]Auto-verify command set:[/green] {escape(command)}\n"
             "[dim]Run after successful file edits, with output fed back to the model.[/dim]"
         )
         return
@@ -1927,7 +2044,7 @@ def _config_verify(action_parts: list[str], session: Session, console: Console) 
         return
 
     if session.verify_command:
-        console.print(f"Auto-verify: [cyan]{session.verify_command}[/cyan]")
+        console.print(f"Auto-verify: [cyan]{escape(session.verify_command)}[/cyan]")
     else:
         console.print("[dim]Auto-verify is off. Set it with /config verify set <command>.[/dim]")
 
@@ -1956,7 +2073,7 @@ def _config_budget(action_parts: list[str], session: Session, console: Console) 
         try:
             set_budget(max_tokens=_limit(rest[0] if rest else None))
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         budget = get_budget()
         console.print(
@@ -1969,7 +2086,7 @@ def _config_budget(action_parts: list[str], session: Session, console: Console) 
         try:
             set_budget(max_cost_usd=_limit(rest[0] if rest else None))
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         budget = get_budget()
         console.print(
@@ -1984,7 +2101,7 @@ def _config_budget(action_parts: list[str], session: Session, console: Console) 
         return
 
     console.print(
-        "[yellow]Usage: /config budget [show|tokens <n>|cost <usd>|clear][/yellow]"
+        "[yellow]Usage: /config budget \\[show|tokens <n>|cost <usd>|clear][/yellow]"
     )
 
 
@@ -1998,7 +2115,7 @@ def _config_subagents(action_parts: list[str], console: Console) -> None:
         model = settings["model"] or "(session model)"
         console.print(
             f"Subagents: [cyan]{state}[/cyan] "
-            f"(max steps {settings['max_steps']}, model {model})"
+            f"(max steps {settings['max_steps']}, model {escape(model)})"
         )
         return
 
@@ -2022,7 +2139,7 @@ def _config_subagents(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_subagents(max_steps=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Subagent max steps:[/green] {settings['max_steps']}")
         return
@@ -2030,18 +2147,19 @@ def _config_subagents(action_parts: list[str], console: Console) -> None:
     if action == "model":
         if not rest:
             current = get_subagents()["model"] or "(session model)"
-            console.print(f"Subagent model: [cyan]{current}[/cyan]")
+            console.print(f"Subagent model: [cyan]{escape(current)}[/cyan]")
             return
         value = "" if rest[0].strip().lower() in {"clear", "none", "off"} else rest[0]
         settings = set_subagents(model=value)
         console.print(
-            f"[green]Subagent model:[/green] {settings['model'] or '(session model)'}"
+            "[green]Subagent model:[/green] "
+            f"{escape(settings['model'] or '(session model)')}"
         )
         return
 
     console.print(
         "[yellow]Usage: /config subagents "
-        "[show|enable on|off|max-steps <n>][/yellow]"
+        "\\[show|enable on|off|max-steps <n>][/yellow]"
     )
 
 
@@ -2104,7 +2222,7 @@ def _config_browser(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_browser(timeout_ms=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         _reset_browser_driver()
         console.print(f"[green]Browser timeout:[/green] {settings['timeout_ms']}ms")
@@ -2112,7 +2230,7 @@ def _config_browser(action_parts: list[str], console: Console) -> None:
 
     console.print(
         "[yellow]Usage: /config browser "
-        "[show|enable on|off|headless on|off|timeout <ms>][/yellow]"
+        "\\[show|enable on|off|headless on|off|timeout <ms>][/yellow]"
     )
 
 
@@ -2155,7 +2273,7 @@ def _config_shell(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_shell_config(timeout=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Shell timeout:[/green] {settings['timeout']}s")
         return
@@ -2170,14 +2288,14 @@ def _config_shell(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_shell_config(max_jobs=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Background job cap:[/green] {settings['max_jobs']}")
         return
 
     console.print(
         "[yellow]Usage: /config shell "
-        "[show|persistent on|off|timeout <s>|max-jobs <n>][/yellow]"
+        "\\[show|persistent on|off|timeout <s>|max-jobs <n>][/yellow]"
     )
 
 
@@ -2228,9 +2346,9 @@ def _config_sandbox(action_parts: list[str], console: Console) -> None:
         try:
             set_sandbox(extra_writable=paths)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
-        console.print(f"[green]Writable in sandbox:[/green] {rest[0]}")
+        console.print(f"[green]Writable in sandbox:[/green] {escape(rest[0])}")
         return
 
     if action in {"remove-path", "remove"}:
@@ -2240,10 +2358,10 @@ def _config_sandbox(action_parts: list[str], console: Console) -> None:
         current = get_sandbox()["extra_writable"]
         paths = [item for item in current if item != rest[0]]
         if len(paths) == len(current):
-            console.print(f"[dim]No such writable path: {rest[0]}[/dim]")
+            console.print(f"[dim]No such writable path: {escape(rest[0])}[/dim]")
             return
         set_sandbox(extra_writable=paths)
-        console.print(f"[green]Removed writable path:[/green] {rest[0]}")
+        console.print(f"[green]Removed writable path:[/green] {escape(rest[0])}")
         return
 
     if action in {"clear-paths", "clear"}:
@@ -2253,7 +2371,7 @@ def _config_sandbox(action_parts: list[str], console: Console) -> None:
 
     console.print(
         "[yellow]Usage: /config sandbox "
-        "[show|enable on|off|network on|off|add-path <path>|"
+        "\\[show|enable on|off|network on|off|add-path <path>|"
         "remove-path <path>|clear-paths][/yellow]"
     )
 
@@ -2294,7 +2412,7 @@ def _config_remote(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_remote(enabled=token == "on")
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Remote {'on' if settings['enabled'] else 'off'}.[/green]")
         return
@@ -2318,7 +2436,7 @@ def _config_remote(action_parts: list[str], console: Console) -> None:
             updates: dict[str, Any] = {field: rest[0]}
             settings = set_remote(**updates)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         updated = settings[field]
         shown = str(updated) if updated not in ("", None) else "(none)"
@@ -2326,7 +2444,7 @@ def _config_remote(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config remote [show|enable on|off|host <host>|"
+        "[yellow]Usage: /config remote \\[show|enable on|off|host <host>|"
         "user <user>|port <n>|identity <path>|workspace <path>|"
         "devcontainer <auto|off|name>][/yellow]"
     )
@@ -2348,14 +2466,14 @@ def _config_acp(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_acp(permission_timeout=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]ACP permission timeout: "
             f"{settings['permission_timeout']}s[/green]"
         )
         return
-    console.print("[yellow]Usage: /config acp [show|timeout <s>][/yellow]")
+    console.print("[yellow]Usage: /config acp \\[show|timeout <s>][/yellow]")
 
 
 def _config_commands(  # noqa: C901 - small parser, mirrors the other config sections
@@ -2375,7 +2493,7 @@ def _config_commands(  # noqa: C901 - small parser, mirrors the other config sec
         table.add_column("Pattern")
         for kind in ("deny", "allow"):
             for pattern in rules[kind]:
-                table.add_row(kind, pattern)
+                table.add_row(kind, escape(pattern))
         console.print(table)
         return
 
@@ -2389,10 +2507,10 @@ def _config_commands(  # noqa: C901 - small parser, mirrors the other config sec
         try:
             rules = add_command_rule(action, pattern)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         session.command_rules = rules
-        console.print(f"[green]Added {action} rule:[/green] {pattern}")
+        console.print(f"[green]Added {action} rule:[/green] {escape(pattern)}")
         return
 
     if action in {"remove", "rm", "delete"}:
@@ -2405,13 +2523,13 @@ def _config_commands(  # noqa: C901 - small parser, mirrors the other config sec
         try:
             existed = remove_command_rule(kind, pattern)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         session.command_rules = get_command_rules()
         if existed:
-            console.print(f"[green]Removed {kind} rule:[/green] {pattern}")
+            console.print(f"[green]Removed {kind} rule:[/green] {escape(pattern)}")
         else:
-            console.print(f"[dim]No such {kind} rule: {pattern}[/dim]")
+            console.print(f"[dim]No such {kind} rule: {escape(pattern)}[/dim]")
         return
 
     if action in {"clear", "reset"}:
@@ -2420,7 +2538,7 @@ def _config_commands(  # noqa: C901 - small parser, mirrors the other config sec
         return
 
     console.print(
-        "[yellow]Usage: /config commands [list|allow <regex>|deny <regex>|"
+        "[yellow]Usage: /config commands \\[list|allow <regex>|deny <regex>|"
         "remove <allow|deny> <regex>|clear][/yellow]"
     )
 
@@ -2436,7 +2554,10 @@ def _config_sampling(action_parts: list[str], console: Console) -> None:
             return
         console.print(
             "Sampling: "
-            + ", ".join(f"[cyan]{key}[/cyan]={value}" for key, value in sampling.items())
+            + ", ".join(
+                f"[cyan]{key}[/cyan]={escape(str(value))}"
+                for key, value in sampling.items()
+            )
         )
         return
 
@@ -2450,18 +2571,18 @@ def _config_sampling(action_parts: list[str], console: Console) -> None:
         updates: dict[str, str] = {}
         for item in rest:
             if "=" not in item:
-                console.print(f"[red]Expected key=value, got '{item}'.[/red]")
+                console.print(f"[red]Expected key=value, got '{escape(item)}'.[/red]")
                 return
             key, value = item.split("=", 1)
             updates[key.strip()] = value.strip()
         try:
             effective = set_sampling(updates)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             "[green]Sampling set:[/green] "
-            + ", ".join(f"{key}={value}" for key, value in effective.items())
+            + ", ".join(f"{key}={escape(str(value))}" for key, value in effective.items())
         )
         return
 
@@ -2471,7 +2592,7 @@ def _config_sampling(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config sampling [show|set key=value ...|reset][/yellow]"
+        "[yellow]Usage: /config sampling \\[show|set key=value ...|reset][/yellow]"
     )
 
 
@@ -2497,7 +2618,7 @@ def _config_web(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_web(max_chars=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Web max chars:[/green] {settings['max_chars']}"
@@ -2511,7 +2632,7 @@ def _config_web(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_web(timeout=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(f"[green]Web timeout:[/green] {settings['timeout']:g}s")
         return
@@ -2533,7 +2654,7 @@ def _config_web(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config web [show|max-chars <n>|timeout <s>|"
+        "[yellow]Usage: /config web \\[show|max-chars <n>|timeout <s>|"
         "allow-local <on|off>][/yellow]"
     )
 
@@ -2548,8 +2669,8 @@ def _config_network(action_parts: list[str], console: Console) -> None:
     if action in {"show", "list", "ls", "status"}:
         settings = get_network()
         console.print(
-            f"Proxy: [cyan]{settings['proxy'] or 'none'}[/cyan]\n"
-            f"CA bundle: [cyan]{settings['ca_bundle'] or 'system default'}[/cyan]\n"
+            f"Proxy: [cyan]{escape(settings['proxy'] or 'none')}[/cyan]\n"
+            f"CA bundle: [cyan]{escape(settings['ca_bundle'] or 'system default')}[/cyan]\n"
             f"Offline mode: [cyan]{'on' if settings['offline'] else 'off'}[/cyan]"
         )
         return
@@ -2562,9 +2683,9 @@ def _config_network(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_network(proxy=value)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
-        console.print(f"[green]Proxy:[/green] {settings['proxy'] or 'none'}")
+        console.print(f"[green]Proxy:[/green] {escape(settings['proxy'] or 'none')}")
         return
 
     if action in {"ca", "ca-bundle", "ca_bundle"}:
@@ -2577,11 +2698,11 @@ def _config_network(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_network(ca_bundle=value)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]CA bundle:[/green] "
-            f"{settings['ca_bundle'] or 'system default'}"
+            f"{escape(settings['ca_bundle'] or 'system default')}"
         )
         return
 
@@ -2605,7 +2726,7 @@ def _config_network(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config network [show|proxy <url|clear>|ca <path|clear>|"
+        "[yellow]Usage: /config network \\[show|proxy <url|clear>|ca <path|clear>|"
         "offline <on|off>][/yellow]"
     )
 
@@ -2630,7 +2751,7 @@ def _config_vision(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_vision(max_image_bytes=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Vision max image bytes:[/green] "
@@ -2645,7 +2766,7 @@ def _config_vision(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_vision(max_images_per_turn=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Vision max images per turn:[/green] "
@@ -2654,7 +2775,7 @@ def _config_vision(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config vision [show|max-bytes <n>|max-images <n>][/yellow]"
+        "[yellow]Usage: /config vision \\[show|max-bytes <n>|max-images <n>][/yellow]"
     )
 
 
@@ -2662,21 +2783,21 @@ def _media_status_line(settings: dict[str, Any]) -> str:
     video_model = settings["video_model"] or "none chosen"
     return (
         f"Media: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan] "
-        f"(provider [cyan]{settings['provider']}[/cyan], "
-        f"image model [cyan]{settings['model']}[/cyan], "
+        f"(provider [cyan]{escape(settings['provider'])}[/cyan], "
+        f"image model [cyan]{escape(settings['model'])}[/cyan], "
         f"size [cyan]{settings['size']}[/cyan], "
         f"video model [cyan]{escape(video_model)}[/cyan], "
         f"video [cyan]{settings['video_duration']}s"
         f"{' ' + escape(settings['video_size']) if settings['video_size'] else ''}"
         f"[/cyan], "
-        f"output [cyan]{settings['output_dir']}[/cyan])"
+        f"output [cyan]{escape(settings['output_dir'])}[/cyan])"
     )
 
 
 _MEDIA_USAGE = (
-    "[yellow]Usage: /config media [show|enable on|off|model <id>|provider <id>|"
+    "Usage: /config media [show|enable on|off|model <id>|provider <id>|"
     "size <WxH>|video-model <id|none>|duration <seconds>|video-size <WxH|720p|"
-    "default>|output-dir <path>][/yellow]"
+    "default>|output-dir <path>]"
 )
 
 
@@ -2706,7 +2827,7 @@ def _config_media(action_parts: list[str], console: Console) -> None:
         try:
             set_media(enabled=enabled)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             f"[green]Media generation {'enabled' if enabled else 'disabled'}.[/green]"
@@ -2758,12 +2879,12 @@ def _config_media(action_parts: list[str], console: Console) -> None:
             else:
                 set_media(output_dir=value)
         except (ValueError, KeyError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(_media_status_line(get_media()))
         return
 
-    console.print(_MEDIA_USAGE)
+    console.print(f"[yellow]{escape(_MEDIA_USAGE)}[/yellow]")
 
 
 def _telemetry_status_line(settings: dict[str, Any]) -> str:
@@ -2774,7 +2895,7 @@ def _telemetry_status_line(settings: dict[str, Any]) -> str:
     return (
         f"Telemetry: [cyan]{state}[/cyan] "
         f"(level [cyan]{settings['level']}[/cyan], "
-        f"log [cyan]{telemetry.current_log_path()}[/cyan], "
+        f"log [cyan]{escape(str(telemetry.current_log_path()))}[/cyan], "
         f"{crashes} crash report(s))"
     )
 
@@ -2809,7 +2930,7 @@ def _config_telemetry(action_parts: list[str], console: Console) -> None:
         try:
             set_telemetry(enabled=enabled)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         telemetry.configure()
         settings = get_telemetry()
@@ -2838,7 +2959,7 @@ def _config_telemetry(action_parts: list[str], console: Console) -> None:
             else:
                 set_telemetry(max_log_bytes=rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         telemetry.configure()
         console.print(_telemetry_status_line(get_telemetry()))
@@ -2846,7 +2967,7 @@ def _config_telemetry(action_parts: list[str], console: Console) -> None:
 
     console.print(
         "[yellow]Usage: /config telemetry "
-        "[show|enable on|off|level <off|error|info|debug>|"
+        "\\[show|enable on|off|level <off|error|info|debug>|"
         "log-file <path>|max-bytes <n>][/yellow]"
     )
 
@@ -2925,7 +3046,7 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
                     console.print("[yellow]Usage: /config ui ascii <on|off>[/yellow]")
                     return
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         current = get_ui()
         console.print(
@@ -2946,7 +3067,7 @@ def _config_ui(action_parts: list[str], console: Console) -> None:
         )
         return
 
-    console.print(f"[yellow]Usage: {_UI_USAGE}[/yellow]")
+    console.print(f"[yellow]Usage: {escape(_UI_USAGE)}[/yellow]")
 
 
 def _config_style(action_parts: list[str], session: Session, console: Console) -> None:
@@ -2966,7 +3087,7 @@ def _config_style(action_parts: list[str], session: Session, console: Console) -
         try:
             style = set_output_style(rest[0])
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         session.output_style = style
         console.print(f"[green]Output style set to {style}.[/green]")
@@ -2974,7 +3095,7 @@ def _config_style(action_parts: list[str], session: Session, console: Console) -
 
     console.print(
         "Output style: "
-        + f"[cyan]{session.output_style}[/cyan] "
+        + f"[cyan]{escape(session.output_style)}[/cyan] "
         + f"(available: {', '.join(OUTPUT_STYLES)})"
     )
 
@@ -3001,7 +3122,7 @@ def _config_prompt(action_parts: list[str], session: Session, console: Console) 
 
     if session.custom_system_prompt:
         console.print("[bold]Custom system prompt:[/bold]")
-        console.print(session.custom_system_prompt)
+        console.print(escape(session.custom_system_prompt))
     else:
         console.print("[dim]No custom system prompt set.[/dim]")
 
@@ -3031,7 +3152,7 @@ def _config_cache(action_parts: list[str], console: Console) -> None:
         )
         return
 
-    console.print("[yellow]Usage: /config cache [on|off][/yellow]")
+    console.print("[yellow]Usage: /config cache \\[on|off][/yellow]")
 
 
 def _config_profile(
@@ -3056,10 +3177,10 @@ def _config_profile(
         for name in sorted(profiles):
             values = profiles[name]
             table.add_row(
-                name,
-                str(values.get("provider") or ""),
-                str(values.get("model") or "(provider's chosen model)"),
-                str(values.get("mode") or ""),
+                escape(name),
+                escape(str(values.get("provider") or "")),
+                escape(str(values.get("model") or "(provider's chosen model)")),
+                escape(str(values.get("mode") or "")),
             )
         console.print(table)
         return
@@ -3070,9 +3191,9 @@ def _config_profile(
             return
         profile = get_profile(rest[0])
         if profile is None:
-            console.print(f"[red]Unknown profile '{rest[0]}'.[/red]")
+            console.print(f"[red]Unknown profile '{escape(rest[0])}'.[/red]")
             return
-        console.print(f"[bold]{rest[0]}[/bold]")
+        console.print(f"[bold]{escape(rest[0])}[/bold]")
         console.print_json(data=profile)
         return
 
@@ -3083,10 +3204,10 @@ def _config_profile(
         try:
             profile = save_profile(rest[0])
         except (ValueError, KeyError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
-            f"[green]Saved profile [cyan]{rest[0]}[/cyan][/green] "
+            f"[green]Saved profile [cyan]{escape(rest[0])}[/cyan][/green] "
             f"({len(profile)} setting(s))."
         )
         return
@@ -3099,13 +3220,13 @@ def _config_profile(
         try:
             profile = apply_profile(name)
         except (ValueError, KeyError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         apply_session_profile(session, profile)
         console.print(
-            f"[green]Applied profile [cyan]{name}[/cyan][/green] — "
-            f"provider: [cyan]{session.provider_id}[/cyan], "
-            f"model: [cyan]{session.model or '(none chosen)'}[/cyan], "
+            f"[green]Applied profile [cyan]{escape(name)}[/cyan][/green] — "
+            f"provider: [cyan]{escape(session.provider_id)}[/cyan], "
+            f"model: [cyan]{escape(session.model or '(none chosen)')}[/cyan], "
             f"mode: [cyan]{session.mode.value}[/cyan]."
         )
         _warn_if_no_model(session, console)
@@ -3116,14 +3237,14 @@ def _config_profile(
             console.print("[yellow]Usage: /config profile remove <name>[/yellow]")
             return
         if remove_profile(rest[0]):
-            console.print(f"[green]Removed profile {rest[0]}.[/green]")
+            console.print(f"[green]Removed profile {escape(rest[0])}.[/green]")
         else:
-            console.print(f"[dim]No profile named {rest[0]}.[/dim]")
+            console.print(f"[dim]No profile named {escape(rest[0])}.[/dim]")
         return
 
     console.print(
         "[yellow]Usage: /config profile "
-        "[list|show <name>|save <name>|use <name>|remove <name>][/yellow]"
+        "\\[list|show <name>|save <name>|use <name>|remove <name>][/yellow]"
     )
 
 
@@ -3146,7 +3267,7 @@ def _config_team(action_parts: list[str], console: Console) -> None:
         )
         for issue in team_module.policy_issues():
             color = "red" if issue["level"] == "error" else "yellow"
-            console.print(f"[{color}]{issue['message']}[/{color}]")
+            console.print(f"[{color}]{escape(issue['message'])}[/{color}]")
         try:
             policy = team_module.load_policy()
         except team_module.PolicyError:
@@ -3165,7 +3286,7 @@ def _config_team(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_team(policy_path=" ".join(rest))
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         if settings["policy_path"]:
             console.print(
@@ -3190,7 +3311,7 @@ def _config_team(action_parts: list[str], console: Console) -> None:
         try:
             settings = set_team(enforce=rest[0].lower() in {"on", "true", "enable"})
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return
         console.print(
             "[green]Team policy "
@@ -3200,7 +3321,7 @@ def _config_team(action_parts: list[str], console: Console) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /config team [show|set-policy <path>|enforce on|off][/yellow]"
+        "[yellow]Usage: /config team \\[show|set-policy <path>|enforce on|off][/yellow]"
     )
 
 
@@ -3213,11 +3334,12 @@ def _doctor(arg: str, session: Session, console: Console) -> str:
 
 def _config(arg: str, session: Session, console: Console,
             selector: CommandSelector | None = None,
-            prompt_input: Callable[[str], str] | None = None) -> str:
+            prompt_input: Callable[[str], str] | None = None,
+            secret_input: Callable[[str], str] | None = None) -> str:
     try:
-        parts = shlex.split(arg)
+        parts = split_args(arg)
     except ValueError as exc:
-        console.print(f"[red]Could not parse command: {exc}[/red]")
+        console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
 
     if not parts or parts[0] in {"show", "status"}:
@@ -3230,8 +3352,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_help(console)
     elif section in {"providers", "provider"}:
         _config_providers(rest, session, console)
-    elif section in {"keys", "key", "api-key", "api-keys"}:
-        _config_keys(rest, console, selector, prompt_input)
+    elif section in CONFIG_KEY_SECTIONS:
+        _config_keys(rest, console, selector, prompt_input, secret_input)
     elif section == "use":
         _config_providers(["use", *rest], session, console)
     elif section == "model":
@@ -3303,22 +3425,1328 @@ def _run_selector(selector: CommandSelector | None, prompt: SelectionPrompt) -> 
     return selected
 
 
+# ---------------------------------------------------------------------------
+# Interactive /config menu
+#
+# Choosing a section in the bare ``/config`` menu used to re-run
+# ``/config <section>`` with no action. Every section handler reads that as
+# "show", so most entries only printed the current value. Each section now has
+# a staged editor that gathers a choice (and, where needed, a typed value) and
+# then runs the same ``/config <section> <action> <value>`` command a user
+# could type, so validation, persistence, and messages stay in one place.
+# ---------------------------------------------------------------------------
+
+_MENU_DONE = "__done__"
+_CLEAR_WORDS = frozenset({"clear", "none", "default", "-"})
+_PREVIEW_CHARS = 48
+
+
+def _onoff(value: object) -> str:
+    return "on" if value else "off"
+
+
+def _preview(value: object, empty: str = "(none)") -> str:
+    """A one-line, length-capped rendering of a setting for menu labels."""
+    text = str(value if value not in (None, "") else empty).replace("\n", " ")
+    if len(text) > _PREVIEW_CHARS:
+        text = text[: _PREVIEW_CHARS - 1] + "…"
+    return text
+
+
+@dataclass(frozen=True)
+class _Setting:
+    """One thing a /config section lets you change from the menu.
+
+    ``action`` holds the /config tokens after the section name and the chosen
+    value is appended through ``fmt``, so a ``toggle`` with
+    ``action=("headless",)`` in the browser section runs
+    ``/config browser headless on``.
+    """
+
+    key: str
+    label: str
+    kind: Literal["toggle", "choice", "text", "run"]
+    action: tuple[str, ...] = ()
+    current: Callable[[Session], str] | None = None
+    choices: Callable[[], Sequence[CommandOption]] | None = None
+    ask: str = ""
+    fmt: str = "{}"
+    # What a typed "clear" becomes; None means the setting cannot be unset.
+    clear_value: str | None = None
+    # For ``run``: a question to confirm first (for destructive actions).
+    confirm: str = ""
+    # For ``choice``: what to say when there is nothing to choose from.
+    empty: str = ""
+
+
+@dataclass(frozen=True)
+class _Section:
+    name: str
+    title: str
+    text: str
+    settings: tuple[_Setting, ...]
+    # Offer the setting list again after a change. True for independent
+    # settings (media, ui); False when the entries are alternatives.
+    loop: bool = True
+
+
+def _values(*values: str) -> Callable[[], tuple[CommandOption, ...]]:
+    return lambda: tuple(CommandOption(value, value) for value in values)
+
+
+_ON_OFF = _values("on", "off")
+
+
+def _toggle(
+    key: str, label: str, current: Callable[[Session], str], *action: str
+) -> _Setting:
+    return _Setting(key, label, "toggle", action, current)
+
+
+def _choice(
+    key: str,
+    label: str,
+    current: Callable[[Session], str] | None,
+    choices: Callable[[], Sequence[CommandOption]],
+    *action: str,
+    fmt: str = "{}",
+    empty: str = "",
+) -> _Setting:
+    return _Setting(
+        key, label, "choice", action, current, choices, fmt=fmt, empty=empty
+    )
+
+
+def _text(
+    key: str,
+    label: str,
+    current: Callable[[Session], str],
+    ask: str,
+    *action: str,
+    fmt: str = "{}",
+    clear: str | None = None,
+) -> _Setting:
+    return _Setting(
+        key, label, "text", action, current, ask=ask, fmt=fmt, clear_value=clear
+    )
+
+
+def _action(key: str, label: str, *action: str, confirm: str = "") -> _Setting:
+    return _Setting(key, label, "run", action, confirm=confirm)
+
+
+def _sampling_value(key: str) -> Callable[[Session], str]:
+    return lambda _session: _preview(get_sampling().get(key), "provider default")
+
+
+def _budget_value(key: str, unit: str) -> Callable[[Session], str]:
+    def current(_session: Session) -> str:
+        value = get_budget().get(key)
+        if value is None:
+            return "no limit"
+        return f"{value:,.0f} {unit}" if key == "max_tokens" else f"${value:g}"
+
+    return current
+
+
+def _sandbox_paths() -> list[str]:
+    return list(get_sandbox()["extra_writable"])
+
+
+def _media_provider_choices() -> tuple[CommandOption, ...]:
+    return tuple(
+        CommandOption(provider.id, f"{provider.name} ({provider.id})")
+        for provider in list_provider_configs()
+    )
+
+
+def _mode_choices() -> tuple[CommandOption, ...]:
+    return tuple(
+        CommandOption(value, f"{value} — {description}")
+        for value, description in _MODE_DESCRIPTIONS.items()
+    )
+
+
+_CONFIG_SECTIONS: dict[str, _Section] = {
+    section.name: section
+    for section in (
+        _Section(
+            "mode",
+            "Default permission mode",
+            "New sessions start in this mode. Use /mode to change the current one.",
+            (
+                _choice(
+                    "set",
+                    "Set the default mode",
+                    lambda _s: get_default_mode(),
+                    _mode_choices,
+                    "set",
+                ),
+                _action("reset", "Reset to the built-in default", "reset"),
+            ),
+            loop=False,
+        ),
+        _Section(
+            "trust",
+            "Trusted workspace",
+            "Let read-only tools read outside the workspace root. Writes stay "
+            "sandboxed.",
+            (
+                _toggle(
+                    "trust",
+                    "Trusted workspace",
+                    lambda s: _onoff(s.trusted_workspace),
+                ),
+            ),
+        ),
+        _Section(
+            "verify",
+            "Auto-verify",
+            "A command (tests, linter) run after successful file edits; its "
+            "output is fed back to the model.",
+            (
+                _text(
+                    "set",
+                    "Set the command",
+                    lambda s: _preview(s.verify_command, "off"),
+                    "Command to run after file edits, e.g. pytest -q",
+                    "set",
+                ),
+                _action("clear", "Turn auto-verify off", "clear"),
+            ),
+            loop=False,
+        ),
+        _Section(
+            "budget",
+            "Session budget",
+            "Limits for one session. Type 'clear' to remove a limit.",
+            (
+                _text(
+                    "tokens",
+                    "Token limit",
+                    _budget_value("max_tokens", "tokens"),
+                    "Maximum tokens for the session",
+                    "tokens",
+                    clear="clear",
+                ),
+                _text(
+                    "cost",
+                    "Cost limit",
+                    _budget_value("max_cost_usd", "USD"),
+                    "Maximum estimated spend in USD, e.g. 2.50",
+                    "cost",
+                    clear="clear",
+                ),
+                _action(
+                    "clear",
+                    "Remove both limits",
+                    "clear",
+                    confirm="Remove the token and cost limits?",
+                ),
+            ),
+        ),
+        _Section(
+            "subagents",
+            "Subagents",
+            "The task tool that hands work to a fresh sub-conversation.",
+            (
+                _toggle(
+                    "enable",
+                    "Subagents",
+                    lambda _s: _onoff(get_subagents()["enabled"]),
+                    "enable",
+                ),
+                _text(
+                    "max-steps",
+                    "Max steps per subagent",
+                    lambda _s: str(get_subagents()["max_steps"]),
+                    "Maximum steps a subagent may take",
+                    "max-steps",
+                ),
+                _text(
+                    "model",
+                    "Subagent model",
+                    lambda _s: _preview(get_subagents()["model"], "session model"),
+                    "Model id for subagents",
+                    "model",
+                    clear="clear",
+                ),
+            ),
+        ),
+        _Section(
+            "sampling",
+            "Sampling",
+            "Unset values use the provider's defaults. Type 'clear' to unset one.",
+            (
+                _text(
+                    "temperature",
+                    "Temperature",
+                    _sampling_value("temperature"),
+                    "Temperature, 0 to 2",
+                    "set",
+                    fmt="temperature={}",
+                    clear="",
+                ),
+                _text(
+                    "top_p",
+                    "Top-p",
+                    _sampling_value("top_p"),
+                    "Top-p, 0 to 1",
+                    "set",
+                    fmt="top_p={}",
+                    clear="",
+                ),
+                _text(
+                    "max_tokens",
+                    "Max output tokens",
+                    _sampling_value("max_tokens"),
+                    "Maximum output tokens per reply",
+                    "set",
+                    fmt="max_tokens={}",
+                    clear="",
+                ),
+                _choice(
+                    "reasoning_effort",
+                    "Reasoning effort",
+                    _sampling_value("reasoning_effort"),
+                    _values(*REASONING_EFFORTS),
+                    "set",
+                    fmt="reasoning_effort={}",
+                ),
+                _action("reset", "Reset everything to provider defaults", "reset"),
+            ),
+        ),
+        _Section(
+            "browser",
+            "Browser automation",
+            "Optional Playwright-driven browser tools.",
+            (
+                _toggle(
+                    "enable",
+                    "Browser automation",
+                    lambda _s: _onoff(get_browser()["enabled"]),
+                    "enable",
+                ),
+                _toggle(
+                    "headless",
+                    "Headless",
+                    lambda _s: _onoff(get_browser()["headless"]),
+                    "headless",
+                ),
+                _text(
+                    "timeout",
+                    "Timeout",
+                    lambda _s: f"{get_browser()['timeout_ms']}ms",
+                    "Browser timeout in milliseconds",
+                    "timeout",
+                ),
+            ),
+        ),
+        _Section(
+            "shell",
+            "Shell",
+            "The persistent shell and background jobs.",
+            (
+                _toggle(
+                    "persistent",
+                    "Persistent shell",
+                    lambda _s: _onoff(get_shell_config()["persistent"]),
+                    "persistent",
+                ),
+                _text(
+                    "timeout",
+                    "Command timeout",
+                    lambda _s: f"{get_shell_config()['timeout']}s",
+                    "Command timeout in seconds",
+                    "timeout",
+                ),
+                _text(
+                    "max-jobs",
+                    "Background job cap",
+                    lambda _s: str(get_shell_config()["max_jobs"]),
+                    "Maximum concurrent background jobs",
+                    "max-jobs",
+                ),
+            ),
+        ),
+        _Section(
+            "sandbox",
+            "Shell sandbox",
+            "Run shell commands in an OS sandbox (seatbelt on macOS, bubblewrap "
+            "on Linux).",
+            (
+                _toggle(
+                    "enable",
+                    "Sandbox",
+                    lambda _s: _onoff(get_sandbox()["enabled"]),
+                    "enable",
+                ),
+                _toggle(
+                    "network",
+                    "Network access inside the sandbox",
+                    lambda _s: _onoff(get_sandbox()["network"]),
+                    "network",
+                ),
+                _text(
+                    "add-path",
+                    "Add a writable path",
+                    lambda _s: _preview(", ".join(_sandbox_paths())),
+                    "Directory shell commands may write to",
+                    "add-path",
+                ),
+                _choice(
+                    "remove-path",
+                    "Remove a writable path",
+                    None,
+                    lambda: tuple(CommandOption(path, path) for path in _sandbox_paths()),
+                    "remove-path",
+                    empty="No extra writable paths are set.",
+                ),
+                _action(
+                    "clear-paths",
+                    "Remove every extra writable path",
+                    "clear-paths",
+                    confirm="Remove every extra writable path?",
+                ),
+            ),
+        ),
+        _Section(
+            "remote",
+            "Remote execution",
+            "Run shell commands over SSH or in a devcontainer/Docker container.",
+            (
+                _toggle(
+                    "enable",
+                    "Remote execution",
+                    lambda _s: _onoff(get_remote()["enabled"]),
+                    "enable",
+                ),
+                _text(
+                    "host",
+                    "Host",
+                    lambda _s: _preview(get_remote()["host"]),
+                    "SSH host",
+                    "host",
+                    clear="",
+                ),
+                _text(
+                    "user",
+                    "User",
+                    lambda _s: _preview(get_remote()["user"]),
+                    "SSH user",
+                    "user",
+                    clear="",
+                ),
+                _text(
+                    "port",
+                    "Port",
+                    lambda _s: str(get_remote()["port"]),
+                    "SSH port, 1 to 65535",
+                    "port",
+                ),
+                _text(
+                    "identity",
+                    "Identity file",
+                    lambda _s: _preview(get_remote()["identity"], "(default)"),
+                    "Path to an SSH identity file",
+                    "identity",
+                    clear="",
+                ),
+                _text(
+                    "workspace",
+                    "Remote workspace",
+                    lambda _s: _preview(get_remote()["workspace"], "(remote default)"),
+                    "Workspace path on the remote host",
+                    "workspace",
+                    clear="",
+                ),
+                _text(
+                    "devcontainer",
+                    "Devcontainer",
+                    lambda _s: _preview(get_remote()["devcontainer"]),
+                    "Devcontainer: auto, off, or a container name",
+                    "devcontainer",
+                ),
+            ),
+        ),
+        _Section(
+            "acp",
+            "ACP permission timeout",
+            "How long the ACP server waits for an editor to answer a permission "
+            "request.",
+            (
+                _text(
+                    "timeout",
+                    "Permission timeout",
+                    lambda _s: f"{get_acp()['permission_timeout']}s",
+                    "Permission timeout in seconds",
+                    "timeout",
+                ),
+            ),
+        ),
+        _Section(
+            "web",
+            "Web access",
+            "Limits for the web fetch and search tools.",
+            (
+                _text(
+                    "max-chars",
+                    "Max characters per fetch",
+                    lambda _s: str(get_web()["max_chars"]),
+                    "Maximum characters returned per fetch",
+                    "max-chars",
+                ),
+                _text(
+                    "timeout",
+                    "Timeout",
+                    lambda _s: f"{get_web()['timeout']:g}s",
+                    "Request timeout in seconds",
+                    "timeout",
+                ),
+                _toggle(
+                    "allow-local",
+                    "Allow local addresses",
+                    lambda _s: _onoff(get_web()["allow_local"]),
+                    "allow-local",
+                ),
+            ),
+        ),
+        _Section(
+            "network",
+            "Network",
+            "Proxy, custom CA bundle, and offline mode.",
+            (
+                _text(
+                    "proxy",
+                    "Proxy",
+                    lambda _s: _preview(get_network()["proxy"]),
+                    "Proxy URL",
+                    "proxy",
+                    clear="clear",
+                ),
+                _text(
+                    "ca",
+                    "CA bundle",
+                    lambda _s: _preview(get_network()["ca_bundle"], "system default"),
+                    "Path to a CA bundle",
+                    "ca",
+                    clear="clear",
+                ),
+                _toggle(
+                    "offline",
+                    "Offline mode",
+                    lambda _s: _onoff(get_network()["offline"]),
+                    "offline",
+                ),
+            ),
+        ),
+        _Section(
+            "vision",
+            "Image attachments",
+            "Limits for images attached to a message.",
+            (
+                _text(
+                    "max-bytes",
+                    "Max bytes per image",
+                    lambda _s: f"{get_vision()['max_image_bytes']:,}",
+                    "Maximum bytes per image",
+                    "max-bytes",
+                ),
+                _text(
+                    "max-images",
+                    "Max images per turn",
+                    lambda _s: str(get_vision()["max_images_per_turn"]),
+                    "Maximum images per turn",
+                    "max-images",
+                ),
+            ),
+        ),
+        _Section(
+            "media",
+            "Image and video generation",
+            "Opt-in. Media API calls cost money; /media shows what is ready.",
+            (
+                _toggle(
+                    "enable",
+                    "Media generation",
+                    lambda _s: _onoff(get_media()["enabled"]),
+                    "enable",
+                ),
+                _choice(
+                    "provider",
+                    "Provider",
+                    lambda _s: get_media()["provider"],
+                    _media_provider_choices,
+                    "provider",
+                ),
+                _text(
+                    "model",
+                    "Image model",
+                    lambda _s: get_media()["model"],
+                    "Image model id",
+                    "model",
+                ),
+                _text(
+                    "size",
+                    "Image size",
+                    lambda _s: get_media()["size"],
+                    "Image size as WxH, e.g. 1024x1024",
+                    "size",
+                ),
+                _text(
+                    "video-model",
+                    "Video model",
+                    lambda _s: _preview(get_media()["video_model"], "none chosen"),
+                    "Video model id",
+                    "video-model",
+                    clear="clear",
+                ),
+                _text(
+                    "duration",
+                    "Video duration",
+                    lambda _s: f"{get_media()['video_duration']}s",
+                    "Video duration in seconds",
+                    "duration",
+                ),
+                _text(
+                    "video-size",
+                    "Video size",
+                    lambda _s: _preview(get_media()["video_size"], "provider default"),
+                    "Video size as WxH or a tier such as 720p",
+                    "video-size",
+                    clear="default",
+                ),
+                _text(
+                    "output-dir",
+                    "Output folder",
+                    lambda _s: get_media()["output_dir"],
+                    "Output folder, relative to the workspace",
+                    "output-dir",
+                ),
+            ),
+        ),
+        _Section(
+            "telemetry",
+            "Telemetry and crash reports",
+            "Opt-in and local only: nothing leaves this machine.",
+            (
+                _toggle(
+                    "enable",
+                    "Telemetry",
+                    lambda _s: _onoff(get_telemetry()["enabled"]),
+                    "enable",
+                ),
+                _choice(
+                    "level",
+                    "Level",
+                    lambda _s: get_telemetry()["level"],
+                    _values(*TELEMETRY_LEVELS),
+                    "level",
+                ),
+                _text(
+                    "log-file",
+                    "Log file",
+                    lambda _s: _preview(get_telemetry()["log_file"], "default"),
+                    "Absolute path for the log file",
+                    "log-file",
+                    clear="",
+                ),
+                _text(
+                    "max-bytes",
+                    "Max log size",
+                    lambda _s: f"{get_telemetry()['max_log_bytes']:,} bytes",
+                    "Maximum log size in bytes",
+                    "max-bytes",
+                ),
+            ),
+        ),
+        _Section(
+            "style",
+            "Output style",
+            "How the model words its answers.",
+            (
+                _choice(
+                    "style",
+                    "Output style",
+                    lambda s: s.output_style,
+                    _values(*OUTPUT_STYLES),
+                    "set",
+                ),
+            ),
+        ),
+        _Section(
+            "ui",
+            "Appearance and interface",
+            "Color, theme, and output changes apply after you restart the session.",
+            (
+                _choice(
+                    "theme",
+                    "Theme",
+                    lambda _s: get_ui()["theme"],
+                    _values(*THEMES),
+                    "theme",
+                ),
+                _choice(
+                    "color",
+                    "Color",
+                    lambda _s: get_ui()["color"],
+                    _values(*COLOR_MODES),
+                    "color",
+                ),
+                _choice(
+                    "output",
+                    "Output",
+                    lambda _s: get_ui()["output_mode"],
+                    _values(*OUTPUT_MODES),
+                    "output",
+                ),
+                _toggle(
+                    "ascii",
+                    "ASCII only",
+                    lambda _s: _onoff(get_ui()["ascii"]),
+                    "ascii",
+                ),
+                _choice(
+                    "locale",
+                    "Language",
+                    lambda _s: get_ui()["locale"],
+                    _values(*LOCALES),
+                    "locale",
+                ),
+                _choice(
+                    "keybindings",
+                    "Key bindings",
+                    lambda _s: get_ui()["keybindings"],
+                    _values(*KEYBINDINGS),
+                    "keybindings",
+                ),
+                _choice(
+                    "notify",
+                    "Notifications",
+                    lambda _s: get_ui()["notify"],
+                    _values(*NOTIFY_MODES),
+                    "notify",
+                ),
+                _text(
+                    "notify-after",
+                    "Notify after",
+                    lambda _s: f"{get_ui()['notify_after_seconds']}s",
+                    "Notify when a turn runs longer than this many seconds",
+                    "notify-after",
+                ),
+                _choice(
+                    "spinner",
+                    "Spinner",
+                    lambda _s: get_ui()["spinner"],
+                    _values(*SPINNER_MODES),
+                    "spinner",
+                ),
+            ),
+        ),
+        _Section(
+            "prompt",
+            "Custom system prompt",
+            "Text added to the system prompt of every session.",
+            (
+                _text(
+                    "set",
+                    "Set the prompt",
+                    lambda s: _preview(s.custom_system_prompt),
+                    "System prompt text",
+                    "set",
+                ),
+                _action(
+                    "clear",
+                    "Clear the prompt",
+                    "clear",
+                    confirm="Remove the custom system prompt?",
+                ),
+            ),
+            loop=False,
+        ),
+        _Section(
+            "team",
+            "Team policy",
+            "A shared policy overlay file (global-only; no server).",
+            (
+                _text(
+                    "policy",
+                    "Policy file",
+                    lambda _s: _preview(get_team()["policy_path"]),
+                    "Path to the policy file",
+                    "set-policy",
+                    clear="",
+                ),
+                _toggle(
+                    "enforce",
+                    "Enforce the policy",
+                    lambda _s: _onoff(get_team()["enforce"]),
+                    "enforce",
+                ),
+            ),
+        ),
+        _Section(
+            "cache",
+            "Prompt caching",
+            "Cache the system prompt and tools on native Anthropic providers.",
+            (
+                _toggle(
+                    "cache", "Prompt caching", lambda _s: _onoff(get_prompt_cache())
+                ),
+            ),
+        ),
+    )
+}
+
+
+@dataclass
+class _ConfigMenu:
+    """The prompts and output a /config section editor works with."""
+
+    session: Session
+    console: Console
+    selector: CommandSelector
+    prompt_input: Callable[[str], str] | None = None
+    multi_selector: CommandMultiSelector | None = None
+
+    def pick(
+        self,
+        title: str,
+        text: str,
+        options: Sequence[CommandOption],
+        selected: str | None = None,
+    ) -> str | None:
+        offered = tuple(options)
+        # The cursor can only start on an offered value; "current" labels such
+        # as "provider default" are not options.
+        if selected not in {option.value for option in offered}:
+            selected = None
+        prompt = SelectionPrompt(
+            title=title, text=text, options=offered, selected=selected
+        )
+        return _run_selector(self.selector, prompt)
+
+    def ask(
+        self,
+        label: str,
+        *,
+        current: str | None = None,
+        clearable: bool = False,
+        optional: bool = False,
+    ) -> str | None:
+        """Read one line. None means cancelled (or empty, unless ``optional``)."""
+        hints = []
+        if current:
+            hints.append(f"current: {current}")
+        if clearable:
+            hints.append("'clear' to unset")
+        hints.append("Enter to skip" if optional else "Enter to cancel")
+        self.console.print(
+            f"[bold]{escape(label)}[/bold] [dim]({escape('; '.join(hints))})[/dim]"
+        )
+        reader = self.prompt_input or self.console.input
+        try:
+            text = reader("value> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            self.console.print("[yellow]Cancelled.[/yellow]")
+            return None
+        if not text and not optional:
+            self.console.print("[dim]Nothing entered; nothing changed.[/dim]")
+            return None
+        return text
+
+    def confirm(self, question: str, yes_label: str) -> bool:
+        return (
+            self.pick(
+                "Are you sure?",
+                question,
+                (CommandOption("yes", yes_label), CommandOption("no", "Cancel")),
+                selected="no",
+            )
+            == "yes"
+        )
+
+    def run(self, *parts: str) -> None:
+        """Run ``/config <parts>`` exactly as if it had been typed."""
+        _config(
+            shlex.join(parts), self.session, self.console, self.selector,
+            self.prompt_input,
+        )
+
+
+def _menu_setting_label(menu: _ConfigMenu, setting: _Setting) -> str:
+    if setting.current is None:
+        return setting.label
+    return f"{setting.label} — {setting.current(menu.session)}"
+
+
+def _menu_apply_setting(menu: _ConfigMenu, section: _Section, setting: _Setting) -> None:
+    """Gather the value for one setting and run the matching /config command."""
+    head = (section.name, *setting.action)
+    current = setting.current(menu.session) if setting.current else None
+
+    if setting.kind == "run":
+        if setting.confirm and not menu.confirm(setting.confirm, setting.label):
+            return
+        menu.run(*head)
+        return
+
+    if setting.kind == "toggle":
+        value = menu.pick(
+            setting.label, section.text, _ON_OFF(), selected=current
+        )
+    elif setting.kind == "choice":
+        assert setting.choices is not None
+        options = setting.choices()
+        if not options:
+            menu.console.print(
+                f"[dim]{escape(setting.empty or 'Nothing to choose from.')}[/dim]"
+            )
+            return
+        value = menu.pick(setting.label, section.text, options, selected=current)
+    else:
+        clearable = setting.clear_value is not None
+        value = menu.ask(setting.ask or setting.label, current=current,
+                         clearable=clearable)
+        if value is not None and clearable and value.lower() in _CLEAR_WORDS:
+            value = setting.clear_value
+    if value is None:
+        return
+    menu.run(*head, setting.fmt.format(value))
+
+
+def _menu_loop(
+    menu: _ConfigMenu,
+    title: str,
+    text: str,
+    build: Callable[[], Sequence[CommandOption]],
+    act: Callable[[str], None],
+    *,
+    loop: bool,
+    empty: str = "",
+) -> None:
+    """Offer ``build()``'s options, run ``act`` on the pick, and optionally repeat."""
+    last: str | None = None
+    while True:
+        options = build()
+        if not options:
+            if empty:
+                menu.console.print(f"[dim]{empty}[/dim]")
+            return
+        choice = menu.pick(
+            title, text, (*options, CommandOption(_MENU_DONE, "Done")), selected=last
+        )
+        if choice is None or choice == _MENU_DONE:
+            return
+        last = choice
+        act(choice)
+        if not loop:
+            return
+
+
+def _menu_section(menu: _ConfigMenu, section: _Section) -> None:
+    """Edit one declaratively described section."""
+    settings = {setting.key: setting for setting in section.settings}
+    if len(section.settings) == 1:
+        _menu_apply_setting(menu, section, section.settings[0])
+        return
+    _menu_loop(
+        menu,
+        section.title,
+        section.text,
+        lambda: [
+            CommandOption(setting.key, _menu_setting_label(menu, setting))
+            for setting in section.settings
+        ],
+        lambda key: _menu_apply_setting(menu, section, settings[key]),
+        loop=section.loop,
+    )
+
+
+def _custom_providers() -> list[ProviderConfig]:
+    return [p for p in list_provider_configs() if p.id not in REGISTRY]
+
+
+def _pick_custom_provider(menu: _ConfigMenu, title: str) -> str | None:
+    providers = _custom_providers()
+    if not providers:
+        menu.console.print(
+            "[dim]No custom providers yet. Add one first; built-in providers "
+            "cannot be edited or removed.[/dim]"
+        )
+        return None
+    return menu.pick(
+        title,
+        "Only providers you added can be changed.",
+        [CommandOption(p.id, f"{p.name} ({p.id}) — {p.base_url}") for p in providers],
+    )
+
+
+_PROVIDER_EDIT_FIELDS = (
+    ("name", "Display name", False),
+    ("base_url", "Base URL", False),
+    ("model", "Model", False),
+    ("key_env", "API key environment variable", False),
+    ("compat", "API style (openai or anthropic)", False),
+    ("key_header", "Auth header", False),
+    ("key_prefix", "Auth header prefix", True),
+    ("api_version", "API version", True),
+)
+
+
+def _provider_edit_current(provider: ProviderConfig, field: str) -> str:
+    if field == "model":
+        return get_provider_model(provider.id) or ""
+    return str(getattr(provider, field, "") or "")
+
+
+def _menu_provider_add(menu: _ConfigMenu) -> None:
+    values: list[str] = []
+    for label in (
+        "Provider id (short, e.g. local)",
+        "Display name",
+        "Base URL (OpenAI-compatible, e.g. http://localhost:1234/v1)",
+        "Model id to use with it",
+    ):
+        value = menu.ask(label)
+        if value is None:
+            return
+        values.append(value)
+    key_env = menu.ask("API key environment variable", optional=True)
+    if key_env is None:
+        return
+    menu.run("providers", "add", *values, *([key_env] if key_env else []))
+
+
+def _menu_provider_edit(menu: _ConfigMenu) -> None:
+    provider_id = _pick_custom_provider(menu, "Edit which provider?")
+    if provider_id is None:
+        return
+    provider = get_provider_config(provider_id)
+    field = menu.pick(
+        f"Edit {provider_id}",
+        "Choose the field to change.",
+        [
+            CommandOption(
+                name, f"{label} — {_preview(_provider_edit_current(provider, name))}"
+            )
+            for name, label, _clearable in _PROVIDER_EDIT_FIELDS
+        ],
+    )
+    if field is None:
+        return
+    _name, label, clearable = next(
+        item for item in _PROVIDER_EDIT_FIELDS if item[0] == field
+    )
+    value = menu.ask(
+        f"New {label.lower()}",
+        current=_provider_edit_current(provider, field) or None,
+        clearable=clearable,
+    )
+    if value is None:
+        return
+    if clearable and value.lower() in _CLEAR_WORDS:
+        value = ""
+    menu.run("providers", "edit", provider_id, f"{field}={value}")
+
+
+def _menu_providers(menu: _ConfigMenu) -> None:
+    def act(choice: str) -> None:
+        if choice == "list":
+            menu.run("providers")
+        elif choice == "use":
+            picked = menu.pick(
+                "Use a provider",
+                "Choose the provider to use.",
+                [_provider_option(p) for p in list_provider_configs()],
+                selected=menu.session.provider_id,
+            )
+            if picked is not None:
+                # Same path as /provider <id>: asks for a model when none is chosen.
+                _provider(picked, menu.session, menu.console, menu.selector)
+        elif choice == "add":
+            _menu_provider_add(menu)
+        elif choice == "edit":
+            _menu_provider_edit(menu)
+        elif choice == "remove":
+            provider_id = _pick_custom_provider(menu, "Remove which provider?")
+            if provider_id is not None and menu.confirm(
+                f"Remove the provider '{provider_id}'?", f"Remove {provider_id}"
+            ):
+                menu.run("providers", "remove", provider_id)
+
+    _menu_loop(
+        menu,
+        "Providers",
+        "What do you want to do?",
+        lambda: [
+            CommandOption("use", "Use a provider"),
+            CommandOption("add", "Add a custom provider"),
+            CommandOption("edit", "Edit a custom provider"),
+            CommandOption("remove", "Remove a custom provider"),
+            CommandOption("list", "List providers"),
+        ],
+        act,
+        loop=False,
+    )
+
+
+def _menu_model(menu: _ConfigMenu) -> None:
+    session = menu.session
+
+    def act(choice: str) -> None:
+        if choice == "choose":
+            prompt = model_selection_prompt(session.provider, session.model, menu.console)
+            if not prompt.options:
+                menu.console.print(f"[yellow]{escape(prompt.empty_message)}[/yellow]")
+                return
+            picked = _run_selector(menu.selector, prompt)
+            if picked is not None:
+                menu.run("model", "set", picked)
+        elif choice == "type":
+            model = menu.ask("Model id", current=session.model or None)
+            if model is not None:
+                menu.run("model", "set", model)
+        elif choice == "forget":
+            menu.run("model", "reset")
+
+    _menu_loop(
+        menu,
+        f"Model for {session.provider.name}",
+        f"Current model: {session.model or '(none chosen)'}",
+        lambda: [
+            CommandOption("choose", "Choose from the provider's models"),
+            CommandOption("type", "Type a model id"),
+            CommandOption("forget", "Forget the chosen model"),
+        ],
+        act,
+        loop=False,
+    )
+
+
+def _menu_models(menu: _ConfigMenu) -> None:
+    session = menu.session
+    provider_id = session.provider_id
+
+    def choose_models(mode: str, question: str) -> None:
+        models: list[str]
+        if menu.multi_selector is not None:
+            catalog = get_model_catalog(provider_id)
+            if not catalog.models:
+                menu.console.print(
+                    "[dim]No models are listed yet. Refresh the catalog first.[/dim]"
+                )
+                return
+            current = get_model_filter(provider_id)
+            checklist = MultiSelectionPrompt(
+                title="Choose models",
+                text=question,
+                options=tuple(CommandOption(m, m) for m in catalog.models),
+                selected=tuple(current["models"]) if current["mode"] == mode else (),
+            )
+            chosen = menu.multi_selector(checklist)
+            models = list(chosen or [])
+        else:
+            typed = menu.ask(f"{question} Model ids, separated by spaces")
+            models = typed.split() if typed else []
+        if not models:
+            menu.console.print("[dim]No models chosen; nothing changed.[/dim]")
+            return
+        menu.run("models", mode, *models)
+
+    def act(choice: str) -> None:
+        if choice == "refresh":
+            menu.run("models", "refresh")
+        elif choice == "allow":
+            choose_models("allow", "Only show these models.")
+        elif choice == "deny":
+            choose_models("deny", "Hide these models.")
+        elif choice == "clear":
+            menu.run("models", "clear")
+
+    visibility = get_model_filter(provider_id)["mode"]
+    _menu_loop(
+        menu,
+        f"Models for {session.provider.name}",
+        f"Model visibility: {visibility}.",
+        lambda: [
+            CommandOption("refresh", "Refresh the model catalog from the provider"),
+            CommandOption("allow", "Only show models I choose"),
+            CommandOption("deny", "Hide models I choose"),
+            CommandOption("clear", "Show every model (clear the filter)"),
+        ],
+        act,
+        loop=False,
+    )
+
+
+def _menu_permissions(menu: _ConfigMenu) -> None:
+    session = menu.session
+
+    def build() -> list[CommandOption]:
+        tools = sorted(session.always_allowed)
+        if not tools:
+            return []
+        return [
+            *(CommandOption(f"remove:{name}", f"Stop auto-approving {name}") for name in tools),
+            CommandOption("clear", "Stop auto-approving every tool"),
+        ]
+
+    def act(choice: str) -> None:
+        if choice == "clear":
+            if menu.confirm("Remove every persisted tool approval?", "Remove all"):
+                menu.run("permissions", "clear")
+        else:
+            menu.run("permissions", "remove", choice.removeprefix("remove:"))
+
+    _menu_loop(
+        menu,
+        "Always-allowed tools",
+        "Tools you approved with 'always'. Pick one to require approval again.",
+        build,
+        act,
+        loop=True,
+        empty="No persisted tool approvals. Answer 'always' at an approval "
+        "prompt to add one.",
+    )
+
+
+def _menu_commands(menu: _ConfigMenu) -> None:
+    def rules() -> list[tuple[str, str]]:
+        current = get_command_rules()
+        return [
+            (kind, pattern) for kind in ("deny", "allow") for pattern in current[kind]
+        ]
+
+    def act(choice: str) -> None:
+        if choice in {"allow", "deny"}:
+            verb = "auto-approve" if choice == "allow" else "block"
+            pattern = menu.ask(f"Regex for commands to {verb}")
+            if pattern is not None:
+                menu.run("commands", choice, pattern)
+        elif choice == "remove":
+            existing = rules()
+            if not existing:
+                menu.console.print("[dim]No command rules set.[/dim]")
+                return
+            picked = menu.pick(
+                "Remove a rule",
+                "Pick the rule to remove.",
+                [
+                    CommandOption(str(index), f"{kind}: {pattern}")
+                    for index, (kind, pattern) in enumerate(existing)
+                ],
+            )
+            if picked is not None:
+                kind, pattern = existing[int(picked)]
+                menu.run("commands", "remove", kind, pattern)
+        elif choice == "clear":
+            if menu.confirm("Remove every command rule?", "Remove all rules"):
+                menu.run("commands", "clear")
+
+    def build() -> list[CommandOption]:
+        current = get_command_rules()
+        return [
+            CommandOption("allow", "Auto-approve commands matching a regex"),
+            CommandOption("deny", "Block commands matching a regex"),
+            CommandOption(
+                "remove",
+                f"Remove a rule ({len(current['deny'])} deny, {len(current['allow'])} allow)",
+            ),
+            CommandOption("clear", "Remove every rule"),
+        ]
+
+    _menu_loop(
+        menu,
+        "Shell command rules",
+        "Rules apply to the run_bash tool. Deny rules win over allow rules.",
+        build,
+        act,
+        loop=True,
+    )
+
+
+def _menu_profile(menu: _ConfigMenu) -> None:
+    def pick_profile(title: str) -> str | None:
+        profiles = get_profiles()
+        if not profiles:
+            menu.console.print(
+                "[dim]No profiles saved. Save one first.[/dim]"
+            )
+            return None
+        return menu.pick(
+            title,
+            "Profiles capture provider, model, and mode.",
+            [CommandOption(name, name) for name in sorted(profiles)],
+        )
+
+    def act(choice: str) -> None:
+        if choice == "save":
+            name = menu.ask("Profile name (saves the current settings)")
+            if name is not None:
+                menu.run("profile", "save", name)
+        elif choice == "use":
+            name = pick_profile("Apply which profile?")
+            if name is not None:
+                menu.run("profile", "use", name)
+        elif choice == "show":
+            name = pick_profile("Show which profile?")
+            if name is not None:
+                menu.run("profile", "show", name)
+        elif choice == "remove":
+            name = pick_profile("Remove which profile?")
+            if name is not None and menu.confirm(
+                f"Remove the profile '{name}'?", f"Remove {name}"
+            ):
+                menu.run("profile", "remove", name)
+        elif choice == "list":
+            menu.run("profile", "list")
+
+    _menu_loop(
+        menu,
+        "Configuration profiles",
+        "Save the current settings, or switch to a saved set.",
+        lambda: [
+            CommandOption("save", "Save the current settings as a profile"),
+            CommandOption("use", "Apply a saved profile"),
+            CommandOption("show", "Show a saved profile"),
+            CommandOption("remove", "Remove a saved profile"),
+            CommandOption("list", "List saved profiles"),
+        ],
+        act,
+        loop=False,
+    )
+
+
+_CONFIG_EDITORS: dict[str, Callable[[_ConfigMenu], None]] = {
+    "providers": _menu_providers,
+    "provider": _menu_providers,
+    "model": _menu_model,
+    "models": _menu_models,
+    "permissions": _menu_permissions,
+    "commands": _menu_commands,
+    "profile": _menu_profile,
+}
+
+
 def _config_interact(
     session: Session,
     console: Console,
     selector: CommandSelector,
     prompt_input: Callable[[str], str] | None,
+    multi_selector: CommandMultiSelector | None = None,
+    secret_input: Callable[[str], str] | None = None,
 ) -> str:
-    """Staged interactive configuration: section menu, then deeper steps."""
+    """Staged interactive configuration: section menu, then an editor per section."""
     section_prompt = SelectionPrompt(
         title="Configure KiwiMateCoder",
         text=(
-            "Pick a setting to view or change. Keys lets you set or remove an "
-            "API key interactively."
+            "Pick a setting to change it. Each one asks for the new value and "
+            "saves it. Show and help only print."
         ),
         options=(
             CommandOption("show", "Show active providers, model, key, filter"),
-            CommandOption("providers", "List providers (add/remove/use/edit)"),
+            CommandOption("providers", "Switch, add, edit, or remove providers"),
             CommandOption("keys", "Set or remove an API key"),
             CommandOption("model", "Choose or forget the provider's model"),
             CommandOption("models", "Manage model visibility / refresh catalog"),
@@ -3326,9 +4754,13 @@ def _config_interact(
             CommandOption("permissions", "Manage tools approved with 'always'"),
             CommandOption("commands", "Manage shell command allow/deny rules"),
             CommandOption("trust", "Allow reads outside the workspace root"),
+            CommandOption("verify", "Run a command after file edits (tests, linter)"),
+            CommandOption("budget", "Set session token and cost limits"),
+            CommandOption("subagents", "Subagent task tool and its step limit"),
             CommandOption("sampling", "Set temperature/top_p/max_tokens"),
             CommandOption("browser", "Optional Playwright browser automation"),
             CommandOption("shell", "Persistent shell and background job settings"),
+            CommandOption("sandbox", "OS sandbox for shell commands"),
             CommandOption("remote", "SSH/devcontainer command execution"),
             CommandOption("acp", "ACP editor-integration permission timeout"),
             CommandOption("web", "Web fetch/search limits and local access"),
@@ -3338,12 +4770,12 @@ def _config_interact(
                 "media", "Opt-in image and video generation (provider/models/size)"
             ),
             CommandOption("telemetry", "Opt-in local telemetry and crash reports"),
-            CommandOption("style", "Show or set the output style"),
+            CommandOption("style", "Set the output style"),
             CommandOption(
                 "ui",
                 "Theme, color, output, ASCII, locale, keys, notify, and spinners",
             ),
-            CommandOption("prompt", "Show, set, or clear a custom system prompt"),
+            CommandOption("prompt", "Set or clear a custom system prompt"),
             CommandOption("profile", "Save or apply configuration profiles"),
             CommandOption("team", "Load a shared team policy overlay"),
             CommandOption("cache", "Toggle Anthropic prompt caching"),
@@ -3356,6 +4788,9 @@ def _config_interact(
 
     if section == "show":
         _config_show(session, console)
+        return CommandResult.CONTINUE
+    if section == "help":
+        _config_help(console)
         return CommandResult.CONTINUE
     if section == "keys":
         provider_prompt = SelectionPrompt(
@@ -3374,38 +4809,17 @@ def _config_interact(
         provider_id = _run_selector(selector, provider_prompt)
         if provider_id is None:
             return CommandResult.CONTINUE
-        _config_key_enter(provider_id, console, selector, prompt_input)
+        _config_key_enter(provider_id, console, selector, prompt_input, secret_input)
         return CommandResult.CONTINUE
-    if section in {"providers", "provider"}:
-        _config_providers([], session, console)
+
+    menu = _ConfigMenu(session, console, selector, prompt_input, multi_selector)
+    editor = _CONFIG_EDITORS.get(section)
+    if editor is not None:
+        editor(menu)
         return CommandResult.CONTINUE
-    if section in {
-        "model",
-        "models",
-        "mode",
-        "help",
-        "permissions",
-        "sampling",
-        "browser",
-        "shell",
-        "remote",
-        "acp",
-        "web",
-        "network",
-        "vision",
-        "media",
-        "telemetry",
-        "style",
-        "ui",
-        "prompt",
-        "profile",
-        "team",
-        "cache",
-        "commands",
-        "trust",
-    }:
-        _config(section, session, console, selector, prompt_input)
-        return CommandResult.CONTINUE
+    spec = _CONFIG_SECTIONS.get(section)
+    if spec is not None:
+        _menu_section(menu, spec)
     return CommandResult.CONTINUE
 
 
@@ -3425,7 +4839,7 @@ def _cost(arg: str, session: Session, console: Console) -> str:
     table = Table(title="Session Token & Cost Usage", show_header=True)
     table.add_column("Metric", style="cyan")
     table.add_column("Value", justify="right")
-    table.add_row("Model", f"{session.provider_id}:{session.model}")
+    table.add_row("Model", escape(f"{session.provider_id}:{session.model}"))
     table.add_row("Prompt Tokens", f"{session.prompt_tokens:,}")
     table.add_row("Completion Tokens", f"{session.completion_tokens:,}")
     table.add_row("Total Tokens", f"[bold]{total:,}[/bold]")
@@ -3453,11 +4867,11 @@ def _save(arg: str, session: Session, console: Console) -> str:
     try:
         dest = save_session(session, arg.strip() or None)
         console.print(
-            f"[green]Session saved to [bold]{dest.name}[/bold] "
+            f"[green]Session saved to [bold]{escape(str(dest.name))}[/bold] "
             f"({len(session.messages)} messages, {session.total_tokens:,} tokens).[/green]"
         )
     except Exception as exc:
-        console.print(f"[red]Failed to save session: {exc}[/red]")
+        console.print(f"[red]Failed to save session: {escape(str(exc))}[/red]")
     return CommandResult.CONTINUE
 
 
@@ -3465,7 +4879,9 @@ def _load(arg: str, session: Session, console: Console) -> str:
     if not arg.strip():
         return _sessions("", session, console)
     try:
-        loaded = load_session(arg.strip(), workspace_root=session.workspace_root)
+        loaded = load_session(
+            arg.strip(), workspace_root=session.workspace_root, require_provider=True
+        )
         session.messages = loaded.messages
         session.provider_id = loaded.provider_id
         session.model = loaded.model
@@ -3488,12 +4904,12 @@ def _load(arg: str, session: Session, console: Console) -> str:
         session.compact_at_tokens = loaded.compact_at_tokens
         session.context_window = loaded.context_window
         console.print(
-            f"[green]Loaded session [bold]{arg.strip()}[/bold]: "
-            f"{len(session.messages)} messages, provider={session.provider_id}:{session.model}[/green]"
+            f"[green]Loaded session [bold]{escape(str(arg.strip()))}[/bold]: "
+            f"{len(session.messages)} messages, provider={escape(str(session.provider_id))}:{escape(str(session.model))}[/green]"
         )
         _warn_if_no_model(session, console)
     except Exception as exc:
-        console.print(f"[red]Failed to load session: {exc}[/red]")
+        console.print(f"[red]Failed to load session: {escape(str(exc))}[/red]")
     return CommandResult.CONTINUE
 
 
@@ -3511,8 +4927,8 @@ def _sessions(arg: str, session: Session, console: Console) -> str:
     for s in saved:
         prov_model = f"{s['provider']}:{s['model']}" if s["model"] else s["provider"]
         table.add_row(
-            s["name"],
-            prov_model,
+            escape(s["name"]),
+            escape(prov_model),
             str(s["messages"]),
             f"{s['tokens']:,}",
             str(s["saved_at"]).split(".")[0].replace("T", " "),
@@ -3526,10 +4942,10 @@ def _fork(arg: str, session: Session, console: Console) -> str:
     try:
         path = fork_session(session, arg.strip() or None)
     except Exception as exc:
-        console.print(f"[red]Failed to fork session: {exc}[/red]")
+        console.print(f"[red]Failed to fork session: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     console.print(
-        f"[green]Forked session to [bold]{path.name}[/bold][/green] "
+        f"[green]Forked session to [bold]{escape(str(path.name))}[/bold][/green] "
         f"({len(session.messages)} messages)."
     )
     return CommandResult.CONTINUE
@@ -3551,9 +4967,9 @@ def _export(arg: str, session: Session, console: Console) -> str:
             export_session_markdown(session), encoding="utf-8"
         )
     except OSError as exc:
-        console.print(f"[red]Failed to export session: {exc}[/red]")
+        console.print(f"[red]Failed to export session: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
-    console.print(f"[green]Exported session to [bold]{destination}[/bold].[/green]")
+    console.print(f"[green]Exported session to [bold]{escape(str(destination))}[/bold].[/green]")
     return CommandResult.CONTINUE
 
 
@@ -3568,9 +4984,9 @@ def _share(arg: str, session: Session, console: Console) -> str:
     from kiwimatecoder import share as share_module
 
     try:
-        parts = shlex.split(arg)
+        parts = split_args(arg)
     except ValueError as exc:
-        console.print(f"[red]Could not parse command: {exc}[/red]")
+        console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     include_tool_output = "--include-tool-output" in parts
     parts = [part for part in parts if part != "--include-tool-output"]
@@ -3590,41 +5006,41 @@ def _share(arg: str, session: Session, console: Console) -> str:
             else:
                 index += 1
         if not path:
-            console.print(f"[yellow]Usage: {_SHARE_USAGE}[/yellow]")
+            console.print(f"[yellow]Usage: {escape(str(_SHARE_USAGE))}[/yellow]")
             return CommandResult.CONTINUE
         try:
             saved = share_module.import_share(path, name)
         except (share_module.ShareError, OSError, ValueError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return CommandResult.CONTINUE
         console.print(
-            f"[green]Imported session as [cyan]{saved.stem}[/cyan].[/green] "
-            f"Load it with /load {saved.stem}."
+            f"[green]Imported session as [cyan]{escape(str(saved.stem))}[/cyan].[/green] "
+            f"Load it with /load {escape(str(saved.stem))}."
         )
         return CommandResult.CONTINUE
 
     to_gist = bool(parts) and parts[0].lower() == "gist"
     if parts and not to_gist:
-        console.print(f"[yellow]Usage: {_SHARE_USAGE}[/yellow]")
+        console.print(f"[yellow]Usage: {escape(str(_SHARE_USAGE))}[/yellow]")
         return CommandResult.CONTINUE
     if to_gist:
         ok, detail = share_module.share_to_gist(
             session, include_tool_output=include_tool_output
         )
         if not ok:
-            console.print(f"[red]{detail}[/red]")
+            console.print(f"[red]{escape(str(detail))}[/red]")
             return CommandResult.CONTINUE
-        console.print(f"[green]Shared as a secret gist:[/green] {detail}")
+        console.print(f"[green]Shared as a secret gist:[/green] {escape(str(detail))}")
         return CommandResult.CONTINUE
     try:
         bundle_path = share_module.write_share(
             session, include_tool_output=include_tool_output
         )
     except OSError as exc:
-        console.print(f"[red]Failed to write share bundle: {exc}[/red]")
+        console.print(f"[red]Failed to write share bundle: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
     console.print(
-        f"[green]Wrote redacted share bundle to [bold]{bundle_path}[/bold].[/green]"
+        f"[green]Wrote redacted share bundle to [bold]{escape(str(bundle_path))}[/bold].[/green]"
     )
     console.print(
         "[dim]Tool output is omitted by default; pass --include-tool-output "
@@ -3657,15 +5073,15 @@ def _sync(arg: str, session: Session, console: Console) -> str:
         elif action == "pull":
             report = sync_module.pull()
         else:
-            console.print(f"[yellow]Usage: {_SYNC_USAGE}[/yellow]")
+            console.print(f"[yellow]Usage: {escape(str(_SYNC_USAGE))}[/yellow]")
             return CommandResult.CONTINUE
     except sync_module.SyncError as exc:
-        console.print(f"[yellow]{exc}[/yellow]")
+        console.print(f"[yellow]{escape(str(exc))}[/yellow]")
         return CommandResult.CONTINUE
     for line in report.lines:
         console.print(line, markup=False, highlight=False)
     for error in report.errors:
-        console.print(f"[yellow]{error}[/yellow]")
+        console.print(f"[yellow]{escape(str(error))}[/yellow]")
     console.print(
         report.summary(), markup=False, highlight=False
     )
@@ -3684,17 +5100,19 @@ def _undo(arg: str, session: Session, console: Console) -> str:
         try:
             count = int(token)
         except ValueError:
-            console.print("[yellow]Usage: /undo [count][/yellow]")
+            console.print("[yellow]Usage: /undo \\[count][/yellow]")
             return CommandResult.CONTINUE
     restored = session.undo_checkpoints(count)
     if not restored:
         console.print("[dim]Nothing to undo.[/dim]")
         return CommandResult.CONTINUE
     for item in restored:
-        console.print(f"[green]Undid[/green] {item.label} [dim](#{item.id})[/dim]")
+        console.print(f"[green]Undid[/green] {escape(str(item.label))} [dim](#{escape(str(item.id))})[/dim]")
     paths = sorted({path for item in restored for path in item.paths})
     if paths:
-        console.print("[dim]Restored:[/dim] " + ", ".join(paths))
+        console.print(
+            "[dim]Restored:[/dim] " + ", ".join(escape(path) for path in paths)
+        )
     return CommandResult.CONTINUE
 
 
@@ -3710,12 +5128,12 @@ def _checkpoints(arg: str, session: Session, console: Console) -> str:
     for item in session.checkpoints:
         table.add_row(
             str(item.id),
-            item.label,
-            ", ".join(item.paths) or "-",
+            escape(item.label),
+            escape(", ".join(item.paths) or "-"),
             item.created_at.split(".")[0].replace("T", " "),
         )
     console.print(table)
-    console.print("[dim]Use /undo [count] to restore.[/dim]")
+    console.print("[dim]Use /undo \\[count] to restore.[/dim]")
     return CommandResult.CONTINUE
 
 
@@ -3735,7 +5153,9 @@ def _todos(arg: str, session: Session, console: Console) -> str:
     table.add_column("Task")
     for todo in session.todos:
         status = str(todo.get("status") or "pending")
-        table.add_row(labels.get(status, status), str(todo.get("content") or ""))
+        table.add_row(
+            labels.get(status) or escape(status), escape(str(todo.get("content") or ""))
+        )
     console.print(table)
     return CommandResult.CONTINUE
 
@@ -3760,7 +5180,7 @@ def _memory(arg: str, session: Session, console: Console) -> str:
             text = memory_module.read_memory(
                 scope, session.workspace_root, settings["max_bytes"]
             )
-            console.print(f"\n[bold]{scope}[/bold] [dim]{path}[/dim]")
+            console.print(f"\n[bold]{scope}[/bold] [dim]{escape(str(path))}[/dim]")
             if text:
                 console.print(text, markup=False, highlight=False)
             else:
@@ -3783,7 +5203,7 @@ def _memory(arg: str, session: Session, console: Console) -> str:
         scope = rest.lower() or "project"
         if scope not in memory_module.SCOPES:
             console.print(
-                f"[red]Unknown memory scope '{scope}'. Choose: project, user.[/red]"
+                f"[red]Unknown memory scope '{escape(scope)}'. Choose: project, user.[/red]"
             )
             return CommandResult.CONTINUE
         if memory_module.clear_memory(scope, session.workspace_root):
@@ -3792,7 +5212,7 @@ def _memory(arg: str, session: Session, console: Console) -> str:
             console.print(f"[dim]No {scope} memory to clear.[/dim]")
         return CommandResult.CONTINUE
 
-    console.print(f"[yellow]Usage: {_MEMORY_USAGE}[/yellow]")
+    console.print(f"[yellow]Usage: {escape(str(_MEMORY_USAGE))}[/yellow]")
     return CommandResult.CONTINUE
 
 
@@ -3802,9 +5222,9 @@ def _memory_append(
     try:
         path = memory_module.append_memory(scope, session.workspace_root, text)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
-    console.print(f"[green]Saved to {scope} memory:[/green] {path}")
+    console.print(f"[green]Saved to {scope} memory:[/green] {escape(str(path))}")
     return CommandResult.CONTINUE
 
 
@@ -3835,7 +5255,7 @@ def _index(arg: str, session: Session, console: Console) -> str:
                 f"([yellow]{status.stale}[/yellow] stale)\n"
                 f"Terms: [cyan]{status.terms}[/cyan]\n"
                 f"Store: [cyan]{_format_bytes(status.size_bytes)}[/cyan] "
-                f"[dim]{status.path}[/dim]\n"
+                f"[dim]{escape(str(status.path))}[/dim]\n"
                 f"Embeddings: [cyan]{'on' if status.embeddings else 'off'}[/cyan]"
             )
             return CommandResult.CONTINUE
@@ -3861,9 +5281,9 @@ def _index(arg: str, session: Session, console: Console) -> str:
                 console.print("[dim]No codebase index to clear.[/dim]")
             return CommandResult.CONTINUE
     except OSError as exc:
-        console.print(f"[red]Codebase index unavailable: {exc}[/red]")
+        console.print(f"[red]Codebase index unavailable: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
-    console.print(f"[yellow]Usage: {_INDEX_USAGE}[/yellow]")
+    console.print(f"[yellow]Usage: {escape(str(_INDEX_USAGE))}[/yellow]")
     return CommandResult.CONTINUE
 
 
@@ -3874,7 +5294,7 @@ def _compact(arg: str, session: Session, console: Console) -> str:
         try:
             target = int(token)
         except ValueError:
-            console.print("[yellow]Usage: /compact [token_budget][/yellow]")
+            console.print("[yellow]Usage: /compact \\[token_budget][/yellow]")
             return CommandResult.CONTINUE
 
     result = session.compact(target)
@@ -3901,9 +5321,9 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
     from kiwimatecoder import jobs as jobs_module
 
     try:
-        parts = shlex.split(arg)
+        parts = split_args(arg)
     except ValueError as exc:
-        console.print(f"[red]Could not parse command: {exc}[/red]")
+        console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
 
     action = parts[0].lower() if parts else "list"
@@ -3941,13 +5361,13 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
             return CommandResult.CONTINUE
         record = jobs_module.refresh_job(rest[0]) or jobs_module.get_job(rest[0])
         if record is None:
-            console.print(f"[red]Unknown job '{rest[0]}'.[/red]")
+            console.print(f"[red]Unknown job '{escape(str(rest[0]))}'.[/red]")
             return CommandResult.CONTINUE
-        console.print(f"ID: [cyan]{record.id}[/cyan]")
+        console.print(f"ID: [cyan]{escape(str(record.id))}[/cyan]")
         console.print(f"Status: [bold]{record.status}[/bold]")
         console.print(f"Prompt: {escape(record.prompt)}")
         console.print(f"Workspace: {escape(record.workspace)}")
-        console.print(f"Mode: {record.mode}")
+        console.print(f"Mode: {escape(str(record.mode))}")
         if record.finished_at:
             console.print(f"Finished: {record.finished_at}")
         if record.exit_code is not None:
@@ -3956,7 +5376,7 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
             console.print(f"[red]Error: {escape(record.error)}[/red]")
         if record.result:
             console.print(Panel(escape(record.result), title="Result"))
-        console.print(f"[dim]Output: {record.output_path}[/dim]")
+        console.print(f"[dim]Output: {escape(str(record.output_path))}[/dim]")
         return CommandResult.CONTINUE
 
     if action == "cancel":
@@ -3965,10 +5385,10 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
             return CommandResult.CONTINUE
         record = jobs_module.cancel_job(rest[0])
         if record is None:
-            console.print(f"[red]Unknown job '{rest[0]}'.[/red]")
+            console.print(f"[red]Unknown job '{escape(str(rest[0]))}'.[/red]")
             return CommandResult.CONTINUE
         console.print(
-            f"[green]Job[/green] [cyan]{record.id}[/cyan] is now "
+            f"[green]Job[/green] [cyan]{escape(str(record.id))}[/cyan] is now "
             f"[bold]{record.status}[/bold]."
         )
         return CommandResult.CONTINUE
@@ -3981,12 +5401,12 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
             return CommandResult.CONTINUE
         for job in started:
             console.print(
-                f"[green]Started[/green] [cyan]{job.id}[/cyan] "
+                f"[green]Started[/green] [cyan]{escape(str(job.id))}[/cyan] "
                 f"([dim]{escape(_shorten(job.prompt, 60))}[/dim])"
             )
         for job, reason in skipped:
             console.print(
-                f"[yellow]Skipped[/yellow] [cyan]{job.id}[/cyan]: {escape(reason)}"
+                f"[yellow]Skipped[/yellow] [cyan]{escape(str(job.id))}[/cyan]: {escape(reason)}"
             )
         return CommandResult.CONTINUE
 
@@ -4003,17 +5423,17 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
                 model=session.model,
             )
         except (ValueError, KeyError, jobs_module.JobError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             return CommandResult.CONTINUE
         console.print(
-            f"[green]Started job[/green] [cyan]{record.id}[/cyan] "
+            f"[green]Started job[/green] [cyan]{escape(str(record.id))}[/cyan] "
             f"([dim]{escape(_shorten(record.prompt, 60))}[/dim]). "
-            f"Use /jobs show {record.id} to track it."
+            f"Use /jobs show {escape(str(record.id))} to track it."
         )
         return CommandResult.CONTINUE
 
     console.print(
-        "[yellow]Usage: /jobs [list|show <id>|cancel <id>|tick|run <prompt>][/yellow]"
+        "[yellow]Usage: /jobs \\[list|show <id>|cancel <id>|tick|run <prompt>][/yellow]"
     )
     return CommandResult.CONTINUE
 
@@ -4070,8 +5490,10 @@ def _run_media_call(
     label. Exceptions (including Ctrl+C) propagate to the caller.
     """
     started = time.monotonic()
-    with console.status(f"{label}…") as status:
-        result = work(lambda text: status.update(f"{text}"))
+    # Spinner text is parsed as markup by Rich, outside render_str. The label and
+    # the progress updates carry model names, job ids and server status text.
+    with console.status(f"{escape(label)}…") as status:
+        result = work(lambda text: status.update(escape(text)))
     return result, time.monotonic() - started
 
 
@@ -4105,7 +5527,7 @@ def _image(arg: str, session: Session, console: Console) -> str:
     if not prompt:
         console.print(
             "[yellow]Usage: /image [--size WxH] [--model <id>] <prompt>[/yellow]\n"
-            f"[dim]Now: {settings['provider']}/{settings['model']} at "
+            f"[dim]Now: {escape(str(settings['provider']))}/{escape(str(settings['model']))} at "
             f"{settings['size']}. Example: /image a red fox reading a book[/dim]"
         )
         return CommandResult.CONTINUE
@@ -4175,7 +5597,7 @@ def _video(arg: str, session: Session, console: Console) -> str:
                 "[yellow]Usage: /video [--duration <s>] [--size <WxH|720p>] "
                 "[--model <id>] [--image <path>] <prompt>[/yellow]\n"
                 "[yellow]       /video resume <job-id>[/yellow]\n"
-                f"[dim]Now: {settings['provider']}/{escape(video_model)}, "
+                f"[dim]Now: {escape(str(settings['provider']))}/{escape(video_model)}, "
                 f"{settings['video_duration']}s. Video is billed per second and "
                 "takes minutes to render. Example: /video a paper boat drifting "
                 "down a rainy street[/dim]"
@@ -4234,7 +5656,7 @@ def _video(arg: str, session: Session, console: Console) -> str:
         model = options.get("model") or settings["video_model"]
         seconds = duration or settings["video_duration"]
         console.print(
-            f"[dim]Requesting a video ({seconds}s) from {settings['provider']}/"
+            f"[dim]Requesting a video ({seconds}s) from {escape(str(settings['provider']))}/"
             f"{escape(model)}. It is billed per second and usually takes a "
             "few minutes.[/dim]"
         )
@@ -4298,14 +5720,14 @@ def _media(arg: str, session: Session, console: Console) -> str:
     """Show media readiness and recently generated files."""
     words = arg.split()
     if words and words[0].lower() not in {"list", "ls", "show", "status", "recent"}:
-        console.print("[yellow]Usage: /media [list [count]][/yellow]")
+        console.print("[yellow]Usage: /media \\[list \\[count]][/yellow]")
         return CommandResult.CONTINUE
     limit = 10
     if len(words) > 1:
         try:
             limit = max(1, min(int(words[1]), 100))
         except ValueError:
-            console.print("[yellow]Usage: /media [list [count]][/yellow]")
+            console.print("[yellow]Usage: /media \\[list \\[count]][/yellow]")
             return CommandResult.CONTINUE
 
     settings = get_media()

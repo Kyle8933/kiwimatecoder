@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 import time
 
@@ -48,6 +49,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.shortcuts import CompleteStyle, choice
+from prompt_toolkit.shortcuts import prompt as read_line
 from prompt_toolkit.shortcuts.choice_input import create_default_choice_input_style
 from prompt_toolkit.styles import BaseStyle, Style, merge_styles
 from prompt_toolkit.widgets import Box, Frame, Label
@@ -66,6 +68,7 @@ from kiwimatecoder.commands import (
     SelectionPrompt,
     dispatch,
     has_command,
+    line_carries_secret,
     slash_argument_completions,
     slash_command_completions,
 )
@@ -213,7 +216,7 @@ def _banner(session: Session) -> Panel:
     folder = ui.glyph("folder")
     folder_prefix = f"{folder} " if folder else ""
     git_branch = _git_info(session.workspace_root)
-    git_badge = f" · [magenta]git:{git_branch}[/magenta]" if git_branch else ""
+    git_badge = f" · [magenta]git:{escape(git_branch)}[/magenta]" if git_branch else ""
     ctx_badge = (
         f" · [cyan]{t('banner.pinned', count=len(session.context_files))}[/cyan]"
         if session.context_files
@@ -224,17 +227,18 @@ def _banner(session: Session) -> Panel:
     active = session.active_providers
     experimental = " [yellow](experimental)[/yellow]" if session.provider.experimental else ""
     provider_summary = (
-        f"[bold cyan]{session.provider.name}[/bold cyan]{experimental} "
-        f"([dim]{session.model or 'no model chosen — use /model'}[/dim])"
+        f"[bold cyan]{escape(session.provider.name)}[/bold cyan]{experimental} "
+        f"([dim]{escape(session.model or 'no model chosen — use /model')}[/dim])"
     )
     if len(active) > 1:
-        fallback_names = ", ".join(p.name for p in active[1:])
+        fallback_names = ", ".join(escape(p.name) for p in active[1:])
         provider_summary += f" [dim]+ {fallback_names}[/dim]"
 
     content = (
         f"[bold {accent}]KiwiMateCoder[/bold {accent}] [dim]v{__version__}[/dim] — "
         f"{provider_summary}\n"
-        f"[dim]{folder_prefix}{session.workspace_root.name}{git_badge} · mode:[bold]{session.mode.value}[/bold]{ctx_badge}{dry_badge}\n"
+        f"[dim]{folder_prefix}{escape(session.workspace_root.name)}{git_badge} · "
+        f"mode:[bold]{session.mode.value}[/bold]{ctx_badge}{dry_badge}\n"
         f"{t('banner.help_hint')}[/dim]"
     )
     return Panel(
@@ -258,7 +262,7 @@ def _prompt_text(session: Session) -> HTML:
         provider_display += f" +{len(session.active_provider_ids) - 1}"
     return HTML(
         f"<{accent}><b>kiwi</b></{accent}> "
-        f"<{mode_color}>({provider_display} · {session.mode.value})</{mode_color}> "
+        f"<{mode_color}>({html.escape(provider_display)} · {session.mode.value})</{mode_color}> "
         f"<{accent}>›</{accent}> "
     )
 
@@ -565,6 +569,9 @@ def _make_confirm(session: Session) -> ConfirmFn:
     """Build the approval callback used by the permission gate."""
 
     def confirm(summary: str, preview_text: str | None) -> bool | ApprovalResult:
+        # ``summary`` is plain text such as run_bash(command='ls [a-z]*'); shown as
+        # markup, the user would approve something other than what will run.
+        shown = escape(summary)
         console.print()
         hunk_list: list[Hunk] = []
         if preview_text:
@@ -591,14 +598,14 @@ def _make_confirm(session: Session) -> ConfirmFn:
                     else ""
                 )
                 title = (
-                    f"[bold yellow]{t('approval.approve_change', summary=summary)}"
+                    f"[bold yellow]{t('approval.approve_change', summary=shown)}"
                     f"[/bold yellow]{stats}"
                 )
                 border = "yellow"
                 hunk_list = split_hunks(preview_text)
             else:
                 title = (
-                    f"[bold magenta]{t('approval.approve_shell', summary=summary)}"
+                    f"[bold magenta]{t('approval.approve_shell', summary=shown)}"
                     f"[/bold magenta]"
                 )
                 border = "magenta"
@@ -620,7 +627,7 @@ def _make_confirm(session: Session) -> ConfirmFn:
             # No preview - show a simple confirmation panel
             console.print(
                 Panel(
-                    f"[bold]{t('approval.approve', summary=summary)}[/bold]",
+                    f"[bold]{t('approval.approve', summary=shown)}[/bold]",
                     title=f"[yellow]{t('approval.required_title')}[/yellow]",
                     border_style="yellow",
                     padding=(0, 1),
@@ -655,7 +662,7 @@ def _make_confirm(session: Session) -> ConfirmFn:
                 persist_always_allowed_tool(tool_name)
                 console.print(
                     "[dim]"
-                    + t("approval.always_saved", tool=tool_name)
+                    + escape(t("approval.always_saved", tool=tool_name))
                     + "[/dim]"
                 )
             except OSError:
@@ -673,12 +680,57 @@ def _make_confirm(session: Session) -> ConfirmFn:
     return confirm
 
 
+def _make_private(path: str | Path) -> None:
+    """Create ``path`` if needed and restrict it to its owner (0600)."""
+    try:
+        os.close(os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600))
+        os.chmod(path, 0o600)
+    except OSError:
+        pass  # best effort: an unwritable history is handled where it is written
+
+
+class _PrivateHistory(FileHistory):
+    """A history file that never holds an API key and is readable only by you.
+
+    ``/config key set <provider> <key>`` carries a secret, so that line stays in
+    memory (the up-arrow still finds it this session) but is not written to disk.
+    Older versions did write such lines; they are removed when the file is opened.
+    """
+
+    def __init__(self, filename: str | Path) -> None:
+        super().__init__(str(filename))
+        _make_private(filename)
+        self._scrub()
+
+    def store_string(self, string: str) -> None:
+        if line_carries_secret(string):
+            return
+        super().store_string(string)
+
+    def _scrub(self) -> None:
+        """Drop keys that an earlier version saved, keeping everything else."""
+        try:
+            entries = list(self.load_history_strings())  # newest first
+            kept = [entry for entry in entries if not line_carries_secret(entry)]
+            if len(kept) == len(entries):
+                return
+            clean = Path(str(self.filename) + ".tmp")
+            _make_private(clean)
+            clean.write_bytes(b"")
+            rewritten = FileHistory(str(clean))
+            for entry in reversed(kept):  # oldest first, as they were written
+                rewritten.store_string(entry)
+            os.replace(clean, self.filename)
+        except OSError:
+            pass  # leave the history as it is rather than lose it
+
+
 def _build_history() -> History:
     """Return the prompt history, persisted between sessions when possible."""
     try:
         from kiwimatecoder.config import ensure_config_dir
 
-        return FileHistory(str(ensure_config_dir() / "history"))
+        return _PrivateHistory(ensure_config_dir() / "history")
     except OSError:
         # Unwritable home directory: keep history for this session only.
         return InMemoryHistory()
@@ -707,7 +759,7 @@ def _make_ask_user(console: Console):
         # Display the question in a styled panel for better visibility
         console.print(
             Panel(
-                f"[bold]{question}[/bold]",
+                f"[bold]{escape(question)}[/bold]",
                 title=f"[yellow]{t('ask.title')}[/yellow]",
                 border_style="yellow",
                 padding=(0, 1),
@@ -724,7 +776,7 @@ def _make_ask_user(console: Console):
 
         console.print(f"[dim]{t('ask.choose_option')}[/dim]")
         for index, option in enumerate(options, 1):
-            console.print(f"  [green]{index}[/green]. {option}")
+            console.print(f"  [green]{index}[/green]. {escape(option)}")
         console.print()
         console.print(f"[dim]{t('ask.instructions')}[/dim]")
 
@@ -739,7 +791,7 @@ def _make_ask_user(console: Console):
                 position = int(answer)
                 if 1 <= position <= len(options):
                     selected = options[position - 1]
-                    console.print(f"[green]✓ {t('ask.selected')}[/green] {selected}")
+                    console.print(f"[green]✓ {t('ask.selected')}[/green] {escape(selected)}")
                     return selected
                 console.print(
                     f"[yellow]{t('ask.invalid_option', count=len(options))}[/yellow]"
@@ -922,20 +974,21 @@ def _attach_images(line: str, session: Session) -> str:
         if len(session.pending_images) >= max_images:
             console.print(
                 f"[yellow]Image limit ({max_images} per turn) reached; "
-                f"{Path(path).name} was not attached.[/yellow]"
+                f"{escape(Path(path).name)} was not attached.[/yellow]"
             )
             break
         try:
             entry = images.encode_image(path, max_bytes)
         except ValueError as exc:
-            console.print(f"[yellow]{exc}[/yellow]")
+            console.print(f"[yellow]{escape(str(exc))}[/yellow]")
             continue
         session.pending_images.append(entry)
         attached.append(entry["name"])
 
     if attached:
         label = "image" if len(attached) == 1 else "images"
-        console.print(f"[dim]Attached {label}: {', '.join(attached)}[/dim]")
+        names = ", ".join(escape(name) for name in attached)
+        console.print(f"[dim]Attached {label}: {names}[/dim]")
     if not cleaned.strip() and attached:
         return "Please analyze the attached image(s)."
     return cleaned
@@ -964,6 +1017,28 @@ def _route_steering_line(session: Session, line: str) -> str:
     return "steered"
 
 
+def _read_command_input(message: str) -> str:
+    """Read one typed line for a slash command's follow-up question.
+
+    Commands run in a worker thread (see ``_dispatch_command``), where a plain
+    ``input()`` never sees Ctrl-C: the signal goes to the event loop in the
+    main thread, so the prompt ignores it and the REPL exits on the next Enter.
+    prompt_toolkit reads Ctrl-C and Ctrl-D as keys, as the selectors do, so they
+    raise here and the command cancels.
+    """
+    return read_line(message)
+
+
+def _read_secret_input(message: str) -> str:
+    """Like ``_read_command_input`` but nothing typed is echoed (an API key).
+
+    prompt_toolkit shows bullet characters instead of the text, and the text is
+    never written to the REPL's history file. Ctrl-C and Ctrl-D raise, so the
+    caller cancels the same way.
+    """
+    return read_line(message, is_password=True)
+
+
 async def _dispatch_command(line: str, session: Session) -> str:
     """Run a slash command off the event loop.
 
@@ -976,8 +1051,9 @@ async def _dispatch_command(line: str, session: Session) -> str:
         session,
         console,
         _select_command_option,
-        None,
+        _read_command_input,
         _select_command_options,
+        _read_secret_input,
     )
 
 
@@ -985,7 +1061,7 @@ async def _process_deferred_commands(session: Session) -> bool:
     """Run queued slash commands FIFO; returns True when one requests exit."""
     while session.deferred_commands:
         command = session.deferred_commands.popleft()
-        console.print(f"[dim]→ {command}[/dim]")
+        console.print(f"[dim]→ {escape(command)}[/dim]")
         if await _dispatch_command(command, session) == CommandResult.EXIT:
             session.deferred_commands.clear()
             return True
@@ -1107,14 +1183,14 @@ def _run_lifecycle_hooks(
         bus.emit(event, workspace=str(session.workspace_root))
         results = hooks.run_hooks(event, session=session, console=console)
     except Exception as exc:  # hooks must never prevent startup or shutdown
-        console.print(f"[dim]Hook error during {event}: {exc}[/dim]")
+        console.print(f"[dim]Hook error during {escape(event)}: {escape(str(exc))}[/dim]")
         return
     for result in results:
         if not result.ok:
             status = "timed out" if result.timed_out else f"exit {result.exit_code}"
             console.print(
-                f"[dim]Hook {event} failed ({status}): "
-                f"{redact(result.command)}[/dim]"
+                f"[dim]Hook {escape(event)} failed ({status}): "
+                f"{escape(redact(result.command))}[/dim]"
             )
 
 
@@ -1124,7 +1200,9 @@ def _load_session_plugins(
     """Load plugins before the agent exists; failures are dim, never fatal."""
     result = plugins.load_plugins(session.workspace_root, console=console, bus=bus)
     for name, reason in result.failed:
-        console.print(f"[dim]Plugin '{name}' failed to load: {reason}[/dim]")
+        console.print(
+            f"[dim]Plugin '{escape(name)}' failed to load: {escape(reason)}[/dim]"
+        )
     return result
 
 

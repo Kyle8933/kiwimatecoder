@@ -244,10 +244,17 @@ Config examples:
 /config provider remove local
 ```
 
-Running bare `/config` opens an interactive menu: pick **Keys**, choose a
-provider, then set (type a new key) or remove it. Every entry also works as a
-typed command as shown above, and `/config key set` / `/config key list` always
-show which file or environment variable the active key comes from.
+Running bare `/config` opens an interactive menu. Picking an entry lets you
+change that setting: toggles and fixed choices (theme, locale, log level, …) are
+picked from a list, free-form values (a proxy URL, an image size, a regex) are
+typed, and each list shows the current value. Sections with several independent
+settings, such as **Media** or **UI**, return to their list after each change
+until you pick **Done** (Ctrl-C also leaves; at a typed prompt, Ctrl-C or an
+empty line cancels just that entry). **Keys** works the same way: choose a
+provider, then set (type a new key, which is not shown as you type) or remove
+it. Only **Show** and **help** just print. Every entry also works as a typed
+command as shown above, and `/config key set` / `/config key list` always show
+which file or environment variable the active key comes from.
 
 ## Tools
 
@@ -294,7 +301,8 @@ The assistant has these capabilities, all scoped to the workspace:
 
 `run_bash` starts a fresh process per call, so `cd` and exported environment
 variables never survive between commands. The `shell` tool instead drives one
-long-lived shell per session (`/bin/sh` on POSIX, `cmd.exe` on Windows) so state
+long-lived shell per session (`/bin/sh` on POSIX, Git Bash on Windows; install
+Git for Windows, or turn it off with `config shell persistent off`) so state
 sticks:
 
 ```text
@@ -1605,6 +1613,9 @@ kiwimatecoder config budget show
 kiwimatecoder config budget clear
 ```
 
+A token limit is a whole number from 1 to 1,000,000,000,000,000; use `clear`
+for no limit.
+
 ## Audit log
 
 Every tool decision (allowed, denied, dry-run, auto-verify) is appended to
@@ -1665,7 +1676,9 @@ receive `KIWI_EVENT` and `KIWI_WORKSPACE`, plus `KIWI_TOOL_NAME`,
 `KIWI_TOOL_OK` (`true`/`false`), `KIWI_TOOL_ARGS` (JSON; secrets redacted), and
 `KIWI_TOOL_DURATION_MS` for tool events. A non-zero exit from a `pre_tool` hook
 blocks the tool call; every hook times out after 60 seconds and never crashes
-the agent. `/config` does not manage hooks yet — edit the JSON directly.
+the agent. Commands run through the platform shell (`/bin/sh` on POSIX,
+`cmd.exe` on Windows), so write them in that shell's syntax; the examples above
+are POSIX. `/config` does not manage hooks yet — edit the JSON directly.
 
 ## Configuration
 

@@ -539,6 +539,73 @@ def test_setup_unsloth_without_key_prompts_instead_of_skipping(monkeypatch):
     assert config.get_key("unsloth") is None
 
 
+@pytest.mark.parametrize("terminal", [True, False])
+def test_setup_key_prompt_hides_input_only_on_a_terminal(monkeypatch, terminal):
+    seen: dict[str, object] = {}
+
+    def fake_input(prompt="", **kwargs):
+        seen["prompt"] = prompt
+        seen.update(kwargs)
+        return "  sk-typed  "
+
+    monkeypatch.setattr(main.console, "input", fake_input)
+    monkeypatch.setattr(ui, "hide_typed_secrets", lambda: terminal)
+
+    assert main._interactive_api_key() == "sk-typed"
+    assert seen == {"prompt": "key> ", "password": terminal}
+
+
+def test_setup_key_prompt_cancel_returns_none(monkeypatch):
+    def cancelled(prompt="", **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(main.console, "input", cancelled)
+
+    assert main._interactive_api_key() is None
+
+
+def test_setup_reads_a_piped_key_from_stdin_as_before(monkeypatch):
+    # No terminal: nothing is echoed, so the key is read from stdin, not from a
+    # keyboard that a script cannot reach.
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
+    monkeypatch.setattr(main, "_interactive_select_model", lambda *a, **k: "unsloth-model")
+    _forbid_fetch(monkeypatch)
+
+    result = CliRunner().invoke(
+        main.app, ["setup", "--provider", "unsloth"], input="sk-unsloth-piped\n"
+    )
+
+    assert config.get_key("unsloth") == "sk-unsloth-piped", result.output
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "1e999"])
+def test_cli_budget_cost_rejects_non_finite_limits(value):
+    result = CliRunner().invoke(main.app, ["config", "budget", "cost", value])
+
+    assert result.exit_code == 1
+    assert "finite number" in result.output
+    assert config.get_budget() == {}
+
+
+def test_cli_budget_tokens_rejects_a_limit_above_the_cap():
+    result = CliRunner().invoke(main.app, ["config", "budget", "tokens", "1" + "0" * 400])
+
+    assert result.exit_code == 1
+    assert "at most 1,000,000,000,000,000" in result.output
+    assert config.get_budget() == {}
+
+
+@pytest.mark.parametrize("action", ["cost", "tokens"])
+def test_cli_budget_error_echoes_a_bracketed_value_literally(action):
+    # The message quotes the rejected value; Rich must not parse it as markup
+    # (an unmatched "[/x]" used to raise MarkupError).
+    result = CliRunner().invoke(main.app, ["config", "budget", action, "[/x]"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)  # a clean exit, not a crash
+    assert "[/x]" in result.output
+
+
 def test_setup_unsloth_with_key_saves_and_selects(monkeypatch):
     monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
 
@@ -1502,3 +1569,51 @@ def test_launch_quick_start_setup_model_is_used_without_asking_again(monkeypatch
     assert asked == ["openrouter"]
     assert captured["session"].model == "vendor/from-setup"
     assert "No model chosen" not in result.output
+
+
+def _save_stale_session(tmp_path, monkeypatch, name):
+    from kiwimatecoder.session import Session, save_session
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr("kiwimatecoder.session._sessions_dir", lambda: sessions_dir)
+    config.add_provider("foo", "Foo", "https://api.example.com/v1", "foo-model")
+    save_session(
+        Session(
+            provider_id="foo",
+            model="foo-model",
+            workspace_root=tmp_path,
+            messages=[{"role": "user", "content": "hi"}],
+        ),
+        name,
+    )
+    config.remove_provider("foo")
+
+
+def test_resume_of_a_session_whose_provider_was_removed_exits_nonzero(tmp_path, monkeypatch):
+    _save_stale_session(tmp_path, monkeypatch, "stale")
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
+
+    result = CliRunner().invoke(main.app, ["--resume", "stale"])
+
+    assert result.exit_code == 1
+    assert "Could not resume session 'stale'" in result.output
+    assert "provider 'foo'" in result.output
+
+
+def test_continue_with_a_session_whose_provider_was_removed_starts_fresh(tmp_path, monkeypatch):
+    from kiwimatecoder import repl
+
+    _save_stale_session(tmp_path, monkeypatch, "last")
+    config.set_provider_model("openrouter", "test-model")
+    captured = {}
+    monkeypatch.setattr(repl, "run", lambda session: captured.setdefault("session", session))
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
+
+    result = CliRunner().invoke(main.app, ["--continue"])
+
+    assert result.exit_code == 0
+    assert "Starting fresh" in result.output
+    assert "provider 'foo'" in result.output
+    assert captured["session"].provider_id == "openrouter"
+    assert captured["session"].messages == []

@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from kiwimatecoder import config, sandbox
 from kiwimatecoder.sandbox import (
     FALLBACK_WARNING,
+    _sbpl_string,
     bwrap_command,
     sandbox_available,
     seatbelt_command,
@@ -78,7 +79,7 @@ def test_seatbelt_profile_allows_network_and_broad_reads(tmp_path):
     assert "(allow file-read*)" in profile
     assert "(allow network*)" in profile
     assert "(deny network*)" not in profile
-    assert f'(subpath "{tmp_path}")' in profile
+    assert f"(subpath {_sbpl_string(tmp_path)})" in profile
     assert '(subpath "/tmp")' in profile
     assert '(subpath "/private/tmp")' in profile
 
@@ -91,13 +92,24 @@ def test_seatbelt_profile_denies_network_and_adds_writable_paths(tmp_path):
 
     assert "(deny network*)" in profile
     assert "(allow network*)" not in profile
-    assert f'(subpath "{extra}")' in profile
+    assert f"(subpath {_sbpl_string(extra)})" in profile
     write_rule = next(
         line for line in profile.splitlines() if "file-write" in line
     )
-    assert f'(subpath "{tmp_path}")' in write_rule
-    assert f'(subpath "{extra}")' in write_rule
+    assert f"(subpath {_sbpl_string(tmp_path)})" in write_rule
+    assert f"(subpath {_sbpl_string(extra)})" in write_rule
     assert '(subpath "/srv/secret")' not in profile
+
+
+def test_seatbelt_profile_escapes_backslashes_and_quotes_in_paths():
+    # Windows-style paths contain backslashes, which are escape characters in SBPL strings.
+    profile = seatbelt_profile(
+        workspace="C:\\Users\\me\\ws",
+        extra_writable=['odd"dir'],
+    )
+
+    assert '(subpath "C:\\\\Users\\\\me\\\\ws")' in profile
+    assert '(subpath "odd\\"dir")' in profile
 
 
 def test_seatbelt_command_shape(tmp_path):

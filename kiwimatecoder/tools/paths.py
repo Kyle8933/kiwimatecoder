@@ -217,3 +217,18 @@ def display_path(path: Path, workspace_root: Path) -> str:
         return str(path.resolve().relative_to(root))
     except ValueError:
         return str(path)
+
+
+def workspace_ref(path: Path, workspace_root: Path) -> str:
+    """Return the portable form of a workspace-relative path, for storing in the session.
+
+    Unlike :func:`display_path` this always uses forward slashes, so entries in
+    ``touched_files`` / ``context_files`` mean the same thing in a session JSON saved
+    on Windows and loaded on POSIX (or vice versa). A path outside the workspace is
+    returned unchanged.
+    """
+    root = workspace_root.resolve()
+    try:
+        return path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return str(path)

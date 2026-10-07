@@ -41,12 +41,13 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import socket
 import time
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from kiwimatecoder import catalog
@@ -254,9 +255,49 @@ def load_project_config(project_root: Path | str | None = None) -> dict[str, Any
     return stored
 
 
+# Sections the rest of the module indexes as maps (``cfg["keys"][provider_id]``).
+_MAP_SECTIONS = ("keys", "providers", "model_filters")
+
+
+def _as_map(value: object) -> dict[str, Any]:
+    """A copy of ``value`` when it is a map, else an empty map.
+
+    A hand-edited file, a project ``.kiwimatecoder.json`` or a team policy can
+    hold a list or a string where a section belongs. Such a value counts as
+    empty (``validate_config`` still reports it) instead of failing every
+    command that loads the config.
+    """
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _malformed_map_sections() -> dict[str, Any]:
+    """Raw values of the map sections that are not maps, as stored on disk.
+
+    ``load_config`` replaces them with empty maps, so ``validate_config`` reads
+    the files again to report them.
+    """
+    found: dict[str, Any] = {}
+    stored: Any = {}
+    if CONFIG_FILE.exists():
+        try:
+            stored = json.loads(CONFIG_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            stored = {}
+    for source in (stored, load_project_config()):
+        if not isinstance(source, dict):
+            continue
+        for section in _MAP_SECTIONS:
+            value = source.get(section)
+            if value is not None and not isinstance(value, dict):
+                found[section] = value
+    return found
+
+
 def _apply_project_overlay(cfg: dict[str, Any], project: dict[str, Any]) -> None:
     """Deep-merge the project config onto ``cfg`` (project values win)."""
     for key, value in project.items():
+        if key in _MAP_SECTIONS and not isinstance(value, dict):
+            continue  # reported by validate_config; never replaces the global map
         if isinstance(value, dict) and isinstance(cfg.get(key), dict):
             merged = dict(cfg[key])
             for sub_key, sub_value in value.items():
@@ -297,9 +338,8 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
                     if v is not None or k == "selected_model"
                 }
             )
-            cfg["keys"] = dict(stored.get("keys") or {})
-            cfg["providers"] = dict(stored.get("providers") or {})
-            cfg["model_filters"] = dict(stored.get("model_filters") or {})
+            for section in _MAP_SECTIONS:
+                cfg[section] = _as_map(stored.get(section))
     else:
         legacy_key = _read_legacy_key()
         if legacy_key:
@@ -378,6 +418,8 @@ def load_config(project_root: Path | str | None = None) -> dict[str, Any]:
             {"active_providers": cfg.get("active_providers")},
             str(cfg.get("selected_provider") or DEFAULT_PROVIDER_ID),
         )
+    for section in _MAP_SECTIONS:  # a team policy may also carry a wrong type
+        cfg[section] = _as_map(cfg.get(section))
     cfg["version"] = CONFIG_VERSION
     return cfg
 
@@ -416,7 +458,7 @@ def _normalized_provider_models(raw: object) -> dict[str, str]:
 def _stored_version(stored: dict[str, Any]) -> int:
     try:
         return int(stored.get("version") or 1)
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         return 1
 
 
@@ -722,10 +764,11 @@ def update_provider(
         raise ValueError(f"'{provider_id}' is built in and cannot be edited.")
 
     cfg = load_config()
-    if provider_id not in cfg["providers"]:
+    entry = cfg["providers"].get(provider_id)
+    if not isinstance(entry, dict):  # missing, or unusable (get_provider_config agrees)
         raise ValueError(f"Unknown custom provider '{provider_id}'.")
 
-    data = dict(cfg["providers"][provider_id])
+    data = dict(entry)
     if name is not None:
         if not name.strip():
             raise ValueError("Provider name is required.")
@@ -776,7 +819,13 @@ def get_key(provider_id: str) -> str | None:
     env_key = os.environ.get(provider.key_env)
     if env_key is not None:
         return env_key or None  # exported empty string -> treat as "no key"
-    return load_config()["keys"].get(provider_id)
+    return _stored_key(provider_id)
+
+
+def _stored_key(provider_id: str) -> str | None:
+    """The key stored for ``provider_id``, or None when it is not a string."""
+    value = load_config()["keys"].get(provider_id)
+    return value if isinstance(value, str) else None
 
 
 def get_key_env_override(provider_id: str) -> str | None:
@@ -807,7 +856,7 @@ def key_source(provider_id: str) -> dict[str, Any]:
     env_key = os.environ.get(provider.key_env)
     if env_key is not None:
         return {"origin": "env", "env": provider.key_env, "value": env_key or None}
-    stored = load_config()["keys"].get(provider_id)
+    stored = _stored_key(provider_id)
     if stored:
         # A key read from the flat legacy file sits in the keys map too, so
         # distinguish it for messaging when the JSON config has never been written.
@@ -1035,11 +1084,16 @@ def get_model_filter(provider_id: str) -> dict[str, Any]:
     """Return the model visibility filter for a provider."""
     get_provider_config(provider_id)
     cfg = load_config()
-    stored = (cfg.get("model_filters") or {}).get(provider_id) or {}
+    stored = cfg["model_filters"].get(provider_id)
+    if not isinstance(stored, dict):
+        stored = {}
     mode = stored.get("mode") or "all"
     if mode not in {"all", "allow", "deny"}:
         mode = "all"
-    models = [str(model) for model in stored.get("models", []) if str(model).strip()]
+    raw_models = stored.get("models")
+    if not isinstance(raw_models, list):
+        raw_models = []
+    models = [str(model) for model in raw_models if str(model).strip()]
     return {"mode": mode, "models": models}
 
 
@@ -1088,6 +1142,16 @@ REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 OUTPUT_STYLES = ("default", "concise", "explanatory", "code")
 
 
+def _permissions_section(cfg: dict[str, Any]) -> dict[str, Any]:
+    """A copy of the stored ``tool_permissions`` map, ready to be updated.
+
+    ``get_always_allowed_tools`` already treats anything but a map as "no
+    approvals"; the writers do the same instead of failing on it, so a
+    hand-edited list or string is replaced by a proper map on the next write.
+    """
+    return _as_map(cfg.get("tool_permissions"))
+
+
 def get_always_allowed_tools(cfg: dict[str, Any] | None = None) -> list[str]:
     """Return tools the user permanently approved with "always"."""
     cfg = cfg or load_config()
@@ -1106,7 +1170,7 @@ def persist_always_allowed_tool(tool_name: str) -> list[str]:
     if not name:
         return current
     allowed = list(dict.fromkeys([*current, name]))
-    perms = dict(cfg.get("tool_permissions") or {})
+    perms = _permissions_section(cfg)
     perms["always_allow"] = allowed
     cfg["tool_permissions"] = perms
     save_config(cfg)
@@ -1119,7 +1183,7 @@ def remove_always_allowed_tool(tool_name: str) -> bool:
     current = get_always_allowed_tools(cfg)
     if tool_name not in current:
         return False
-    perms = dict(cfg.get("tool_permissions") or {})
+    perms = _permissions_section(cfg)
     perms["always_allow"] = [name for name in current if name != tool_name]
     cfg["tool_permissions"] = perms
     save_config(cfg)
@@ -1130,7 +1194,7 @@ def clear_always_allowed_tools() -> int:
     """Remove every persisted tool approval, returning how many were cleared."""
     cfg = load_config()
     current = get_always_allowed_tools(cfg)
-    perms = dict(cfg.get("tool_permissions") or {})
+    perms = _permissions_section(cfg)
     perms["always_allow"] = []
     cfg["tool_permissions"] = perms
     save_config(cfg)
@@ -1520,23 +1584,82 @@ def set_verify_command(command: str | None) -> str:
     return cfg["verify_command"]
 
 
+# Reading a number can fail three ways: it is not a number (ValueError,
+# TypeError) or it is too large to convert (OverflowError: ``int(float("inf"))``
+# for a hand-edited ``1e999``, ``float(10**400)``). All of them mean "invalid".
+_NUMBER_ERRORS = (TypeError, ValueError, OverflowError)
+
+
+# A token budget this large is no limit at all. The cap also keeps the number
+# usable: past about 1.8e308 an int no longer converts to a float, so the
+# ``0.8 * max_tokens`` warning and the ``:,.0f`` label raised OverflowError. At
+# 10**15 (below 2**53) the conversion is exact.
+BUDGET_TOKENS_MAX = 10**15
+
+
+def _budget_tokens(value: Any) -> int:
+    """Validate a ``max_tokens`` budget: a whole number from 1 to ``BUDGET_TOKENS_MAX``."""
+    try:
+        tokens = int(value)
+    except _NUMBER_ERRORS as exc:
+        raise ValueError(
+            f"max_tokens budget must be a whole number, not {value!r}."
+        ) from exc
+    if tokens < 1:
+        raise ValueError("max_tokens budget must be at least 1.")
+    if tokens > BUDGET_TOKENS_MAX:
+        raise ValueError(
+            f"max_tokens budget must be at most {BUDGET_TOKENS_MAX:,}."
+        )
+    return tokens
+
+
+def _budget_cost(value: Any) -> float:
+    """Validate a ``max_cost_usd`` budget: a finite number above zero.
+
+    ``nan`` and ``inf`` must be rejected explicitly: ``nan <= 0`` is False and
+    ``inf`` is positive, so neither fails the range check, yet a limit of
+    either never trips, and both are written to the JSON file as the
+    non-standard ``NaN``/``Infinity``.
+    """
+    try:
+        cost = float(value)
+    except _NUMBER_ERRORS as exc:
+        raise ValueError(
+            f"max_cost_usd budget must be a number, not {value!r}."
+        ) from exc
+    if not math.isfinite(cost):
+        raise ValueError(
+            f"max_cost_usd budget must be a finite number, not {value!r}."
+        )
+    if cost <= 0:
+        raise ValueError("max_cost_usd budget must be positive.")
+    return cost
+
+
 def get_budget(cfg: dict[str, Any] | None = None) -> dict[str, float]:
-    """Return the session budget: max_tokens and/or max_cost_usd."""
+    """Return the session budget: max_tokens and/or max_cost_usd.
+
+    A stored limit that :func:`set_budget` would reject (not a number, not
+    finite, below the minimum) is ignored, like a malformed value in any other
+    section. This matters beyond tidiness: the agent treats a negative limit as
+    already spent and would refuse every request as "Budget reached".
+    """
     cfg = cfg or load_config()
     stored = cfg.get("budget") or {}
     if not isinstance(stored, dict):
         return {}
     budget: dict[str, float] = {}
-    try:
-        if stored.get("max_tokens") is not None:
-            budget["max_tokens"] = int(stored["max_tokens"])
-    except (TypeError, ValueError):
-        pass
-    try:
-        if stored.get("max_cost_usd") is not None:
-            budget["max_cost_usd"] = float(stored["max_cost_usd"])
-    except (TypeError, ValueError):
-        pass
+    for key, validate in (
+        ("max_tokens", _budget_tokens),
+        ("max_cost_usd", _budget_cost),
+    ):
+        if stored.get(key) is None:
+            continue
+        try:
+            budget[key] = validate(stored[key])
+        except ValueError:
+            pass  # unusable: ignored here, reported by validate_config
     return budget
 
 
@@ -1560,23 +1683,17 @@ def set_budget(
     Use :func:`clear_budget` to remove every limit at once.
     """
     cfg = load_config()
-    current = dict(cfg.get("budget") or {})
+    current = _as_map(cfg.get("budget"))
     if max_tokens is not _UNSET:
         if max_tokens is None:
             current.pop("max_tokens", None)
         else:
-            tokens = int(max_tokens)
-            if tokens < 1:
-                raise ValueError("max_tokens budget must be at least 1.")
-            current["max_tokens"] = tokens
+            current["max_tokens"] = _budget_tokens(max_tokens)
     if max_cost_usd is not _UNSET:
         if max_cost_usd is None:
             current.pop("max_cost_usd", None)
         else:
-            cost = float(max_cost_usd)
-            if cost <= 0:
-                raise ValueError("max_cost_usd budget must be positive.")
-            current["max_cost_usd"] = cost
+            current["max_cost_usd"] = _budget_cost(max_cost_usd)
     cfg["budget"] = current
     save_config(cfg)
     return get_budget(cfg)
@@ -1603,7 +1720,7 @@ def get_subagents(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         enabled = True
     try:
         max_steps = int(stored.get("max_steps", SUBAGENT_MAX_STEPS_DEFAULT))
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         max_steps = SUBAGENT_MAX_STEPS_DEFAULT
     if not SUBAGENT_MAX_STEPS_MIN <= max_steps <= SUBAGENT_MAX_STEPS_MAX:
         max_steps = SUBAGENT_MAX_STEPS_DEFAULT
@@ -1635,7 +1752,7 @@ def set_subagents(
     if max_steps is not None:
         try:
             steps = int(max_steps)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("subagents max_steps must be an integer.") from exc
         if not SUBAGENT_MAX_STEPS_MIN <= steps <= SUBAGENT_MAX_STEPS_MAX:
             raise ValueError(
@@ -1716,7 +1833,7 @@ def set_browser(
     if timeout_ms is not None:
         try:
             value = int(timeout_ms)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("browser timeout_ms must be an integer.") from exc
         if not BROWSER_TIMEOUT_MIN <= value <= BROWSER_TIMEOUT_MAX:
             raise ValueError(
@@ -1794,7 +1911,7 @@ def set_shell_config(
     if timeout is not None:
         try:
             value = int(timeout)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("shell timeout must be an integer.") from exc
         if not SHELL_TIMEOUT_MIN <= value <= SHELL_TIMEOUT_MAX:
             raise ValueError(
@@ -1805,7 +1922,7 @@ def set_shell_config(
     if max_jobs is not None:
         try:
             jobs = int(max_jobs)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("shell max_jobs must be an integer.") from exc
         if not SHELL_MAX_JOBS_MIN <= jobs <= SHELL_MAX_JOBS_MAX:
             raise ValueError(
@@ -1975,7 +2092,7 @@ def set_remote(
     if port is not None:
         try:
             port_number = int(port)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("remote port must be an integer.") from exc
         if not REMOTE_PORT_MIN <= port_number <= REMOTE_PORT_MAX:
             raise ValueError(
@@ -2154,7 +2271,7 @@ def set_acp(
     if permission_timeout is not None:
         try:
             value = int(permission_timeout)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("acp permission_timeout must be an integer.") from exc
         if not ACP_TIMEOUT_MIN <= value <= ACP_TIMEOUT_MAX:
             raise ValueError(
@@ -2172,7 +2289,7 @@ def get_compact_at_tokens(cfg: dict[str, Any] | None = None) -> int:
     cfg = cfg or load_config()
     try:
         value = int(cfg.get("compact_at_tokens", 64000))
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         return 64000
     return value if value > 0 else 64000
 
@@ -2196,7 +2313,7 @@ def get_context_window(cfg: dict[str, Any] | None = None) -> int:
     cfg = cfg or load_config()
     try:
         value = int(cfg.get("context_window", 128000))
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         return 128000
     return value if value > 0 else 128000
 
@@ -2216,7 +2333,12 @@ def set_context_window(tokens: int | str | None) -> int:
 
 
 def get_sampling(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return validated sampling parameters (only explicitly set keys)."""
+    """Return validated sampling parameters (only explicitly set keys).
+
+    A stored value is kept only when :func:`set_sampling` would accept it, so a
+    hand-edited ``"reasoning_effort": "[/x]"`` or ``"temperature": 5`` is
+    ignored here and reported by ``validate_config``.
+    """
     cfg = cfg or load_config()
     stored = cfg.get("sampling") or {}
     if not isinstance(stored, dict):
@@ -2227,30 +2349,30 @@ def get_sampling(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         if value is None:
             continue
         try:
-            if key == "temperature":
-                clean[key] = float(value)
-            elif key == "top_p":
-                clean[key] = float(value)
-            elif key == "max_tokens":
-                clean[key] = int(value)
-            else:
-                effort = str(value).strip().lower()
-                if effort:
-                    clean[key] = effort
-        except (TypeError, ValueError):
-            continue
+            clean[key] = _coerce_sampling(key, value)
+        except ValueError:
+            continue  # unusable: ignored here, reported by validate_config
     return clean
 
 
 def _coerce_sampling(key: str, value: Any) -> Any:
     if key in ("temperature", "top_p"):
-        number = float(value)
+        try:
+            number = float(value)
+        except _NUMBER_ERRORS as exc:
+            raise ValueError(f"{key} must be a number, not {value!r}.") from exc
         limit = 2.0 if key == "temperature" else 1.0
+        # nan and inf fail this range check too (every comparison with nan is False).
         if not 0.0 <= number <= limit:
             raise ValueError(f"{key} must be between 0 and {limit:g}.")
         return number
     if key == "max_tokens":
-        tokens = int(value)
+        try:
+            tokens = int(value)
+        except _NUMBER_ERRORS as exc:
+            raise ValueError(
+                f"max_tokens must be a whole number, not {value!r}."
+            ) from exc
         if tokens < 1:
             raise ValueError("max_tokens must be at least 1.")
         return tokens
@@ -2265,7 +2387,7 @@ def _coerce_sampling(key: str, value: Any) -> Any:
 def set_sampling(updates: dict[str, Any]) -> dict[str, Any]:
     """Set/clear sampling parameters (a value of None or "" clears a key)."""
     cfg = load_config()
-    current = dict(cfg.get("sampling") or {})
+    current = _as_map(cfg.get("sampling"))
     for key, value in updates.items():
         if key not in SAMPLING_KEYS:
             raise ValueError(
@@ -2351,13 +2473,13 @@ def get_web(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     effective = dict(WEB_DEFAULTS)
     try:
         max_chars = int(stored.get("max_chars", WEB_DEFAULTS["max_chars"]))
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         max_chars = int(WEB_DEFAULTS["max_chars"])
     if WEB_MAX_CHARS_MIN <= max_chars <= WEB_MAX_CHARS_MAX:
         effective["max_chars"] = max_chars
     try:
         timeout = float(stored.get("timeout", WEB_DEFAULTS["timeout"]))
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         timeout = float(WEB_DEFAULTS["timeout"])
     if WEB_TIMEOUT_MIN <= timeout <= WEB_TIMEOUT_MAX:
         effective["timeout"] = timeout
@@ -2375,7 +2497,7 @@ def get_web(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
 def _validate_web_max_chars(value: Any) -> int:
     try:
         cleaned = int(value)
-    except (TypeError, ValueError) as exc:
+    except _NUMBER_ERRORS as exc:
         raise ValueError("web max_chars must be an integer.") from exc
     if not WEB_MAX_CHARS_MIN <= cleaned <= WEB_MAX_CHARS_MAX:
         raise ValueError(
@@ -2388,7 +2510,7 @@ def _validate_web_max_chars(value: Any) -> int:
 def _validate_web_timeout(value: Any) -> float:
     try:
         cleaned = float(value)
-    except (TypeError, ValueError) as exc:
+    except _NUMBER_ERRORS as exc:
         raise ValueError("web timeout must be a number of seconds.") from exc
     if not WEB_TIMEOUT_MIN <= cleaned <= WEB_TIMEOUT_MAX:
         raise ValueError(
@@ -2508,7 +2630,7 @@ def get_memory(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         effective["enabled"] = enabled
     try:
         max_bytes = int(stored.get("max_bytes", MEMORY_DEFAULTS["max_bytes"]))
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         max_bytes = int(MEMORY_DEFAULTS["max_bytes"])
     if MEMORY_MAX_BYTES_MIN <= max_bytes <= MEMORY_MAX_BYTES_MAX:
         effective["max_bytes"] = max_bytes
@@ -2534,7 +2656,7 @@ def set_memory(
     if max_bytes is not None:
         try:
             value = int(max_bytes)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("memory max_bytes must be an integer.") from exc
         if not MEMORY_MAX_BYTES_MIN <= value <= MEMORY_MAX_BYTES_MAX:
             raise ValueError(
@@ -2572,7 +2694,7 @@ def get_vision(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         max_bytes = int(
             stored.get("max_image_bytes", VISION_DEFAULTS["max_image_bytes"])
         )
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         max_bytes = int(VISION_DEFAULTS["max_image_bytes"])
     if VISION_MAX_IMAGE_BYTES_MIN <= max_bytes <= VISION_MAX_IMAGE_BYTES_MAX:
         effective["max_image_bytes"] = max_bytes
@@ -2580,7 +2702,7 @@ def get_vision(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         max_images = int(
             stored.get("max_images_per_turn", VISION_DEFAULTS["max_images_per_turn"])
         )
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         max_images = int(VISION_DEFAULTS["max_images_per_turn"])
     if VISION_MAX_IMAGES_MIN <= max_images <= VISION_MAX_IMAGES_MAX:
         effective["max_images_per_turn"] = max_images
@@ -2602,7 +2724,7 @@ def set_vision(
     if max_image_bytes is not None:
         try:
             value = int(max_image_bytes)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("vision max_image_bytes must be an integer.") from exc
         if not VISION_MAX_IMAGE_BYTES_MIN <= value <= VISION_MAX_IMAGE_BYTES_MAX:
             raise ValueError(
@@ -2613,7 +2735,7 @@ def set_vision(
     if max_images_per_turn is not None:
         try:
             count = int(max_images_per_turn)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError(
                 "vision max_images_per_turn must be an integer."
             ) from exc
@@ -2652,13 +2774,23 @@ VIDEO_DURATION_MIN = 1
 VIDEO_DURATION_MAX = 60
 
 
+def has_path_anchor(path: PurePath) -> bool:
+    """Whether ``path`` is absolute, rooted, or drive-qualified (not workspace-relative).
+
+    On Windows a rooted path such as "/etc" or a drive-relative one such as "C:foo"
+    is not ``is_absolute()``, yet joining it onto a workspace root escapes the
+    workspace. On POSIX this is the same as ``is_absolute()``.
+    """
+    return path.is_absolute() or bool(path.root) or bool(path.drive)
+
+
 def _valid_media_output_dir(value: object) -> str | None:
     """Return a relative output dir that stays inside the workspace, or None."""
     text = str(value or "").strip()
     if not text or "~" in text:
         return None
     path = Path(text)
-    if path.is_absolute():
+    if has_path_anchor(path):
         return None
     if any(part == ".." for part in path.parts):
         return None
@@ -2764,7 +2896,7 @@ def set_media(
         try:
             # Accept "8" and "8s" alike.
             seconds = int(str(video_duration).strip().rstrip("sS"))
-        except ValueError:
+        except (ValueError, OverflowError):
             seconds = 0
         if not VIDEO_DURATION_MIN <= seconds <= VIDEO_DURATION_MAX:
             raise ValueError(
@@ -2877,7 +3009,7 @@ def set_telemetry(
     if max_log_bytes is not None:
         try:
             value = int(max_log_bytes)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("telemetry max_log_bytes must be an integer.") from exc
         if not TELEMETRY_MAX_LOG_BYTES_MIN <= value <= TELEMETRY_MAX_LOG_BYTES_MAX:
             raise ValueError(
@@ -2966,7 +3098,7 @@ def get_lsp(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         effective["diagnostics_after_edits"] = after_edits
     try:
         timeout = float(stored.get("timeout", LSP_DEFAULTS["timeout"]))
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         timeout = float(LSP_DEFAULTS["timeout"])
     if LSP_TIMEOUT_MIN <= timeout <= LSP_TIMEOUT_MAX:
         effective["timeout"] = timeout
@@ -3004,7 +3136,7 @@ def set_lsp(
     if timeout is not None:
         try:
             value = float(timeout)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("lsp timeout must be a number of seconds.") from exc
         if not LSP_TIMEOUT_MIN <= value <= LSP_TIMEOUT_MAX:
             raise ValueError(
@@ -3050,7 +3182,7 @@ def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int
     """Coerce ``value`` to an int inside ``[minimum, maximum]``, else default."""
     try:
         number = int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         return default
     return number if minimum <= number <= maximum else default
 
@@ -3130,7 +3262,7 @@ def set_index(
     if max_files is not None:
         try:
             value = int(max_files)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("index max_files must be an integer.") from exc
         if not INDEX_MAX_FILES_MIN <= value <= INDEX_MAX_FILES_MAX:
             raise ValueError(
@@ -3141,7 +3273,7 @@ def set_index(
     if max_file_bytes is not None:
         try:
             size = int(max_file_bytes)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("index max_file_bytes must be an integer.") from exc
         if not INDEX_MAX_FILE_BYTES_MIN <= size <= INDEX_MAX_FILE_BYTES_MAX:
             raise ValueError(
@@ -3162,7 +3294,7 @@ def set_index(
     if embed_batch_size is not None:
         try:
             batch = int(embed_batch_size)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError(
                 "index embeddings batch_size must be an integer."
             ) from exc
@@ -3311,7 +3443,7 @@ def set_ui(
     if notify_after_seconds is not None:
         try:
             seconds = int(notify_after_seconds)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("UI notify_after_seconds must be an integer.") from exc
         if seconds < 0:
             raise ValueError("UI notify_after_seconds must be zero or more seconds.")
@@ -3363,7 +3495,7 @@ def get_model_routing(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         max_chars = int(
             stored.get("simple_max_chars", MODEL_ROUTING_DEFAULTS["simple_max_chars"])
         )
-    except (TypeError, ValueError):
+    except _NUMBER_ERRORS:
         max_chars = int(MODEL_ROUTING_DEFAULTS["simple_max_chars"])
     if max_chars < 1:
         max_chars = int(MODEL_ROUTING_DEFAULTS["simple_max_chars"])
@@ -3404,7 +3536,7 @@ def set_model_routing(
     if simple_max_chars is not None:
         try:
             value = int(simple_max_chars)
-        except (TypeError, ValueError) as exc:
+        except _NUMBER_ERRORS as exc:
             raise ValueError("simple_max_chars must be a positive integer.") from exc
         if value < 1:
             raise ValueError("simple_max_chars must be a positive integer.")
@@ -3502,15 +3634,9 @@ def _normalize_budget(raw: object) -> dict[str, float]:
         )
     budget: dict[str, float] = {}
     if raw.get("max_tokens") is not None:
-        tokens = int(raw["max_tokens"])
-        if tokens < 1:
-            raise ValueError("max_tokens budget must be at least 1.")
-        budget["max_tokens"] = tokens
+        budget["max_tokens"] = _budget_tokens(raw["max_tokens"])
     if raw.get("max_cost_usd") is not None:
-        cost = float(raw["max_cost_usd"])
-        if cost <= 0:
-            raise ValueError("max_cost_usd budget must be positive.")
-        budget["max_cost_usd"] = cost
+        budget["max_cost_usd"] = _budget_cost(raw["max_cost_usd"])
     return budget
 
 
@@ -3671,7 +3797,7 @@ def save_profile(
     if values is None:
         values = _capture_profile_values(cfg)
     profile = _normalize_profile(name, values, cfg)
-    stored = dict(cfg.get("profiles") or {})
+    stored = _as_map(cfg.get("profiles"))
     stored[_profile_name(name)] = profile
     cfg["profiles"] = stored
     save_config(cfg)
@@ -3709,7 +3835,7 @@ def _apply_profile_values(cfg: dict[str, Any], profile: dict[str, Any]) -> None:
             "deny": list(profile["command_rules"]["deny"]),
         }
     if "always_allowed" in profile:
-        perms = dict(cfg.get("tool_permissions") or {})
+        perms = _permissions_section(cfg)
         perms["always_allow"] = list(profile["always_allowed"])
         cfg["tool_permissions"] = perms
 
@@ -3734,7 +3860,7 @@ def remove_profile(name: str) -> bool:
     if not cleaned:
         return False
     cfg = load_config()
-    stored = dict(cfg.get("profiles") or {})
+    stored = _as_map(cfg.get("profiles"))
     if cleaned not in stored:
         return False
     del stored[cleaned]
@@ -3746,7 +3872,7 @@ def remove_profile(name: str) -> bool:
 def rename_profile(old: str, new: str) -> bool:
     """Rename a saved profile. Returns whether the old name existed."""
     cfg = load_config()
-    stored = dict(cfg.get("profiles") or {})
+    stored = _as_map(cfg.get("profiles"))
     old_clean = str(old).strip()
     if old_clean not in stored:
         return False
@@ -3831,6 +3957,9 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
     top-level keys are warnings so configs written by newer releases still
     pass; every other structural problem is an error.
     """
+    # load_config() hands back empty maps for sections of the wrong type; what
+    # is on disk is checked for them so that they are reported.
+    on_disk = _malformed_map_sections() if cfg is None else {}
     cfg = cfg if cfg is not None else load_config()
     issues: list[dict[str, str]] = []
 
@@ -3845,7 +3974,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
         if key not in _KNOWN_CONFIG_KEYS:
             add("warning", str(key), f"Unknown top-level key '{key}' is ignored.")
 
-    keys = cfg.get("keys")
+    keys = on_disk.get("keys", cfg.get("keys"))
     if not isinstance(keys, dict):
         add("error", "keys", "'keys' must be an object mapping provider -> key.")
     else:
@@ -3853,7 +3982,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if not isinstance(value, str):
                 add("error", f"keys.{provider_id}", "API key must be a string.")
 
-    providers = cfg.get("providers")
+    providers = on_disk.get("providers", cfg.get("providers"))
     if not isinstance(providers, dict):
         add("error", "providers", "'providers' must be an object.")
     else:
@@ -3865,7 +3994,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                     "Provider needs non-empty name and base_url.",
                 )
 
-    filters = cfg.get("model_filters")
+    filters = on_disk.get("model_filters", cfg.get("model_filters"))
     if not isinstance(filters, dict):
         add("error", "model_filters", "'model_filters' must be an object.")
     else:
@@ -3977,7 +4106,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                 try:
                     if int(routing["simple_max_chars"]) < 1:
                         raise ValueError
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     add(
                         "error",
                         "model_routing.simple_max_chars",
@@ -4013,7 +4142,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "max_steps" in subagents:
                 try:
                     steps = int(subagents["max_steps"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     steps = -1
                 if not SUBAGENT_MAX_STEPS_MIN <= steps <= SUBAGENT_MAX_STEPS_MAX:
                     add(
@@ -4037,7 +4166,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "timeout_ms" in browser:
                 try:
                     timeout_ms = int(browser["timeout_ms"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     timeout_ms = -1
                 if not BROWSER_TIMEOUT_MIN <= timeout_ms <= BROWSER_TIMEOUT_MAX:
                     add(
@@ -4059,7 +4188,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "timeout" in shell_section:
                 try:
                     shell_timeout = int(shell_section["timeout"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     shell_timeout = -1
                 if not SHELL_TIMEOUT_MIN <= shell_timeout <= SHELL_TIMEOUT_MAX:
                     add(
@@ -4071,7 +4200,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "max_jobs" in shell_section:
                 try:
                     shell_jobs = int(shell_section["max_jobs"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     shell_jobs = -1
                 if not SHELL_MAX_JOBS_MIN <= shell_jobs <= SHELL_MAX_JOBS_MAX:
                     add(
@@ -4128,7 +4257,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "port" in remote_section:
                 try:
                     remote_port = int(remote_section["port"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     remote_port = -1
                 if not REMOTE_PORT_MIN <= remote_port <= REMOTE_PORT_MAX:
                     add(
@@ -4213,7 +4342,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "permission_timeout" in acp_section:
                 try:
                     acp_timeout = int(acp_section["permission_timeout"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     acp_timeout = -1
                 if not ACP_TIMEOUT_MIN <= acp_timeout <= ACP_TIMEOUT_MAX:
                     add(
@@ -4319,7 +4448,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
         if "notify_after_seconds" in ui:
             try:
                 notify_seconds = int(ui["notify_after_seconds"])
-            except (TypeError, ValueError):
+            except _NUMBER_ERRORS:
                 notify_seconds = -1
             if notify_seconds < 0:
                 add(
@@ -4389,7 +4518,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "max_bytes" in memory:
                 try:
                     value = int(memory["max_bytes"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     value = -1
                 if not MEMORY_MAX_BYTES_MIN <= value <= MEMORY_MAX_BYTES_MAX:
                     add(
@@ -4407,7 +4536,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "max_image_bytes" in vision:
                 try:
                     image_bytes = int(vision["max_image_bytes"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     image_bytes = -1
                 if not (
                     VISION_MAX_IMAGE_BYTES_MIN
@@ -4424,7 +4553,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "max_images_per_turn" in vision:
                 try:
                     image_count = int(vision["max_images_per_turn"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     image_count = -1
                 if not VISION_MAX_IMAGES_MIN <= image_count <= VISION_MAX_IMAGES_MAX:
                     add(
@@ -4520,7 +4649,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "max_log_bytes" in telemetry:
                 try:
                     max_bytes = int(telemetry["max_log_bytes"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     max_bytes = -1
                 if not (
                     TELEMETRY_MAX_LOG_BYTES_MIN
@@ -4553,7 +4682,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "timeout" in lsp:
                 try:
                     timeout = float(lsp["timeout"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     timeout = -1.0
                 if not LSP_TIMEOUT_MIN <= timeout <= LSP_TIMEOUT_MAX:
                     add(
@@ -4585,7 +4714,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "max_files" in index_section:
                 try:
                     max_files = int(index_section["max_files"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     max_files = -1
                 if not INDEX_MAX_FILES_MIN <= max_files <= INDEX_MAX_FILES_MAX:
                     add(
@@ -4597,7 +4726,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             if "max_file_bytes" in index_section:
                 try:
                     max_bytes = int(index_section["max_file_bytes"])
-                except (TypeError, ValueError):
+                except _NUMBER_ERRORS:
                     max_bytes = -1
                 if not (
                     INDEX_MAX_FILE_BYTES_MIN
@@ -4641,7 +4770,7 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                     if "batch_size" in embeddings:
                         try:
                             batch = int(embeddings["batch_size"])
-                        except (TypeError, ValueError):
+                        except _NUMBER_ERRORS:
                             batch = -1
                         if not INDEX_BATCH_SIZE_MIN <= batch <= INDEX_BATCH_SIZE_MAX:
                             add(

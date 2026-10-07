@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shlex
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -160,7 +159,7 @@ def _resolve_provider(provider_id: str) -> None:
     try:
         get_provider_config(provider_id)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
 
 
@@ -254,14 +253,14 @@ def key_set(
     try:
         warning = set_key(provider, key)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} API key saved for[/green] [cyan]{provider}[/cyan] "
-        + f"— {describe_key(provider)}."
+        f"[green]{_check()} API key saved for[/green] [cyan]{escape(str(provider))}[/cyan] "
+        + f"— {escape(str(describe_key(provider)))}."
     )
     if warning:
-        console.print(f"[yellow]{warning}[/yellow]")
+        console.print(f"[yellow]{escape(str(warning))}[/yellow]")
 
 
 @key_app.command("remove")
@@ -270,14 +269,14 @@ def key_remove(provider: Annotated[str, typer.Argument(help="Provider id")]) -> 
     try:
         existed = remove_key(provider)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     if existed:
         console.print(
-            f"[green]{_check()} Removed stored API key for[/green] [cyan]{provider}[/cyan]."
+            f"[green]{_check()} Removed stored API key for[/green] [cyan]{escape(str(provider))}[/cyan]."
         )
     else:
-        console.print(f"[dim]No stored API key for {provider}.[/dim]")
+        console.print(f"[dim]No stored API key for {escape(str(provider))}.[/dim]")
 
 
 @key_app.command("list")
@@ -288,7 +287,7 @@ def key_list() -> None:
     table.add_column("env var")
     table.add_column("status")
     for provider in list_provider_configs():
-        table.add_row(provider.id, provider.key_env, describe_key(provider.id))
+        table.add_row(escape(str(provider.id)), escape(str(provider.key_env)), escape(str(describe_key(provider.id))))
     console.print(table)
 
 
@@ -301,9 +300,9 @@ def provider_use(provider: Annotated[str, typer.Argument(help="Provider id")]) -
     try:
         set_selected_provider(provider)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]{_check()} Default provider set to [cyan]{provider}[/cyan].[/green]")
+    console.print(f"[green]{_check()} Default provider set to [cyan]{escape(str(provider))}[/cyan].[/green]")
 
 
 @provider_app.command("list")
@@ -319,11 +318,11 @@ def provider_list() -> None:
         if provider.key_prefix:
             auth += f": {provider.key_prefix.strip()}"
         table.add_row(
-            provider.id,
-            f"{provider.name} (experimental)" if provider.experimental else provider.name,
-            get_provider_model(provider.id)
-            or ("(from server)" if provider.is_local else "—"),
-            auth,
+            escape(str(provider.id)),
+            escape(str(f"{provider.name} (experimental)" if provider.experimental else provider.name)),
+            escape(str(get_provider_model(provider.id)
+            or ("(from server)" if provider.is_local else "—"))),
+            escape(str(auth)),
         )
     console.print(table)
 
@@ -376,11 +375,11 @@ def provider_add(
             api_version=api_version,
         )
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} Added provider[/green] [cyan]{provider.id}[/cyan] "
-        + f"({provider.name}) with model [cyan]{model}[/cyan]."
+        f"[green]{_check()} Added provider[/green] [cyan]{escape(str(provider.id))}[/cyan] "
+        + f"({escape(str(provider.name))}) with model [cyan]{escape(str(model))}[/cyan]."
     )
 
 
@@ -390,9 +389,9 @@ def provider_remove(provider: Annotated[str, typer.Argument(help="Provider id")]
     try:
         remove_provider(provider)
     except (KeyError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]{_check()} Removed provider {provider}.[/green]")
+    console.print(f"[green]{_check()} Removed provider {escape(str(provider))}.[/green]")
 
 
 @provider_app.command("edit")
@@ -443,9 +442,9 @@ def provider_edit(
             api_version=api_version,
         )
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]{_check()} Updated provider {provider}.[/green]")
+    console.print(f"[green]{_check()} Updated provider {escape(str(provider))}.[/green]")
 
 
 # --- canonical `config model ...` -------------------------------------------
@@ -467,11 +466,11 @@ def model_set(
         provider_cfg = get_provider_config(provider_id)
         set_provider_model(provider_id, model)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} Model for {provider_cfg.name} set to "
-        + f"[cyan]{model}[/cyan].[/green]"
+        f"[green]{_check()} Model for {escape(str(provider_cfg.name))} set to "
+        + f"[cyan]{escape(str(model))}[/cyan].[/green]"
     )
 
 
@@ -485,7 +484,7 @@ def model_reset(
         provider_cfg = get_provider_config(provider_id)
         set_provider_model(provider_id, None)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     follow_up = (
         "Sessions use the first model the server lists."
@@ -493,7 +492,7 @@ def model_reset(
         else "You will be asked to choose one next time."
     )
     console.print(
-        f"[green]{_check()} Model choice for {provider_cfg.name} cleared.[/green] "
+        f"[green]{_check()} Model choice for {escape(str(provider_cfg.name))} cleared.[/green] "
         + follow_up
     )
 
@@ -512,7 +511,7 @@ def mode_set(
     try:
         effective = set_default_mode(mode)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Default mode set to [cyan]{effective}[/cyan].[/green]")
 
@@ -594,7 +593,7 @@ def models_clear(
     pid = provider or get_selected_provider_id()
     _resolve_provider(pid)
     set_model_filter(pid, "all", [])
-    console.print(f"[green]{_check()} Cleared model visibility for {pid}.[/green]")
+    console.print(f"[green]{_check()} Cleared model visibility for {escape(str(pid))}.[/green]")
 
 
 # --- canonical `config permissions ...` -------------------------------------
@@ -616,7 +615,7 @@ def permissions_list() -> None:
     table = Table(title="Always-allowed tools", show_header=True)
     table.add_column("Tool", style="cyan")
     for name in names:
-        table.add_row(name)
+        table.add_row(escape(str(name)))
     console.print(table)
 
 
@@ -626,9 +625,9 @@ def permissions_remove(
 ) -> None:
     """Remove a persisted tool approval."""
     if remove_always_allowed_tool(tool):
-        console.print(f"[green]{_check()} Removed persisted approval for {tool}.[/green]")
+        console.print(f"[green]{_check()} Removed persisted approval for {escape(str(tool))}.[/green]")
     else:
-        console.print(f"[dim]No persisted approval for {tool}.[/dim]")
+        console.print(f"[dim]No persisted approval for {escape(str(tool))}.[/dim]")
 
 
 @permissions_app.command("clear")
@@ -658,7 +657,7 @@ def commands_list() -> None:
     table.add_column("Pattern")
     for kind in ("deny", "allow"):
         for pattern in rules[kind]:
-            table.add_row(kind, pattern)
+            table.add_row(escape(str(kind)), escape(str(pattern)))
     console.print(table)
 
 
@@ -666,9 +665,9 @@ def _add_rule(kind: str, pattern: str) -> None:
     try:
         rules = add_command_rule(kind, pattern)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]{_check()} Added {kind} rule:[/green] {rules[kind][-1]}")
+    console.print(f"[green]{_check()} Added {kind} rule:[/green] {escape(str(rules[kind][-1]))}")
 
 
 @commands_app.command("allow")
@@ -696,12 +695,12 @@ def commands_remove(
     try:
         existed = remove_command_rule(kind, pattern)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     if existed:
-        console.print(f"[green]{_check()} Removed {kind} rule:[/green] {pattern}")
+        console.print(f"[green]{_check()} Removed {kind} rule:[/green] {escape(str(pattern))}")
     else:
-        console.print(f"[dim]No such {kind} rule: {pattern}[/dim]")
+        console.print(f"[dim]No such {kind} rule: {escape(str(pattern))}[/dim]")
 
 
 @commands_app.command("clear")
@@ -739,7 +738,7 @@ def mcp_list() -> None:
             transport = "http"
             target = str(spec.get("url") or "")
         status = "disabled" if spec.get("disabled") else "enabled"
-        table.add_row(name, transport, target, status)
+        table.add_row(escape(str(name)), escape(str(transport)), escape(str(target)), escape(str(status)))
     console.print(table)
 
 
@@ -754,7 +753,7 @@ def _parse_header(raw: str) -> tuple[str, str]:
 
 @mcp_app.command("add")
 def mcp_add(
-    name: Annotated[str, typer.Argument(help="Server name ([a-z0-9][a-z0-9_-]*)")],
+    name: Annotated[str, typer.Argument(help="Server name (\\[a-z0-9]\\[a-z0-9_-]*)")],
     command: Annotated[
         str | None, typer.Option("--command", help="stdio command to run")
     ] = None,
@@ -775,7 +774,9 @@ def mcp_add(
     if command:
         spec["command"] = command
     if args:
-        spec["args"] = shlex.split(args)
+        from kiwimatecoder.commands import split_args
+
+        spec["args"] = split_args(args)
     if url:
         spec["url"] = url
     if header:
@@ -785,16 +786,16 @@ def mcp_add(
                 key, value = _parse_header(raw)
                 headers[key] = value
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1)
         spec["headers"] = headers
     try:
         servers = set_mcp_server(name, spec)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} MCP server [cyan]{name}[/cyan] saved "
+        f"[green]{_check()} MCP server [cyan]{escape(str(name))}[/cyan] saved "
         f"({len(servers)} total).[/green]"
     )
 
@@ -803,9 +804,9 @@ def mcp_add(
 def mcp_remove(name: Annotated[str, typer.Argument(help="Server name")]) -> None:
     """Remove an MCP server."""
     if remove_mcp_server(name):
-        console.print(f"[green]{_check()} Removed MCP server {name}.[/green]")
+        console.print(f"[green]{_check()} Removed MCP server {escape(str(name))}.[/green]")
     else:
-        console.print(f"[dim]No MCP server named {name}.[/dim]")
+        console.print(f"[dim]No MCP server named {escape(str(name))}.[/dim]")
 
 
 # --- canonical `config lsp ...` ---------------------------------------------
@@ -841,7 +842,7 @@ def lsp_show() -> None:
         console.print(
             "Available servers: "
             + ", ".join(
-                f"[cyan]{name}[/cyan] ({spec.command})"
+                f"[cyan]{escape(name)}[/cyan] ({escape(str(spec.command))})"
                 for name, spec in sorted(installed.items())
             )
         )
@@ -851,7 +852,7 @@ def lsp_show() -> None:
     if overrides:
         console.print(
             "Overrides: "
-            + ", ".join(f"[cyan]{name}[/cyan]" for name in sorted(overrides))
+            + ", ".join(f"[cyan]{escape(name)}[/cyan]" for name in sorted(overrides))
         )
 
 
@@ -863,7 +864,7 @@ def lsp_enable(
     try:
         enabled = _lsp_state(state)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     settings = set_lsp(enabled=enabled)
     label = "on" if settings["enabled"] else "off"
@@ -880,7 +881,7 @@ def lsp_after_edits(
     try:
         enabled = _lsp_state(state)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     settings = set_lsp(diagnostics_after_edits=enabled)
     label = "on" if settings["diagnostics_after_edits"] else "off"
@@ -898,7 +899,7 @@ config_app.add_typer(subagents_app, name="subagents")
 def _subagents_line() -> str:
     settings = get_subagents()
     state = "on" if settings["enabled"] else "off"
-    model = settings["model"] or "(session model)"
+    model = escape(settings["model"] or "(session model)")
     return (
         f"Subagents: [cyan]{state}[/cyan] "
         f"(max steps {settings['max_steps']}, model {model})"
@@ -946,7 +947,7 @@ def subagents_max_steps(
     try:
         settings = set_subagents(max_steps=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Subagent max steps:[/green] {settings['max_steps']}"
@@ -963,14 +964,14 @@ def subagents_model(
     """Set the model subagents use (empty means the session model)."""
     if value is None:
         current = get_subagents()["model"] or "(session model)"
-        console.print(f"Subagent model: [cyan]{current}[/cyan]")
+        console.print(f"Subagent model: [cyan]{escape(str(current))}[/cyan]")
         return
     if value.strip().lower() in {"clear", "none", "off"}:
         value = ""
     settings = set_subagents(model=value)
     console.print(
         f"[green]{_check()} Subagent model:[/green] "
-        f"{settings['model'] or '(session model)'}"
+        f"{escape(str(settings['model'] or '(session model)'))}"
     )
 
 
@@ -1025,7 +1026,7 @@ def browser_headless(
     """Run Chromium headless (on) or with a visible window (off)."""
     if state is None:
         current = "on" if get_browser()["headless"] else "off"
-        console.print(f"Browser headless: [cyan]{current}[/cyan]")
+        console.print(f"Browser headless: [cyan]{escape(str(current))}[/cyan]")
         return
     token = state.strip().lower()
     if token in {"on", "true", "enable", "enabled"}:
@@ -1056,7 +1057,7 @@ def browser_timeout(
     try:
         settings = set_browser(timeout_ms=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Browser timeout:[/green] {settings['timeout_ms']}ms")
 
@@ -1103,7 +1104,7 @@ def shell_persistent(
     """Enable or disable the stateful `shell` tool."""
     if state is None:
         current = "on" if get_shell_config()["persistent"] else "off"
-        console.print(f"Persistent shell: [cyan]{current}[/cyan]")
+        console.print(f"Persistent shell: [cyan]{escape(str(current))}[/cyan]")
         return
     settings = set_shell_config(persistent=_parse_on_off(state))
     console.print(
@@ -1126,7 +1127,7 @@ def shell_timeout(
     try:
         settings = set_shell_config(timeout=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Shell timeout:[/green] {settings['timeout']}s")
 
@@ -1147,7 +1148,7 @@ def shell_max_jobs(
     try:
         settings = set_shell_config(max_jobs=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Background job cap:[/green] {settings['max_jobs']}")
 
@@ -1179,7 +1180,7 @@ def sandbox_show() -> None:
         console.print("[dim]No sandbox backend detected on this platform.[/dim]")
     else:
         backend, path = available
-        console.print(f"Backend: [cyan]{backend}[/cyan] ({path})")
+        console.print(f"Backend: [cyan]{backend}[/cyan] ({escape(str(path))})")
 
 
 @sandbox_app.command("enable")
@@ -1192,7 +1193,7 @@ def sandbox_enable(
     """Enable or disable OS-level sandboxing for shell commands."""
     if state is None:
         current = "on" if get_sandbox()["enabled"] else "off"
-        console.print(f"Sandbox: [cyan]{current}[/cyan]")
+        console.print(f"Sandbox: [cyan]{escape(str(current))}[/cyan]")
         return
     settings = set_sandbox(enabled=_parse_on_off(state))
     console.print(
@@ -1211,7 +1212,7 @@ def sandbox_network(
     """Allow or block network access inside the sandbox."""
     if state is None:
         current = "on" if get_sandbox()["network"] else "off"
-        console.print(f"Sandbox network: [cyan]{current}[/cyan]")
+        console.print(f"Sandbox network: [cyan]{escape(str(current))}[/cyan]")
         return
     settings = set_sandbox(network=_parse_on_off(state))
     console.print(
@@ -1233,9 +1234,9 @@ def sandbox_add_path(
     try:
         set_sandbox(extra_writable=paths)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]{_check()} Writable in sandbox:[/green] {path}")
+    console.print(f"[green]{_check()} Writable in sandbox:[/green] {escape(str(path))}")
 
 
 @sandbox_app.command("remove-path")
@@ -1246,10 +1247,10 @@ def sandbox_remove_path(
     current = get_sandbox()["extra_writable"]
     paths = [item for item in current if item != path]
     if len(paths) == len(current):
-        console.print(f"[dim]No such writable path: {path}[/dim]")
+        console.print(f"[dim]No such writable path: {escape(str(path))}[/dim]")
         return
     set_sandbox(extra_writable=paths)
-    console.print(f"[green]{_check()} Removed writable path:[/green] {path}")
+    console.print(f"[green]{_check()} Removed writable path:[/green] {escape(str(path))}")
 
 
 @sandbox_app.command("clear-paths")
@@ -1310,12 +1311,12 @@ def remote_config_enable(
     """Enable or disable remote/devcontainer command execution."""
     if state is None:
         current = "on" if get_remote()["enabled"] else "off"
-        console.print(f"Remote: [cyan]{current}[/cyan]")
+        console.print(f"Remote: [cyan]{escape(str(current))}[/cyan]")
         return
     try:
         settings = set_remote(enabled=_parse_on_off(state))
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Remote:[/green] "
@@ -1338,7 +1339,7 @@ def remote_config_host(
     try:
         settings = set_remote(host=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Remote host:[/green] "
@@ -1361,7 +1362,7 @@ def remote_config_user(
     try:
         settings = set_remote(user=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Remote user:[/green] "
@@ -1382,7 +1383,7 @@ def remote_config_port(
     try:
         settings = set_remote(port=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Remote port:[/green] {settings['port']}")
 
@@ -1403,7 +1404,7 @@ def remote_config_identity(
     try:
         settings = set_remote(identity=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Remote identity:[/green] "
@@ -1428,7 +1429,7 @@ def remote_config_workspace(
     try:
         settings = set_remote(workspace=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Remote workspace:[/green] "
@@ -1452,7 +1453,7 @@ def remote_config_devcontainer(
     try:
         settings = set_remote(devcontainer=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Devcontainer:[/green] {escape(settings['devcontainer'])}"
@@ -1491,7 +1492,7 @@ def acp_config_timeout(
     try:
         settings = set_acp(permission_timeout=seconds)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} ACP permission timeout:[/green] "
@@ -1509,7 +1510,7 @@ def trusted_workspace_cmd(
     """Allow or forbid read-only access outside the workspace root."""
     if state is None:
         current = "on" if get_trusted_workspace() else "off"
-        console.print(f"Trusted workspace: [cyan]{current}[/cyan]")
+        console.print(f"Trusted workspace: [cyan]{escape(str(current))}[/cyan]")
         return
     token = state.strip().lower()
     if token in {"on", "true", "enable", "enabled"}:
@@ -1537,7 +1538,7 @@ def verify_cmd(
     if action in {"show", "status"}:
         current = get_verify_command()
         if current:
-            console.print(f"Auto-verify: [cyan]{current}[/cyan]")
+            console.print(f"Auto-verify: [cyan]{escape(str(current))}[/cyan]")
         else:
             console.print("[dim]Auto-verify is off.[/dim]")
         return
@@ -1546,7 +1547,7 @@ def verify_cmd(
             console.print("[red]Usage: config verify set <command>[/red]")
             raise typer.Exit(1)
         set_verify_command(command)
-        console.print(f"[green]{_check()} Auto-verify set to:[/green] {command}")
+        console.print(f"[green]{_check()} Auto-verify set to:[/green] {escape(str(command))}")
         return
     if action in {"clear", "reset", "off"}:
         set_verify_command("")
@@ -1585,7 +1586,7 @@ def budget_cmd(
         try:
             set_budget(max_tokens=limit)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1)
         console.print(f"[green]{_check()} Token budget:[/green] {get_budget().get('max_tokens')}")
         return
@@ -1594,7 +1595,7 @@ def budget_cmd(
         try:
             set_budget(max_cost_usd=limit)
         except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1)
         console.print(
             f"[green]{_check()} Cost budget:[/green] ${get_budget().get('max_cost_usd')}"
@@ -1614,7 +1615,7 @@ def cache_cmd(
     """Toggle prompt caching for native Anthropic providers."""
     if state is None:
         current = "on" if get_prompt_cache() else "off"
-        console.print(f"Prompt caching: [cyan]{current}[/cyan]")
+        console.print(f"Prompt caching: [cyan]{escape(str(current))}[/cyan]")
         return
     token = state.strip().lower()
     if token in {"on", "true", "enable", "enabled"}:
@@ -1667,7 +1668,7 @@ def web_max_chars(
     try:
         settings = set_web(max_chars=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Web max chars:[/green] {settings['max_chars']}")
 
@@ -1686,7 +1687,7 @@ def web_timeout(
     try:
         settings = set_web(timeout=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Web timeout:[/green] {settings['timeout']:g}s")
 
@@ -1701,7 +1702,7 @@ def web_allow_local(
     """Allow web_fetch to reach local/private addresses (default off)."""
     if state is None:
         current = "on" if get_web()["allow_local"] else "off"
-        console.print(f"Allow local addresses: [cyan]{current}[/cyan]")
+        console.print(f"Allow local addresses: [cyan]{escape(str(current))}[/cyan]")
         return
     token = state.strip().lower()
     if token in {"on", "true", "enable", "enabled"}:
@@ -1732,8 +1733,8 @@ def _is_network_clear(value: str) -> bool:
 
 def _print_network(settings: dict[str, Any]) -> None:
     console.print(
-        f"Proxy: [cyan]{settings['proxy'] or 'none'}[/cyan]\n"
-        f"CA bundle: [cyan]{settings['ca_bundle'] or 'system default'}[/cyan]\n"
+        f"Proxy: [cyan]{escape(str(settings['proxy'] or 'none'))}[/cyan]\n"
+        f"CA bundle: [cyan]{escape(str(settings['ca_bundle'] or 'system default'))}[/cyan]\n"
         f"Offline mode: [cyan]{'on' if settings['offline'] else 'off'}[/cyan]"
     )
 
@@ -1753,15 +1754,15 @@ def network_proxy(
 ) -> None:
     """Set or clear the HTTP(S) proxy used for every request."""
     if value is None:
-        console.print(f"Proxy: [cyan]{get_network()['proxy'] or 'none'}[/cyan]")
+        console.print(f"Proxy: [cyan]{escape(str(get_network()['proxy'] or 'none'))}[/cyan]")
         return
     cleaned = "" if _is_network_clear(value) else value
     try:
         settings = set_network(proxy=cleaned)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]{_check()} Proxy:[/green] {settings['proxy'] or 'none'}")
+    console.print(f"[green]{_check()} Proxy:[/green] {escape(str(settings['proxy'] or 'none'))}")
 
 
 @network_app.command("ca")
@@ -1776,18 +1777,18 @@ def network_ca(
     """Set or clear the custom CA bundle used for TLS verification."""
     if value is None:
         console.print(
-            f"CA bundle: [cyan]{get_network()['ca_bundle'] or 'system default'}[/cyan]"
+            f"CA bundle: [cyan]{escape(str(get_network()['ca_bundle'] or 'system default'))}[/cyan]"
         )
         return
     cleaned = "" if _is_network_clear(value) else value
     try:
         settings = set_network(ca_bundle=cleaned)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} CA bundle:[/green] "
-        f"{settings['ca_bundle'] or 'system default'}"
+        f"{escape(str(settings['ca_bundle'] or 'system default'))}"
     )
 
 
@@ -1801,7 +1802,7 @@ def network_offline(
     """Block cloud requests; local providers keep working."""
     if state is None:
         current = "on" if get_network()["offline"] else "off"
-        console.print(f"Offline mode: [cyan]{current}[/cyan]")
+        console.print(f"Offline mode: [cyan]{escape(str(current))}[/cyan]")
         return
     token = state.strip().lower()
     if token in {"on", "true", "enable", "enabled", "yes"}:
@@ -1833,7 +1834,10 @@ def index_show() -> None:
     status = index_status(Path.cwd())
     embeddings = settings["embeddings"]
     if embeddings["provider"] and embeddings["model"]:
-        embed_line = f"[cyan]on[/cyan] ({embeddings['provider']}:{embeddings['model']})"
+        embed_line = (
+            f"[cyan]on[/cyan] ({escape(embeddings['provider'])}:"
+            f"{escape(embeddings['model'])})"
+        )
     else:
         embed_line = "[cyan]off[/cyan]"
     console.print(
@@ -1841,7 +1845,7 @@ def index_show() -> None:
         f"Files indexed: [cyan]{status.files}[/cyan] "
         f"([yellow]{status.stale}[/yellow] stale)\n"
         f"Terms: [cyan]{status.terms}[/cyan]\n"
-        f"Store: [cyan]{status.path}[/cyan] ({status.size_bytes} bytes)\n"
+        f"Store: [cyan]{escape(str(status.path))}[/cyan] ({status.size_bytes} bytes)\n"
         f"Embeddings: {embed_line}"
     )
 
@@ -1860,11 +1864,11 @@ def index_embed_provider(
     try:
         settings = set_index(embed_provider=cleaned)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Embedding provider:[/green] "
-        f"[cyan]{settings['embeddings']['provider'] or 'off'}[/cyan]"
+        f"[cyan]{escape(str(settings['embeddings']['provider'] or 'off'))}[/cyan]"
     )
 
 
@@ -1879,7 +1883,7 @@ def index_embed_model(
     settings = set_index(embed_model=cleaned)
     console.print(
         f"[green]{_check()} Embedding model:[/green] "
-        f"[cyan]{settings['embeddings']['model'] or 'off'}[/cyan]"
+        f"[cyan]{escape(str(settings['embeddings']['model'] or 'off'))}[/cyan]"
     )
 
 
@@ -1929,7 +1933,7 @@ def memory_max_bytes(
     try:
         settings = set_memory(max_bytes=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Max memory bytes:[/green] {settings['max_bytes']}"
@@ -1972,7 +1976,11 @@ def _print_sampling(sampling: dict[str, object]) -> None:
         console.print("[dim]Sampling: provider defaults (nothing set).[/dim]")
         return
     console.print(
-        "Sampling: " + ", ".join(f"[cyan]{key}[/cyan]={value}" for key, value in sampling.items())
+        "Sampling: "
+        + ", ".join(
+            f"[cyan]{escape(str(key))}[/cyan]={escape(str(value))}"
+            for key, value in sampling.items()
+        )
     )
 
 
@@ -1993,16 +2001,16 @@ def sampling_set(
     updates: dict[str, str] = {}
     for item in values:
         if "=" not in item:
-            console.print(f"[red]Expected key=value, got '{item}'.[/red]")
+            console.print(f"[red]Expected key=value, got '{escape(str(item))}'.[/red]")
             raise typer.Exit(1)
         key, value = item.split("=", 1)
         updates[key.strip()] = value.strip()
     try:
         effective = set_sampling(updates)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]{_check()} Sampling set:[/green] {effective}")
+    console.print(f"[green]{_check()} Sampling set:[/green] {escape(str(effective))}")
 
 
 @sampling_app.command("reset")
@@ -2032,7 +2040,7 @@ def style_set(
     try:
         effective = set_output_style(style)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{_check()} Output style set to [cyan]{effective}[/cyan].[/green]")
 
@@ -2046,7 +2054,7 @@ def prompt_show() -> None:
     """Show the custom system-prompt addition."""
     text = get_system_prompt()
     if text:
-        console.print(text)
+        console.print(escape(text))
     else:
         console.print("[dim]No custom system prompt set.[/dim]")
 
@@ -2093,7 +2101,7 @@ def ui_color(
     try:
         current = set_ui(color=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Color mode set to [cyan]{current['color']}[/cyan].[/green]"
@@ -2108,7 +2116,7 @@ def ui_output(
     try:
         current = set_ui(output_mode=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Output mode set to "
@@ -2144,7 +2152,7 @@ def ui_theme(
     try:
         current = set_ui(theme=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Theme set to [cyan]{current['theme']}[/cyan].[/green]"
@@ -2159,7 +2167,7 @@ def ui_locale(
     try:
         current = set_ui(locale=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     from kiwimatecoder.i18n import set_locale
 
@@ -2177,7 +2185,7 @@ def ui_keybindings(
     try:
         current = set_ui(keybindings=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Keybindings set to "
@@ -2193,7 +2201,7 @@ def ui_notify(
     try:
         current = set_ui(notify=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Notify mode set to "
@@ -2209,7 +2217,7 @@ def ui_notify_after(
     try:
         current = set_ui(notify_after_seconds=seconds)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Notify threshold set to "
@@ -2225,7 +2233,7 @@ def ui_spinner(
     try:
         current = set_ui(spinner=value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Spinner set to "
@@ -2257,10 +2265,10 @@ def profile_list() -> None:
     for name in sorted(profiles):
         values = profiles[name]
         table.add_row(
-            name,
-            str(values.get("provider") or ""),
-            str(values.get("model") or "(provider's chosen model)"),
-            str(values.get("mode") or ""),
+            escape(str(name)),
+            escape(str(str(values.get("provider") or ""))),
+            escape(str(str(values.get("model") or "(provider's chosen model)"))),
+            escape(str(str(values.get("mode") or ""))),
         )
     console.print(table)
 
@@ -2270,9 +2278,9 @@ def profile_show(name: Annotated[str, typer.Argument(help="Profile name")]) -> N
     """Show one profile's settings."""
     profile = get_profile(name)
     if profile is None:
-        console.print(f"[red]{t('error.unknown_profile', name=name)}[/red]")
+        console.print(f"[red]{escape(str(t('error.unknown_profile', name=name)))}[/red]")
         raise typer.Exit(1)
-    console.print(f"[bold]{name}[/bold]")
+    console.print(f"[bold]{escape(str(name))}[/bold]")
     console.print_json(data=profile)
 
 
@@ -2284,10 +2292,10 @@ def profile_save_cmd(
     try:
         profile = save_profile(name)
     except (ValueError, KeyError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} Saved profile [cyan]{name}[/cyan][/green] "
+        f"[green]{_check()} Saved profile [cyan]{escape(str(name))}[/cyan][/green] "
         f"({len(profile)} setting(s))."
     )
 
@@ -2298,15 +2306,15 @@ def profile_use(name: Annotated[str, typer.Argument(help="Profile name")]) -> No
     try:
         apply_profile(name)
     except (ValueError, KeyError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     cfg = load_config()
     provider_id = get_selected_provider_id(cfg)
     console.print(
-        f"[green]{_check()} Applied profile [cyan]{name}[/cyan][/green] — "
-        f"provider: [cyan]{provider_id}[/cyan], "
-        f"model: [cyan]{get_provider_model(provider_id, cfg) or '(none chosen)'}[/cyan], "
-        f"mode: [cyan]{get_default_mode(cfg)}[/cyan]."
+        f"[green]{_check()} Applied profile [cyan]{escape(str(name))}[/cyan][/green] — "
+        f"provider: [cyan]{escape(str(provider_id))}[/cyan], "
+        f"model: [cyan]{escape(str(get_provider_model(provider_id, cfg) or '(none chosen)'))}[/cyan], "
+        f"mode: [cyan]{escape(get_default_mode(cfg))}[/cyan]."
     )
 
 
@@ -2314,9 +2322,9 @@ def profile_use(name: Annotated[str, typer.Argument(help="Profile name")]) -> No
 def profile_remove(name: Annotated[str, typer.Argument(help="Profile name")]) -> None:
     """Remove a saved profile."""
     if remove_profile(name):
-        console.print(f"[green]{_check()} Removed profile {name}.[/green]")
+        console.print(f"[green]{_check()} Removed profile {escape(str(name))}.[/green]")
     else:
-        console.print(f"[dim]No profile named {name}.[/dim]")
+        console.print(f"[dim]No profile named {escape(str(name))}.[/dim]")
 
 
 @profile_app.command("rename")
@@ -2328,12 +2336,12 @@ def profile_rename(
     try:
         renamed = rename_profile(old, new)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     if renamed:
-        console.print(f"[green]{_check()} Renamed profile {old} to {new}.[/green]")
+        console.print(f"[green]{_check()} Renamed profile {escape(str(old))} to {escape(str(new))}.[/green]")
     else:
-        console.print(f"[dim]No profile named {old}.[/dim]")
+        console.print(f"[dim]No profile named {escape(str(old))}.[/dim]")
 
 
 @config_app.command("validate")
@@ -2350,12 +2358,12 @@ def validate_cmd() -> None:
     for issue in issues:
         color = "red" if issue["level"] == "error" else "yellow"
         table.add_row(
-            f"[{color}]{issue['level']}[/{color}]", issue["key"], issue["message"]
+            f"[{color}]{issue['level']}[/{color}]", escape(str(issue["key"])), escape(str(issue["message"]))
         )
     console.print(table)
     errors = sum(1 for issue in issues if issue["level"] == "error")
     warnings = len(issues) - errors
-    console.print(f"[dim]{errors} error(s), {warnings} warning(s).[/dim]")
+    console.print(f"[dim]{errors} error(s), {escape(str(warnings))} warning(s).[/dim]")
     if errors:
         raise typer.Exit(1)
 
@@ -2374,16 +2382,16 @@ def config_show() -> None:
         f"{pid}" + (" (primary)" if pid == active_ids[0] else "") for pid in active_ids
     )
     console.print(
-        f"Provider: [cyan]{provider.id}[/cyan] ({provider.name})\n"
-        + f"Active providers: [cyan]{active_line}[/cyan]\n"
+        f"Provider: [cyan]{escape(str(provider.id))}[/cyan] ({escape(str(provider.name))})\n"
+        + f"Active providers: [cyan]{escape(str(active_line))}[/cyan]\n"
         + "Model: [cyan]"
-        + (
+        + escape(
             get_provider_model(provider_id, cfg)
             or ("(from server)" if provider.is_local else "(none chosen)")
         )
         + "[/cyan]\n"
-        + f"Mode: [cyan]{get_default_mode(cfg)}[/cyan]\n"
-        + f"Key: [cyan]{describe_key(provider_id)}[/cyan] ({provider.key_env})\n"
+        + f"Mode: [cyan]{escape(get_default_mode(cfg))}[/cyan]\n"
+        + f"Key: [cyan]{escape(str(describe_key(provider_id)))}[/cyan] ({escape(str(provider.key_env))})\n"
         + f"Model visibility: [cyan]{get_model_filter(provider_id)['mode']}[/cyan]"
     )
     sampling = get_sampling(cfg)
@@ -2395,11 +2403,11 @@ def config_show() -> None:
     console.print(
         f"Output style: [cyan]{get_output_style(cfg)}[/cyan] "
         + f"(custom prompt: {'set' if get_system_prompt(cfg) else 'none'})\n"
-        + f"Sampling: [cyan]{sampling_line}[/cyan]\n"
+        + f"Sampling: [cyan]{escape(str(sampling_line))}[/cyan]\n"
         + "Always-allowed tools: "
-        + f"[cyan]{', '.join(get_always_allowed_tools(cfg)) or 'none'}[/cyan]\n"
+        + f"[cyan]{escape(str(', '.join(get_always_allowed_tools(cfg)) or 'none'))}[/cyan]\n"
         + f"Trusted workspace: [cyan]{'on' if get_trusted_workspace(cfg) else 'off'}[/cyan]\n"
-        + f"Auto-verify: [cyan]{get_verify_command(cfg) or 'off'}[/cyan]\n"
+        + f"Auto-verify: [cyan]{escape(str(get_verify_command(cfg) or 'off'))}[/cyan]\n"
         + "Budget: "
         + (
             f"[cyan]{get_budget(cfg)}[/cyan]"
@@ -2415,20 +2423,20 @@ def config_show() -> None:
     ui_config = get_ui(cfg)
     console.print(
         "UI: "
-        + f"[cyan]{ui_config['theme']}[/cyan] theme, "
-        + f"[cyan]{ui_config['color']}[/cyan] color, "
-        + f"[cyan]{ui_config['output_mode']}[/cyan] output, "
+        + f"[cyan]{escape(str(ui_config['theme']))}[/cyan] theme, "
+        + f"[cyan]{escape(str(ui_config['color']))}[/cyan] color, "
+        + f"[cyan]{escape(str(ui_config['output_mode']))}[/cyan] output, "
         + f"ascii [cyan]{'on' if ui_config['ascii'] else 'off'}[/cyan], "
-        + f"locale [cyan]{ui_config['locale']}[/cyan], "
-        + f"keys [cyan]{ui_config['keybindings']}[/cyan], "
-        + f"notify [cyan]{ui_config['notify']}[/cyan], "
-        + f"spinner [cyan]{ui_config['spinner']}[/cyan]"
+        + f"locale [cyan]{escape(str(ui_config['locale']))}[/cyan], "
+        + f"keys [cyan]{escape(str(ui_config['keybindings']))}[/cyan], "
+        + f"notify [cyan]{escape(str(ui_config['notify']))}[/cyan], "
+        + f"spinner [cyan]{escape(str(ui_config['spinner']))}[/cyan]"
     )
     network_config = get_network(cfg)
     console.print(
         "Network: proxy "
-        + f"[cyan]{network_config['proxy'] or 'none'}[/cyan], "
-        + f"CA [cyan]{network_config['ca_bundle'] or 'system'}[/cyan], "
+        + f"[cyan]{escape(str(network_config['proxy'] or 'none'))}[/cyan], "
+        + f"CA [cyan]{escape(str(network_config['ca_bundle'] or 'system'))}[/cyan], "
         + f"offline [cyan]{'on' if network_config['offline'] else 'off'}[/cyan]"
     )
     remote_config = get_remote(cfg)
@@ -2442,11 +2450,11 @@ def config_show() -> None:
     console.print(
         "Media: "
         + f"[cyan]{'on' if media_config['enabled'] else 'off'}[/cyan] "
-        + f"(provider [cyan]{media_config['provider']}[/cyan], "
-        + f"image model [cyan]{media_config['model']}[/cyan], "
+        + f"(provider [cyan]{escape(str(media_config['provider']))}[/cyan], "
+        + f"image model [cyan]{escape(str(media_config['model']))}[/cyan], "
         + f"size [cyan]{media_config['size']}[/cyan], "
-        + f"video model [cyan]{media_config['video_model'] or 'none chosen'}[/cyan], "
-        + f"output [cyan]{media_config['output_dir']}[/cyan])"
+        + f"video model [cyan]{escape(str(media_config['video_model'] or 'none chosen'))}[/cyan], "
+        + f"output [cyan]{escape(str(media_config['output_dir']))}[/cyan])"
     )
     telemetry_config = get_telemetry(cfg)
     console.print(
@@ -2456,7 +2464,7 @@ def config_show() -> None:
     )
     project_path = project_config_path()
     if project_path is not None:
-        console.print(f"Project config: [cyan]{project_path}[/cyan] (overrides global)")
+        console.print(f"Project config: [cyan]{escape(str(project_path))}[/cyan] (overrides global)")
 
 
 def _print_models(provider: str | None, *, refresh: bool) -> None:
@@ -2465,17 +2473,17 @@ def _print_models(provider: str | None, *, refresh: bool) -> None:
     try:
         provider_cfg = get_provider_config(provider_id, cfg)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
 
     catalog = get_model_catalog(provider_id, force=refresh, cfg=cfg)
     if catalog.error:
-        console.print(f"[yellow]Could not refresh models: {catalog.error}[/yellow]")
+        console.print(f"[yellow]Could not refresh models: {escape(str(catalog.error))}[/yellow]")
     if catalog.added:
-        console.print(f"[green]New:[/green] {summarize_ids(catalog.added)}")
+        console.print(f"[green]New:[/green] {escape(str(summarize_ids(catalog.added)))}")
     if catalog.removed:
         console.print(
-            f"[yellow]Deprecated, removed:[/yellow] {summarize_ids(catalog.removed)}"
+            f"[yellow]Deprecated, removed:[/yellow] {escape(str(summarize_ids(catalog.removed)))}"
         )
 
     source = {
@@ -2483,9 +2491,9 @@ def _print_models(provider: str | None, *, refresh: bool) -> None:
         "cache": "cached",
         "curated": "built-in list",
     }[catalog.source]
-    console.print(f"[cyan]{provider_cfg.name}[/cyan] models ({source}):")
+    console.print(f"[cyan]{escape(str(provider_cfg.name))}[/cyan] models ({source}):")
     for model in apply_model_filter(provider_id, catalog.models):
-        console.print(f"  {model}")
+        console.print(f"  {escape(str(model))}")
 
 
 def _set_filter(provider: str | None, mode: str, models: list[str]) -> None:
@@ -2494,12 +2502,12 @@ def _set_filter(provider: str | None, mode: str, models: list[str]) -> None:
     try:
         set_model_filter(pid, mode, models)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     verb = "showing" if mode == "allow" else "hiding"
     console.print(
-        f"[green]{_check()} Now {verb} these models for {pid}:[/green] "
-        + ", ".join(models)
+        f"[green]{_check()} Now {escape(str(verb))} these models for {escape(str(pid))}:[/green] "
+        + escape(", ".join(models))
     )
 
 
@@ -2509,13 +2517,13 @@ def _set_filter(provider: str | None, mode: str, models: list[str]) -> None:
 def _print_media(settings: dict[str, Any]) -> None:
     console.print(
         f"Media: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
-        f"Provider: [cyan]{settings['provider']}[/cyan]\n"
-        f"Image model: [cyan]{settings['model']}[/cyan]\n"
+        f"Provider: [cyan]{escape(str(settings['provider']))}[/cyan]\n"
+        f"Image model: [cyan]{escape(str(settings['model']))}[/cyan]\n"
         f"Image size: [cyan]{settings['size']}[/cyan]\n"
         f"Video model: [cyan]{escape(settings['video_model'] or 'none chosen')}[/cyan]\n"
         f"Video length: [cyan]{settings['video_duration']}s[/cyan]\n"
         f"Video size: [cyan]{escape(settings['video_size'] or 'provider default')}[/cyan]\n"
-        f"Output dir: [cyan]{settings['output_dir']}[/cyan]"
+        f"Output dir: [cyan]{escape(str(settings['output_dir']))}[/cyan]"
     )
 
 
@@ -2549,7 +2557,7 @@ def media_enable(
     try:
         settings = set_media(enabled=enabled)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Image generation "
@@ -2563,10 +2571,10 @@ def media_model(model: Annotated[str, typer.Argument(help="Image model id")]) ->
     try:
         set_media(model=model)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} Media model set to[/green] [cyan]{model}[/cyan]."
+        f"[green]{_check()} Media model set to[/green] [cyan]{escape(str(model))}[/cyan]."
     )
 
 
@@ -2578,10 +2586,10 @@ def media_provider(
     try:
         set_media(provider=provider)
     except (ValueError, KeyError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} Media provider set to[/green] [cyan]{provider}[/cyan]."
+        f"[green]{_check()} Media provider set to[/green] [cyan]{escape(str(provider))}[/cyan]."
     )
 
 
@@ -2591,7 +2599,7 @@ def media_size(size: Annotated[str, typer.Argument(help="Image size as WxH")]) -
     try:
         set_media(size=size)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Media size set to[/green] [cyan]{size}[/cyan]."
@@ -2607,7 +2615,7 @@ def media_video_model(
     try:
         set_media(video_model="" if cleared else model)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     if cleared:
         console.print(f"[green]{_check()} Video model cleared.[/green]")
@@ -2625,7 +2633,7 @@ def media_duration(
     try:
         settings = set_media(video_duration=seconds)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Video length set to[/green] "
@@ -2642,7 +2650,7 @@ def media_video_size(
     try:
         settings = set_media(video_size="" if cleared else size)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Video size set to[/green] "
@@ -2658,11 +2666,11 @@ def media_output_dir(
     try:
         settings = set_media(output_dir=path)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Media output directory set to[/green] "
-        f"[cyan]{settings['output_dir']}[/cyan]."
+        f"[cyan]{escape(str(settings['output_dir']))}[/cyan]."
     )
 
 
@@ -2675,7 +2683,7 @@ def _print_telemetry(settings: dict[str, Any]) -> None:
     console.print(
         f"Telemetry: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
         f"Level: [cyan]{settings['level']}[/cyan]\n"
-        f"Log file: [cyan]{telemetry.current_log_path()}[/cyan]\n"
+        f"Log file: [cyan]{escape(str(telemetry.current_log_path()))}[/cyan]\n"
         f"Max log bytes: [cyan]{settings['max_log_bytes']:,}[/cyan]\n"
         f"Crash reports: [cyan]{len(telemetry.crash_report_paths())}[/cyan]"
     )
@@ -2703,7 +2711,7 @@ def telemetry_enable(
     try:
         settings = set_telemetry(enabled=enabled)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Telemetry "
@@ -2724,7 +2732,7 @@ def telemetry_level(
     try:
         settings = set_telemetry(level=level)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Telemetry level set to[/green] "
@@ -3116,18 +3124,20 @@ def main(
 
         target = resume or "last"
         try:
-            session = load_session(target, workspace_root=Path.cwd())
+            session = load_session(
+                target, workspace_root=Path.cwd(), require_provider=True
+            )
             resumed = True
             console.print(
-                f"[bold green]{t('cli.session_resumed', name=target)}[/bold green] "
+                f"[bold green]{escape(str(t('cli.session_resumed', name=target)))}[/bold green] "
                 + f"([dim]{len(session.messages)} messages, {session.total_tokens:,} tokens[/dim])"
             )
         except Exception as exc:
             if resume:
-                console.print(f"[red]Could not resume session '{resume}': {exc}[/red]")
+                console.print(f"[red]Could not resume session '{escape(str(resume))}': {escape(str(exc))}[/red]")
                 raise typer.Exit(1)
             console.print(
-                f"[dim]No previous session to continue ({exc}). Starting fresh.[/dim]"
+                f"[dim]No previous session to continue ({escape(str(exc))}). Starting fresh.[/dim]"
             )
 
     if session is None:
@@ -3138,9 +3148,9 @@ def main(
         if not get_key(provider_id) and provider.needs_key:
             console.print(
                 Panel(
-                    f"[yellow]No API key set for {provider.name}.[/yellow]\n"
+                    f"[yellow]No API key set for {escape(provider.name)}.[/yellow]\n"
                     + "Run [cyan]kiwimatecoder setup[/cyan] to choose a provider and "
-                    + f"enter a key, or export [cyan]{provider.key_env}[/cyan].",
+                    + f"enter a key, or export [cyan]{escape(provider.key_env)}[/cyan].",
                     title="Quick start",
                 )
             )
@@ -3186,7 +3196,7 @@ def main(
     if profile is not None:
         profile_values = get_profile(profile)
         if profile_values is None:
-            console.print(f"[red]{t('error.unknown_profile', name=profile)}[/red]")
+            console.print(f"[red]{escape(str(t('error.unknown_profile', name=profile)))}[/red]")
             raise typer.Exit(1)
         if resumed:
             profile_values = {
@@ -3222,7 +3232,7 @@ def _stdin_is_tty() -> bool:
 def _prompt_yes_no(question: str) -> bool:
     """Ask a yes/no question on the console; false on cancel/EOF/unknown."""
     try:
-        answer = console.input(f"{question} [y/N]: ").strip().lower()
+        answer = console.input(f"{question} \\[y/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         console.print()
         return False
@@ -3332,9 +3342,9 @@ def _setup_model(
         chosen = _interactive_select_model(provider, current)
     if chosen:
         set_provider_model(provider.id, chosen)
-        console.print(f"[green]{_check()} Model set to[/green] [cyan]{chosen}[/cyan].")
+        console.print(f"[green]{_check()} Model set to[/green] [cyan]{escape(str(chosen))}[/cyan].")
     elif current:
-        console.print(f"Keeping model [cyan]{current}[/cyan].")
+        console.print(f"Keeping model [cyan]{escape(str(current))}[/cyan].")
     elif provider.is_local:
         console.print(
             "[dim]No model chosen — sessions use the first model the server lists.[/dim]"
@@ -3343,7 +3353,7 @@ def _setup_model(
         console.print(
             "[yellow]No model chosen yet.[/yellow] Pick one when the session "
             + "starts, or run "
-            + f"[cyan]kiwimatecoder config model set <model> --provider {provider.id}[/cyan]."
+            + f"[cyan]kiwimatecoder config model set <model> --provider {escape(str(provider.id))}[/cyan]."
         )
     if provider.experimental:
         note = (
@@ -3351,13 +3361,13 @@ def _setup_model(
             if not provider.supports_tools
             else ""
         )
-        console.print(f"[yellow]{provider.name} is experimental.{note}[/yellow]")
+        console.print(f"[yellow]{escape(str(provider.name))} is experimental.{note}[/yellow]")
 
 
 def _ensure_session_model(session: Session) -> None:
     """Ask for a model at launch when the session's provider has none chosen."""
     provider = session.provider
-    console.print(f"[yellow]No model chosen for {provider.name} yet.[/yellow]")
+    console.print(f"[yellow]No model chosen for {escape(str(provider.name))} yet.[/yellow]")
     chosen = _interactive_select_model(provider)
     if chosen:
         set_provider_model(provider.id, chosen)
@@ -3376,15 +3386,15 @@ def _ensure_fallback_models(session: Session) -> None:
         if session.model_for(provider.id):
             continue
         console.print(
-            f"[yellow]No model chosen for {provider.name} (fallback).[/yellow]"
+            f"[yellow]No model chosen for {escape(str(provider.name))} (fallback).[/yellow]"
         )
         chosen = _interactive_select_model(provider)
         if chosen:
             set_provider_model(provider.id, chosen)
             continue
         console.print(
-            f"[yellow]{provider.name} is skipped during failover until you choose "
-            + f"one with /config model set <model> {provider.id}.[/yellow]"
+            f"[yellow]{escape(str(provider.name))} is skipped during failover until you choose "
+            + f"one with /config model set <model> {escape(str(provider.id))}.[/yellow]"
         )
 
 
@@ -3392,7 +3402,7 @@ def _interactive_api_key() -> str | None:
     """Prompt for an API key, returning None on cancel/EOF."""
     try:
         console.print("[bold]Enter the API key for the provider:[/bold]")
-        return console.input("key> ").strip()
+        return console.input("key> ", password=ui.hide_typed_secrets()).strip()
     except (EOFError, KeyboardInterrupt):
         console.print()
         return None
@@ -3409,7 +3419,7 @@ def _run_setup(provider_id: str, key: str | None, model: str | None = None) -> b
     try:
         provider = get_provider_config(provider_id)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return False
     if key is None and provider.is_local and not provider.requires_key:
         # Keyless local servers (Ollama, LM Studio) — just select the provider
@@ -3417,13 +3427,13 @@ def _run_setup(provider_id: str, key: str | None, model: str | None = None) -> b
         # (Unsloth) fall through to the normal key prompt.
         set_selected_provider(provider_id)
         console.print(
-            f"[green]{_check()} {provider.name} needs no API key[/green] — "
-            + f"models are read from the server at {provider.base_url}."
+            f"[green]{_check()} {escape(str(provider.name))} needs no API key[/green] — "
+            + f"models are read from the server at {escape(str(provider.base_url))}."
         )
         running = probe(provider)
         if not running:
             console.print(
-                f"[yellow]No server answered at {provider.base_url} — "
+                f"[yellow]No server answered at {escape(str(provider.base_url))} — "
                 + "start it before chatting.[/yellow]"
             )
         # A stopped server has nothing real to list, so only --model applies.
@@ -3441,15 +3451,15 @@ def _run_setup(provider_id: str, key: str | None, model: str | None = None) -> b
     try:
         warning = set_key(provider_id, key)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         return False
     set_selected_provider(provider_id)
     console.print(
-        f"[green]{_check()} API key saved for {provider_id}[/green] "
-        + f"— {describe_key(provider_id)}."
+        f"[green]{_check()} API key saved for {escape(str(provider_id))}[/green] "
+        + f"— {escape(str(describe_key(provider_id)))}."
     )
     if warning:
-        console.print(f"[yellow]{warning}[/yellow]")
+        console.print(f"[yellow]{escape(str(warning))}[/yellow]")
     _setup_model(provider, model)
     console.print("Ready to go. Run [cyan]kiwimatecoder[/cyan] to start a session.")
     return True
@@ -3516,28 +3526,28 @@ def ask(
     try:
         provider_cfg = get_provider_config(provider_id, cfg)
     except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
 
     api_key = get_key(provider_id)
     if not api_key and provider_cfg.needs_key:
         console.print(
-            f"[red]No API key for {provider_cfg.name}. "
-            + f"Run: kiwimatecoder setup --provider {provider_id}[/red]"
+            f"[red]No API key for {escape(str(provider_cfg.name))}. "
+            + f"Run: kiwimatecoder setup --provider {escape(str(provider_id))}[/red]"
         )
         raise typer.Exit(1)
 
     full_prompt = prompt
     if file:
         if not file.exists():
-            console.print(f"[red]File not found: {file}[/red]")
+            console.print(f"[red]File not found: {escape(str(file))}[/red]")
             raise typer.Exit(1)
         full_prompt = f"{prompt}\n\n```\n{file.read_text()}\n```"
 
     try:
         resolved_model = require_model(provider_cfg, cfg, override=model)
     except ModelNotChosenError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
 
     asyncio.run(
@@ -3574,26 +3584,26 @@ def _print_jobs(records: Sequence[Any]) -> None:
             "cancelled": "dim",
         }.get(record.status, "white")
         table.add_row(
-            record.id,
+            escape(str(record.id)),
             f"[{style}]{record.status}[/{style}]",
-            record.created_at,
-            str(record.pid or ""),
+            escape(str(record.created_at)),
+            escape(str(str(record.pid or ""))),
             escape(_short_prompt(record.prompt)),
         )
     console.print(table)
 
 
 def _print_job(record: Any) -> None:
-    console.print(f"ID: [cyan]{record.id}[/cyan]")
+    console.print(f"ID: [cyan]{escape(str(record.id))}[/cyan]")
     console.print(f"Status: [bold]{record.status}[/bold]")
     console.print(f"Prompt: {escape(record.prompt)}")
     console.print(f"Workspace: {escape(record.workspace)}")
     if record.provider:
-        console.print(f"Provider: {record.provider}")
+        console.print(f"Provider: {escape(str(record.provider))}")
     if record.model:
-        console.print(f"Model: {record.model}")
-    console.print(f"Mode: {record.mode}")
-    console.print(f"PID: {record.pid or '-'}")
+        console.print(f"Model: {escape(str(record.model))}")
+    console.print(f"Mode: {escape(str(record.mode))}")
+    console.print(f"PID: {escape(str(record.pid or '-'))}")
     console.print(f"Created: {record.created_at}")
     if record.finished_at:
         console.print(f"Finished: {record.finished_at}")
@@ -3606,11 +3616,11 @@ def _print_job(record: Any) -> None:
     if record.result is not None:
         console.print(Panel(escape(record.result or "(empty result)"), title="Result"))
     if record.output_path:
-        console.print(f"[dim]Output: {record.output_path}[/dim]")
+        console.print(f"[dim]Output: {escape(str(record.output_path))}[/dim]")
 
 
 def _job_start_error(exc: Exception) -> None:
-    console.print(f"[red]{exc}[/red]")
+    console.print(f"[red]{escape(str(exc))}[/red]")
     raise typer.Exit(1)
 
 
@@ -3650,12 +3660,12 @@ def jobs_run(
         _job_start_error(exc)
         return
     console.print(
-        f"[green]{_check()} Started job[/green] [cyan]{record.id}[/cyan] "
-        f"([dim]{_short_prompt(record.prompt)}[/dim])"
+        f"[green]{_check()} Started job[/green] [cyan]{escape(str(record.id))}[/cyan] "
+        f"([dim]{escape(str(_short_prompt(record.prompt)))}[/dim])"
     )
     console.print(
-        f"[dim]Watch with `kiwimatecoder jobs show {record.id}` or "
-        f"`kiwimatecoder jobs output {record.id}`.[/dim]"
+        f"[dim]Watch with `kiwimatecoder jobs show {escape(str(record.id))}` or "
+        f"`kiwimatecoder jobs output {escape(str(record.id))}`.[/dim]"
     )
 
 
@@ -3696,7 +3706,7 @@ def jobs_schedule(
         _job_start_error(exc)
         return
     console.print(
-        f"[green]{_check()} Scheduled job[/green] [cyan]{record.id}[/cyan] "
+        f"[green]{_check()} Scheduled job[/green] [cyan]{escape(str(record.id))}[/cyan] "
         f"every {record.interval:g}s (next: {record.next_run_at})."
     )
     console.print(
@@ -3723,7 +3733,7 @@ def jobs_show(job_id: Annotated[str, typer.Argument(help="Job id")]) -> None:
 
     record = jobs_module.refresh_job(job_id) or jobs_module.get_job(job_id)
     if record is None:
-        console.print(f"[red]Unknown job '{job_id}'.[/red]")
+        console.print(f"[red]Unknown job '{escape(str(job_id))}'.[/red]")
         raise typer.Exit(1)
     _print_job(record)
 
@@ -3735,7 +3745,7 @@ def jobs_output(job_id: Annotated[str, typer.Argument(help="Job id")]) -> None:
 
     text = jobs_module.read_job_output(job_id)
     if text is None:
-        console.print(f"[red]Unknown job '{job_id}'.[/red]")
+        console.print(f"[red]Unknown job '{escape(str(job_id))}'.[/red]")
         raise typer.Exit(1)
     console.print(text or "(no output yet)", markup=False, highlight=False)
 
@@ -3747,10 +3757,10 @@ def jobs_cancel(job_id: Annotated[str, typer.Argument(help="Job id")]) -> None:
 
     record = jobs_module.cancel_job(job_id)
     if record is None:
-        console.print(f"[red]Unknown job '{job_id}'.[/red]")
+        console.print(f"[red]Unknown job '{escape(str(job_id))}'.[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} Job[/green] [cyan]{record.id}[/cyan] is now "
+        f"[green]{_check()} Job[/green] [cyan]{escape(str(record.id))}[/cyan] is now "
         f"[bold]{record.status}[/bold]."
     )
 
@@ -3781,12 +3791,12 @@ def jobs_tick() -> None:
         return
     for record in started:
         console.print(
-            f"[green]{_check()} Started[/green] [cyan]{record.id}[/cyan] "
-            f"([dim]{_short_prompt(record.prompt)}[/dim])"
+            f"[green]{_check()} Started[/green] [cyan]{escape(str(record.id))}[/cyan] "
+            f"([dim]{escape(str(_short_prompt(record.prompt)))}[/dim])"
         )
     for record, reason in skipped:
         console.print(
-            f"[yellow]Skipped[/yellow] [cyan]{record.id}[/cyan]: {escape(reason)}"
+            f"[yellow]Skipped[/yellow] [cyan]{escape(str(record.id))}[/cyan]: {escape(reason)}"
         )
     if skipped:
         raise typer.Exit(1)
@@ -3841,7 +3851,7 @@ def _print_sync_report(report: Any) -> None:
     for line in report.lines:
         console.print(line, markup=False, highlight=False)
     for error in report.errors:
-        console.print(f"[yellow]{error}[/yellow]")
+        console.print(f"[yellow]{escape(str(error))}[/yellow]")
     console.print(report.summary())
 
 
@@ -3869,7 +3879,7 @@ def sync_push_cmd(
     try:
         report = sync_module.push(force=force)
     except sync_module.SyncError as exc:
-        console.print(f"[yellow]{exc}[/yellow]")
+        console.print(f"[yellow]{escape(str(exc))}[/yellow]")
         raise typer.Exit(1)
     _print_sync_report(report)
 
@@ -3890,7 +3900,7 @@ def sync_pull_cmd(
     try:
         report = sync_module.pull(force=force)
     except sync_module.SyncError as exc:
-        console.print(f"[yellow]{exc}[/yellow]")
+        console.print(f"[yellow]{escape(str(exc))}[/yellow]")
         raise typer.Exit(1)
     _print_sync_report(report)
 
@@ -3906,7 +3916,7 @@ def sync_enable_cmd(
     try:
         settings = set_sync(enabled=True, path=str(path))
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Session sync enabled[/green] for machine "
@@ -3944,7 +3954,7 @@ def team_show_cmd() -> None:
     )
     for issue in team_module.policy_issues():
         color = "red" if issue["level"] == "error" else "yellow"
-        console.print(f"[{color}]{issue['message']}[/{color}]")
+        console.print(f"[{color}]{escape(str(issue['message']))}[/{color}]")
     try:
         policy = team_module.load_policy()
     except team_module.PolicyError:
@@ -3965,7 +3975,7 @@ def team_set_policy_cmd(
     try:
         settings = set_team(policy_path=path)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     if settings["policy_path"]:
         console.print(
@@ -3988,7 +3998,7 @@ def team_enforce_cmd(
     try:
         settings = set_team(enforce=normalized in {"on", "true", "enable"})
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Team policy "
@@ -4033,23 +4043,23 @@ def share_create_cmd(
     try:
         session = load_session(session_name, workspace_root=Path.cwd())
     except (FileNotFoundError, OSError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     if gist:
         ok, detail = share_module.share_to_gist(
             session, include_tool_output=include_tool_output, dest=output
         )
         if not ok:
-            console.print(f"[red]{detail}[/red]")
+            console.print(f"[red]{escape(str(detail))}[/red]")
             raise typer.Exit(1)
-        console.print(f"[green]{_check()} Shared as a secret gist:[/green] {detail}")
+        console.print(f"[green]{_check()} Shared as a secret gist:[/green] {escape(str(detail))}")
         return
     try:
         bundle_path = share_module.write_share(
             session, dest=output, include_tool_output=include_tool_output
         )
     except OSError as exc:
-        console.print(f"[red]Failed to write share bundle: {exc}[/red]")
+        console.print(f"[red]Failed to write share bundle: {escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
         f"[green]{_check()} Wrote redacted share bundle[/green] to "
@@ -4075,13 +4085,13 @@ def share_import_cmd(
     try:
         saved = share_module.import_share(path, name)
     except (share_module.ShareError, OSError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} Imported session[/green] as [cyan]{saved.stem}[/cyan]."
+        f"[green]{_check()} Imported session[/green] as [cyan]{escape(str(saved.stem))}[/cyan]."
     )
     console.print(
-        f"[dim]Resume it with kiwimatecoder --resume {saved.stem}.[/dim]"
+        f"[dim]Resume it with kiwimatecoder --resume {escape(str(saved.stem))}.[/dim]"
     )
 
 
@@ -4101,7 +4111,7 @@ def eval_list_cmd(
     try:
         discovered = eval_cases.discover_cases(cases_dir)
     except eval_cases.CaseError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(2)
     if not discovered:
         console.print("[yellow]No eval cases found.[/yellow]")
@@ -4162,7 +4172,7 @@ def eval_run_cmd(
         try:
             get_provider_config(provider)
         except KeyError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(2)
     try:
         report = runner.run_suite(
@@ -4173,7 +4183,7 @@ def eval_run_cmd(
             report_path=report_path,
         )
     except (runner.CaseError, OSError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(2)
     if json_output:
         console.print_json(render.report_to_json(report))

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 from kiwimatecoder import config
 from kiwimatecoder.redaction import redact
@@ -140,7 +141,9 @@ def _run_one(
         )
     if console is not None:
         status = "ok" if result.ok else f"exit {result.exit_code}"
-        console.print(f"[dim]hook {event} [{status}]: {redact(command)}[/dim]")
+        console.print(
+            f"[dim]hook {escape(event)} \\[{status}]: {escape(redact(command))}[/dim]"
+        )
         output = result.output.strip()
         if output:
             console.print(redact(output), style="dim", markup=False, highlight=False)

@@ -1141,6 +1141,88 @@ async def test_agent_budget_blocks_before_streaming(agent_session):
 
 
 @pytest.mark.anyio
+async def test_agent_ignores_a_hand_edited_negative_budget(agent_session):
+    # "max_tokens": -5 used to count as already spent: every turn was refused.
+    from kiwimatecoder import config
+
+    config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_FILE.write_text('{"budget": {"max_tokens": -5, "max_cost_usd": -1}}')
+    agent_session.prompt_tokens = 50
+    console = Console(quiet=True)
+    called = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        called["n"] += 1
+        yield TextDelta(text="hi")
+        yield Done(finish_reason="stop")
+
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat", side_effect=mock_stream
+        ),
+    ):
+        await agent.run_turn("hello")
+
+    assert called["n"] == 1
+
+
+@pytest.mark.anyio
+async def test_agent_ignores_a_hand_edited_huge_token_budget(agent_session):
+    # 0.8 * 10**400 raises OverflowError in the 80% warning, which ended the turn.
+    from kiwimatecoder import config
+
+    config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_FILE.write_text('{"budget": {"max_tokens": %s}}' % ("1" + "0" * 400))
+    agent_session.prompt_tokens = 50
+    console = Console(quiet=True)
+    called = {"n": 0}
+
+    async def mock_stream(*args, **kwargs):
+        called["n"] += 1
+        yield TextDelta(text="hi")
+        yield Done(finish_reason="stop")
+
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat", side_effect=mock_stream
+        ),
+    ):
+        await agent.run_turn("hello")
+
+    assert called["n"] == 1
+
+
+@pytest.mark.anyio
+async def test_agent_runs_with_a_token_budget_at_the_cap(agent_session):
+    from kiwimatecoder import config
+
+    config.set_budget(max_tokens=config.BUDGET_TOKENS_MAX)
+    agent_session.prompt_tokens = 50
+    console = Console(quiet=True)
+    log = track_console(console)
+
+    async def mock_stream(*args, **kwargs):
+        yield TextDelta(text="hi")
+        yield Done(finish_reason="stop")
+
+    agent = Agent(agent_session, console, MagicMock(return_value=True))
+    with (
+        patch("kiwimatecoder.config.get_key", return_value="dummy_key"),
+        patch(
+            "kiwimatecoder.client.UnifiedClient.stream_chat", side_effect=mock_stream
+        ),
+    ):
+        await agent.run_turn("hello")
+
+    assert not any("Budget" in text for _, text in log)
+    assert agent._budget_exceeded() == (False, "")
+
+
+@pytest.mark.anyio
 async def test_agent_warns_when_near_budget(agent_session):
     from kiwimatecoder import config
 

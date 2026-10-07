@@ -12,6 +12,7 @@ from kiwimatecoder.tools.paths import (
     atomic_write_text,
     display_path,
     resolve_in_workspace,
+    workspace_ref,
 )
 
 
@@ -104,7 +105,7 @@ def _edit_file(args: dict[str, Any], session: Session) -> ToolResult:
         atomic_write_text(resolved, new_text)
     except OSError as exc:
         return ToolResult.error(f"Could not write file: {exc}")
-    session.record_touched(display_path(resolved, session.workspace_root))
+    session.record_touched(workspace_ref(resolved, session.workspace_root))
     return ToolResult(content=f"Edited {path}.")
 
 

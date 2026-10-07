@@ -129,6 +129,62 @@ def test_clear_always_allowed_tools():
     assert config.get_always_allowed_tools() == []
 
 
+# A hand-edited file may hold a list or a string where the map belongs.
+BAD_TOOL_PERMISSIONS = [["run_bash"], "run_bash", ["a", "b"], [["run_bash", "x"]], 5, True]
+
+
+@pytest.mark.parametrize("stored", BAD_TOOL_PERMISSIONS, ids=repr)
+def test_a_malformed_tool_permissions_value_means_no_approvals(stored):
+    _write_raw_config({"version": config.CONFIG_VERSION, "tool_permissions": stored})
+
+    assert config.get_always_allowed_tools() == []
+
+
+@pytest.mark.parametrize("stored", BAD_TOOL_PERMISSIONS, ids=repr)
+def test_approvals_can_be_saved_over_a_malformed_tool_permissions_value(stored):
+    # persist_always_allowed_tool, remove_always_allowed_tool and
+    # clear_always_allowed_tools used to raise ValueError on a list or a string.
+    _write_raw_config({"version": config.CONFIG_VERSION, "tool_permissions": stored})
+    assert config.persist_always_allowed_tool("run_bash") == ["run_bash"]
+    assert config.get_always_allowed_tools() == ["run_bash"]
+    assert config.load_config()["tool_permissions"] == {"always_allow": ["run_bash"]}
+
+    _write_raw_config({"version": config.CONFIG_VERSION, "tool_permissions": stored})
+    assert config.remove_always_allowed_tool("run_bash") is False  # none to remove
+
+    _write_raw_config({"version": config.CONFIG_VERSION, "tool_permissions": stored})
+    assert config.clear_always_allowed_tools() == 0
+    assert config.load_config()["tool_permissions"] == {"always_allow": []}
+
+
+@pytest.mark.parametrize("stored", BAD_TOOL_PERMISSIONS, ids=repr)
+def test_applying_a_profile_replaces_a_malformed_tool_permissions_value(stored):
+    config.save_profile("work", {"always_allowed": ["run_bash"]})
+    cfg = config.load_config()
+    cfg["tool_permissions"] = stored
+    config.save_config(cfg)
+
+    config.apply_profile("work")
+
+    assert config.get_always_allowed_tools() == ["run_bash"]
+
+
+def test_other_keys_of_a_well_formed_tool_permissions_map_are_kept():
+    _write_raw_config(
+        {
+            "version": config.CONFIG_VERSION,
+            "tool_permissions": {"always_allow": ["a"], "note": "kept"},
+        }
+    )
+
+    config.persist_always_allowed_tool("b")
+
+    assert config.load_config()["tool_permissions"] == {
+        "always_allow": ["a", "b"],
+        "note": "kept",
+    }
+
+
 def test_persist_always_allowed_tool_survives_reload():
     config.persist_always_allowed_tool("run_bash")
 
@@ -223,6 +279,36 @@ def test_verify_command_roundtrip():
 
     assert config.set_verify_command("") == ""
     assert config.get_verify_command() == ""
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {"max_tokens": 0},
+        {"max_tokens": -5},
+        {"max_tokens": "lots"},
+        {"max_tokens": [1]},
+        {"max_cost_usd": 0},
+        {"max_cost_usd": -1.5},
+        {"max_cost_usd": "free"},
+        {"max_cost_usd": {"usd": 1}},
+    ],
+)
+def test_get_budget_ignores_a_stored_limit_that_set_budget_would_reject(stored):
+    # A negative limit is truthy, so the agent read it as already spent and
+    # refused every request; zero was shown as a limit but meant "none".
+    _write_raw_config({"budget": stored})
+
+    assert config.get_budget() == {}
+    assert any(i["key"] == "budget" for i in config.validate_config())  # still reported
+
+
+def test_get_budget_keeps_the_valid_limit_next_to_a_bad_one():
+    _write_raw_config({"budget": {"max_tokens": -5, "max_cost_usd": 2.5}})
+    assert config.get_budget() == {"max_cost_usd": 2.5}
+
+    _write_raw_config({"budget": {"max_tokens": "5000", "max_cost_usd": 0}})
+    assert config.get_budget() == {"max_tokens": 5000}
 
 
 def test_budget_roundtrip_and_validation():

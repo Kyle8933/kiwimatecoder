@@ -1,9 +1,12 @@
 import io
+import os
+import shlex
 
 import pytest
 from rich.console import Console
 
-from kiwimatecoder import catalog, config, ui
+from kiwimatecoder import catalog, config, share, ui
+from kiwimatecoder import commands as commands_module
 from kiwimatecoder.commands import (
     EXPERIMENTAL_GROUP,
     CommandResult,
@@ -12,6 +15,7 @@ from kiwimatecoder.commands import (
     dispatch,
     slash_argument_completions,
     slash_command_completions,
+    split_args,
 )
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import REGISTRY
@@ -1196,8 +1200,11 @@ def test_bare_config_opens_interactive_menu(session):
 
 
 def test_bare_config_menu_selection_lists_providers(session):
+    # "Providers" opens an action menu; listing is one of its choices.
+    selections = iter(["providers", "list"])
+
     def select(prompt: SelectionPrompt) -> str:
-        return "providers"
+        return next(selections)
 
     console = _console()
     dispatch("/config", session, console, selector=select)
@@ -1432,6 +1439,70 @@ def test_config_commands_allow_deny_and_clear(session):
     dispatch("/config commands clear", session, console)
     assert config.get_command_rules() == {"allow": [], "deny": []}
     assert session.command_rules == {"allow": [], "deny": []}
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "1e999"])
+def test_config_budget_cost_rejects_non_finite_limits(session, value):
+    console = _console()
+
+    dispatch(f"/config budget cost {value}", session, console)
+
+    assert "finite number" in _output(console)
+    assert config.get_budget() == {}
+    # Nothing was written (a rejected value does not even create the file), and
+    # certainly not the non-standard JSON NaN/Infinity.
+    if config.CONFIG_FILE.exists():
+        assert "NaN" not in config.CONFIG_FILE.read_text()
+        assert "Infinity" not in config.CONFIG_FILE.read_text()
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "1e999"])
+def test_config_budget_tokens_rejects_non_finite_limits(session, value):
+    console = _console()
+
+    dispatch(f"/config budget tokens {value}", session, console)
+
+    assert "whole number" in _output(console)
+    assert config.get_budget() == {}
+
+
+@pytest.mark.parametrize(
+    "value", ["1000000000000001", "1" + "0" * 400], ids=["cap+1", "10**400"]
+)
+def test_config_budget_tokens_rejects_a_limit_above_the_cap(session, value):
+    console = _console()
+
+    dispatch(f"/config budget tokens {value}", session, console)
+
+    assert "at most 1,000,000,000,000,000" in _output(console)
+    assert config.get_budget() == {}
+
+
+def test_config_budget_tokens_accepts_the_cap_and_the_menu_label_renders_it(session):
+    console = _console()
+
+    dispatch("/config budget tokens 1000000000000000", session, console)
+
+    assert config.get_budget() == {"max_tokens": config.BUDGET_TOKENS_MAX}
+    label = commands_module._budget_value("max_tokens", "tokens")(session)
+    assert label == "1,000,000,000,000,000 tokens"
+
+
+def test_config_budget_label_survives_a_hand_edited_huge_token_limit(session):
+    # The label formats the stored value with ":,.0f", which raised OverflowError.
+    config.CONFIG_FILE.write_text('{"budget": {"max_tokens": %s}}' % ("1" + "0" * 400))
+
+    assert commands_module._budget_value("max_tokens", "tokens")(session) == "no limit"
+
+
+def test_config_budget_ignores_a_hand_edited_non_finite_limit(session):
+    config.CONFIG_FILE.write_text('{"budget": {"max_tokens": 1e999, "max_cost_usd": NaN}}')
+    console = _console()
+
+    dispatch("/config budget", session, console)
+    dispatch("/config", session, console)  # the overview reads it too
+
+    assert "No budget limits set" in _output(console)
 
 
 def test_config_sampling_set_show_reset(session):
@@ -1828,3 +1899,181 @@ def test_config_action_descriptions_include_ui():
     from kiwimatecoder.commands import _CONFIG_ACTION_DESCRIPTIONS
 
     assert "ui" in _CONFIG_ACTION_DESCRIPTIONS
+
+
+def _save_session_using_removed_provider(session, tmp_path):
+    """A saved session whose custom provider was removed afterwards."""
+    from kiwimatecoder.session import Session, save_session
+
+    config.add_provider("foo", "Foo", "https://api.example.com/v1", "foo-model")
+    save_session(
+        Session(
+            provider_id="foo",
+            model="foo-model",
+            workspace_root=tmp_path,
+            messages=[{"role": "user", "content": "from the saved session"}],
+        ),
+        "stale",
+    )
+    config.remove_provider("foo")
+
+
+def test_load_refuses_a_session_whose_provider_was_removed(session, tmp_path):
+    _save_session_using_removed_provider(session, tmp_path)
+    console = _console(width=300)
+    before = (session.provider_id, session.model, list(session.messages), session.mode)
+
+    assert dispatch("/load stale", session, console) == CommandResult.CONTINUE
+
+    output = _output(console)
+    assert "Failed to load session" in output
+    assert "provider 'foo'" in output
+    assert "/config provider add" in output
+    assert "Loaded session" not in output
+    # nothing from the file was applied
+    assert (session.provider_id, session.model, list(session.messages), session.mode) == before
+
+
+def test_commands_still_work_after_a_refused_load(session, tmp_path):
+    # These raised UnknownProviderError once the stale provider had been copied in.
+    _save_session_using_removed_provider(session, tmp_path)
+    dispatch("/load stale", session, _console())
+    console = _console()
+
+    dispatch("/cost", session, console)
+    dispatch("/provider", session, console)
+
+    assert session.provider.id == "openrouter"
+    assert "Providers" in _output(console)
+
+
+def test_load_works_again_once_the_provider_is_back(session, tmp_path):
+    _save_session_using_removed_provider(session, tmp_path)
+    config.add_provider("foo", "Foo", "https://api.example.com/v1", "foo-model")
+    console = _console()
+
+    dispatch("/load stale", session, console)
+
+    assert session.provider_id == "foo"
+    assert session.messages == [{"role": "user", "content": "from the saved session"}]
+    assert "Loaded session" in _output(console)
+
+
+def test_context_add_reports_a_glob_pattern_that_cannot_be_matched(session):
+    # Path.glob raises ValueError for "a**b" on every platform.
+    console = _console(width=200)
+
+    dispatch("/context add a**b src/**x/*.py", session, console)
+
+    output = _output(console)
+    assert output.count("Invalid glob pattern") == 2
+    assert "Context files: 0 (0 added, 2 skipped)." in output
+    assert session.context_files == []
+
+
+def test_context_add_reports_a_pattern_the_platform_cannot_glob(session, monkeypatch):
+    # On Windows "/src/*.py" is rooted but not absolute, and Path.glob raises
+    # NotImplementedError ("Non-relative patterns are unsupported") for it.
+    import pathlib
+
+    def refuse(self, pattern, *args, **kwargs):
+        raise NotImplementedError("Non-relative patterns are unsupported")
+
+    monkeypatch.setattr(pathlib.Path, "glob", refuse)
+    console = _console(width=200)
+
+    dispatch("/context add src/*.py", session, console)
+
+    assert "Invalid glob pattern: Non-relative patterns are unsupported" in _output(console)
+    assert session.context_files == []
+
+
+@pytest.mark.parametrize("pattern", ["/src/*.py", "//host/share/*.py"])
+def test_context_add_refuses_a_rooted_glob(session, pattern):
+    # Rooted on POSIX and on Windows; on Windows it is not "absolute" (no drive),
+    # which is what used to let it reach Path.glob.
+    console = _console(width=200)
+
+    dispatch(f"/context add {pattern}", session, console)
+
+    assert "Glob patterns must be relative to the workspace" in _output(console)
+    assert session.context_files == []
+
+
+# --- typed arguments on Windows: a backslash is a path separator, not an escape ---------
+
+WINDOWS_ARGUMENT_CASES = [
+    # (typed text, what a Windows user means)
+    (r"C:\Users\me\ca.pem", [r"C:\Users\me\ca.pem"]),
+    (r'"C:\my dir\ca.pem"', [r"C:\my dir\ca.pem"]),
+    (r"'C:\my dir\ca.pem'", [r"C:\my dir\ca.pem"]),  # what shlex.quote / shlex.join emit
+    (r"\\server\share\ca.pem", [r"\\server\share\ca.pem"]),
+    (r"import C:\a\b.json --name 'x y'", ["import", r"C:\a\b.json", "--name", "x y"]),
+    (r'"C:\dir\"', ["C:\\dir\\"]),  # a trailing backslash does not escape the closing quote
+    (r"'C:\[x]'=1", [r"C:\[x]=1"]),  # quotes still join with the text around them
+]
+
+
+@pytest.mark.parametrize(("text", "expected"), WINDOWS_ARGUMENT_CASES)
+def test_split_args_keeps_backslashes_on_windows(text, expected):
+    assert split_args(text, windows=True) == expected
+
+
+def test_split_args_reads_back_what_shlex_quotes_on_windows():
+    values = [r"C:\Users\me\ca.pem", r"C:\[x]", "it's", r"C:\O'Brien\ca.pem", "a b", ""]
+    assert split_args(shlex.join(values), windows=True) == values
+
+
+def test_split_args_is_shlex_split_on_posix():
+    for text in (r"a\ b", r'"a\"b"', r"C:\dir\f", "it's", "x #y", "'[/x]'=1"):
+        try:
+            expected: object = shlex.split(text)
+        except ValueError:
+            with pytest.raises(ValueError):
+                split_args(text, windows=False)
+        else:
+            assert split_args(text, windows=False) == expected
+    assert split_args(r"a\ b", windows=False) == ["a b"]  # the escape still works here
+
+
+def test_split_args_reports_an_unterminated_quote_on_windows():
+    with pytest.raises(ValueError):
+        split_args(r"C:\Users\O'Brien\ca.pem", windows=True)  # quote it: "C:\Users\O'Brien\ca.pem"
+
+
+def test_split_args_follows_os_name_by_default(monkeypatch):
+    with monkeypatch.context() as patch:  # only around the call: Path() needs the real name
+        patch.setattr(os, "name", "nt")
+        on_windows = split_args(r"C:\a\b.json")
+    assert on_windows == [r"C:\a\b.json"]
+    assert split_args(r"C:\a\b.json", windows=False) == ["C:ab.json"]
+
+
+def test_slash_commands_get_windows_paths_intact(session, monkeypatch):
+    # Simulates Windows on any platform: every handler reads its argument through
+    # commands.split_args, so make that behave as it does on Windows.
+    real = commands_module.split_args
+    monkeypatch.setattr(commands_module, "split_args", lambda text: real(text, windows=True))
+    seen: list[str] = []
+
+    def fake_set_network(**kwargs):
+        seen.append(kwargs["ca_bundle"])
+        return {"proxy": "", "ca_bundle": kwargs["ca_bundle"], "offline": False}
+
+    def fake_import(path, name=None):
+        seen.append(path)
+        return session.workspace_root / "shared_x.json"
+
+    monkeypatch.setattr(commands_module, "set_network", fake_set_network)
+    monkeypatch.setattr(share, "import_share", fake_import)
+    console = _console()
+    path = r"C:\Users\runneradmin\AppData\Local\Temp\pytest-0\dir\ca.pem"
+    spaced = r"C:\Users\Jane Doe\ca.pem"
+
+    dispatch(f"/config network ca {path}", session, console)
+    dispatch(f'/config network ca "{spaced}"', session, console)
+    dispatch(f"/config network ca {shlex.quote(spaced)}", session, console)
+    dispatch(f"/share import {path}", session, console)
+    dispatch(f'/share import "{spaced}" --name x', session, console)
+
+    assert seen == [path, spaced, spaced, path, spaced]

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -35,6 +36,11 @@ MAX_OUTPUT = 30_000
 KILL_GRACE_SECONDS = 5.0
 _POLL_INTERVAL = 0.05
 _SENTINEL_RE = re.compile(r"^__KIWI_([0-9a-f]{12})__\s+(-?\d+)\s*$")
+# Windows has no SIGKILL; a forced kill there is TerminateProcess either way.
+_SIGKILL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_ERROR_ACCESS_DENIED = 5
+_STILL_ACTIVE = 259
 
 
 class ShellError(RuntimeError):
@@ -64,16 +70,112 @@ def _bounded_output(text: str, truncated: bool) -> str:
     return text + "\n... [output truncated]"
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _find_windows_bash() -> str | None:
+    """Find Git for Windows' ``bash.exe``; WSL's launcher in System32 cannot be used."""
+    roots = [os.environ.get(n) for n in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)")]
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        roots.append(os.path.join(local, "Programs"))
+    for root in roots:
+        if root:
+            candidate = os.path.join(root, "Git", "bin", "bash.exe")
+            if os.path.isfile(candidate):
+                return candidate
+    found = shutil.which("bash")
+    if not found or not os.path.isabs(found):
+        # shutil.which tries the current directory first on Windows and reports a hit
+        # there as ".\bash.exe"; that is a file in the workspace, never a shell to run.
+        return None
+    system_root = os.environ.get("SystemRoot")
+    if system_root and os.path.normcase(found).startswith(os.path.normcase(system_root)):
+        return None
+    return found
+
+
 def _shell_argv() -> list[str]:
-    if os.name == "nt":  # pragma: no cover - Windows-only branch
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/Q", "/K"]
+    """Argv of the persistent shell: ``/bin/sh``, or Git Bash on Windows.
+
+    The sentinel protocol (``printf`` and ``$?``) and the ``cd``/``export`` the tool
+    promises are POSIX shell features. cmd.exe prints a prompt before every command, so
+    the marker never starts a line and every call would time out; fail at once instead.
+    """
+    if _is_windows():
+        bash = _find_windows_bash()
+        if bash is None:
+            raise ShellError(
+                "The persistent shell needs a POSIX shell on Windows and none was found. "
+                "Install Git for Windows (Git Bash), or turn the persistent shell off with "
+                "`config shell persistent off` and use run_bash."
+            )
+        return [bash]
     return ["/bin/sh"]
+
+
+def _write_stdin(proc: subprocess.Popen[str], payload: str) -> None:
+    """Send ``payload`` to the shell without newline translation.
+
+    A text-mode pipe on Windows turns every ``"\\n"`` into ``"\\r\\n"``, and a POSIX shell then
+    reads the ``"\\r"`` as part of the command (``cd sub\\r``, ``(exit 3)\\r``). The bytes go to
+    the binary layer instead; POSIX keeps using the text layer.
+    """
+    stdin = proc.stdin
+    assert stdin is not None
+    raw = getattr(stdin, "buffer", None) if _is_windows() else None
+    if raw is not None:
+        raw.write(payload.encode("utf-8"))
+        raw.flush()
+        return
+    stdin.write(payload)
+    stdin.flush()
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    """Win32 liveness check; ``os.kill(pid, 0)`` there sends CTRL_C_EVENT instead."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # Access denied still means the process exists, it just belongs to someone else.
+        return bool(getattr(ctypes, "get_last_error")() == _ERROR_ACCESS_DENIED)
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return bool(code.value == _STILL_ACTIVE)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _kill_tree_windows(pid: int) -> None:
+    """Kill ``pid`` and its descendants; Windows has no process group to signal."""
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _pid_alive(pid: int | None) -> bool:
     """Whether ``pid`` exists, tolerating permission errors as "alive"."""
     if not pid or pid <= 0:
         return False
+    if _is_windows():
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -87,11 +189,13 @@ def _pid_alive(pid: int | None) -> bool:
 
 def _send_signal(proc: subprocess.Popen[Any], sig: int) -> None:
     """Signal the process group when possible, falling back to the process."""
-    if os.name == "nt":  # pragma: no cover - Windows-only branch
-        if sig == signal.SIGTERM:
-            proc.terminate()
-        else:
+    if _is_windows():
+        # The shell wrapper's children would otherwise outlive it and keep our pipes open.
+        _kill_tree_windows(proc.pid)
+        try:
             proc.kill()
+        except OSError:
+            pass
         return
     try:
         os.killpg(os.getpgid(proc.pid), sig)
@@ -115,7 +219,7 @@ def _terminate_process(proc: subprocess.Popen[Any], *, grace: float = KILL_GRACE
         return
     except subprocess.TimeoutExpired:
         pass
-    _send_signal(proc, signal.SIGKILL)
+    _send_signal(proc, _SIGKILL)
     try:
         proc.wait(timeout=2.0)
     except subprocess.TimeoutExpired:
@@ -127,6 +231,9 @@ def _kill_pid(pid: int | None, *, grace: float = KILL_GRACE_SECONDS) -> None:
     if not _pid_alive(pid):
         return
     assert pid is not None
+    if _is_windows():
+        _kill_tree_windows(pid)
+        return
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
@@ -207,6 +314,7 @@ class PersistentShell:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8" if _is_windows() else None,
                 errors="replace",
                 bufsize=1,
                 start_new_session=True,
@@ -223,8 +331,6 @@ class PersistentShell:
         self._reader.start()
 
     def _sentinel_command(self, command_id: str) -> str:
-        if os.name == "nt":  # pragma: no cover - Windows-only branch
-            return f"echo __KIWI_{command_id}__ %errorlevel%"
         return f"printf '\\n__KIWI_{command_id}__ %s\\n' $?"
 
     def _read_loop(self, proc: subprocess.Popen[str]) -> None:
@@ -294,8 +400,7 @@ class PersistentShell:
             self._pending_id = command_id
             self._exit_code = None
         try:
-            proc.stdin.write(payload)
-            proc.stdin.flush()
+            _write_stdin(proc, payload)
         except (BrokenPipeError, OSError) as exc:
             self.close()
             return None, f"Error: the shell exited before running the command ({exc})"
