@@ -1089,6 +1089,17 @@ REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 OUTPUT_STYLES = ("default", "concise", "explanatory", "code")
 
 
+def _permissions_section(cfg: dict[str, Any]) -> dict[str, Any]:
+    """A copy of the stored ``tool_permissions`` map, ready to be updated.
+
+    ``get_always_allowed_tools`` already treats anything but a map as "no
+    approvals"; the writers do the same instead of failing on it, so a
+    hand-edited list or string is replaced by a proper map on the next write.
+    """
+    stored = cfg.get("tool_permissions")
+    return dict(stored) if isinstance(stored, dict) else {}
+
+
 def get_always_allowed_tools(cfg: dict[str, Any] | None = None) -> list[str]:
     """Return tools the user permanently approved with "always"."""
     cfg = cfg or load_config()
@@ -1107,7 +1118,7 @@ def persist_always_allowed_tool(tool_name: str) -> list[str]:
     if not name:
         return current
     allowed = list(dict.fromkeys([*current, name]))
-    perms = dict(cfg.get("tool_permissions") or {})
+    perms = _permissions_section(cfg)
     perms["always_allow"] = allowed
     cfg["tool_permissions"] = perms
     save_config(cfg)
@@ -1120,7 +1131,7 @@ def remove_always_allowed_tool(tool_name: str) -> bool:
     current = get_always_allowed_tools(cfg)
     if tool_name not in current:
         return False
-    perms = dict(cfg.get("tool_permissions") or {})
+    perms = _permissions_section(cfg)
     perms["always_allow"] = [name for name in current if name != tool_name]
     cfg["tool_permissions"] = perms
     save_config(cfg)
@@ -1131,7 +1142,7 @@ def clear_always_allowed_tools() -> int:
     """Remove every persisted tool approval, returning how many were cleared."""
     cfg = load_config()
     current = get_always_allowed_tools(cfg)
-    perms = dict(cfg.get("tool_permissions") or {})
+    perms = _permissions_section(cfg)
     perms["always_allow"] = []
     cfg["tool_permissions"] = perms
     save_config(cfg)
@@ -3755,7 +3766,7 @@ def _apply_profile_values(cfg: dict[str, Any], profile: dict[str, Any]) -> None:
             "deny": list(profile["command_rules"]["deny"]),
         }
     if "always_allowed" in profile:
-        perms = dict(cfg.get("tool_permissions") or {})
+        perms = _permissions_section(cfg)
         perms["always_allow"] = list(profile["always_allowed"])
         cfg["tool_permissions"] = perms
 

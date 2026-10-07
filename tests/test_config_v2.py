@@ -129,6 +129,62 @@ def test_clear_always_allowed_tools():
     assert config.get_always_allowed_tools() == []
 
 
+# A hand-edited file may hold a list or a string where the map belongs.
+BAD_TOOL_PERMISSIONS = [["run_bash"], "run_bash", ["a", "b"], [["run_bash", "x"]], 5, True]
+
+
+@pytest.mark.parametrize("stored", BAD_TOOL_PERMISSIONS, ids=repr)
+def test_a_malformed_tool_permissions_value_means_no_approvals(stored):
+    _write_raw_config({"version": config.CONFIG_VERSION, "tool_permissions": stored})
+
+    assert config.get_always_allowed_tools() == []
+
+
+@pytest.mark.parametrize("stored", BAD_TOOL_PERMISSIONS, ids=repr)
+def test_approvals_can_be_saved_over_a_malformed_tool_permissions_value(stored):
+    # persist_always_allowed_tool, remove_always_allowed_tool and
+    # clear_always_allowed_tools used to raise ValueError on a list or a string.
+    _write_raw_config({"version": config.CONFIG_VERSION, "tool_permissions": stored})
+    assert config.persist_always_allowed_tool("run_bash") == ["run_bash"]
+    assert config.get_always_allowed_tools() == ["run_bash"]
+    assert config.load_config()["tool_permissions"] == {"always_allow": ["run_bash"]}
+
+    _write_raw_config({"version": config.CONFIG_VERSION, "tool_permissions": stored})
+    assert config.remove_always_allowed_tool("run_bash") is False  # none to remove
+
+    _write_raw_config({"version": config.CONFIG_VERSION, "tool_permissions": stored})
+    assert config.clear_always_allowed_tools() == 0
+    assert config.load_config()["tool_permissions"] == {"always_allow": []}
+
+
+@pytest.mark.parametrize("stored", BAD_TOOL_PERMISSIONS, ids=repr)
+def test_applying_a_profile_replaces_a_malformed_tool_permissions_value(stored):
+    config.save_profile("work", {"always_allowed": ["run_bash"]})
+    cfg = config.load_config()
+    cfg["tool_permissions"] = stored
+    config.save_config(cfg)
+
+    config.apply_profile("work")
+
+    assert config.get_always_allowed_tools() == ["run_bash"]
+
+
+def test_other_keys_of_a_well_formed_tool_permissions_map_are_kept():
+    _write_raw_config(
+        {
+            "version": config.CONFIG_VERSION,
+            "tool_permissions": {"always_allow": ["a"], "note": "kept"},
+        }
+    )
+
+    config.persist_always_allowed_tool("b")
+
+    assert config.load_config()["tool_permissions"] == {
+        "always_allow": ["a", "b"],
+        "note": "kept",
+    }
+
+
 def test_persist_always_allowed_tool_survives_reload():
     config.persist_always_allowed_tool("run_bash")
 
