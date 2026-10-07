@@ -1672,7 +1672,7 @@ def set_budget(
     Use :func:`clear_budget` to remove every limit at once.
     """
     cfg = load_config()
-    current = dict(cfg.get("budget") or {})
+    current = _as_map(cfg.get("budget"))
     if max_tokens is not _UNSET:
         if max_tokens is None:
             current.pop("max_tokens", None)
@@ -2322,7 +2322,12 @@ def set_context_window(tokens: int | str | None) -> int:
 
 
 def get_sampling(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return validated sampling parameters (only explicitly set keys)."""
+    """Return validated sampling parameters (only explicitly set keys).
+
+    A stored value is kept only when :func:`set_sampling` would accept it, so a
+    hand-edited ``"reasoning_effort": "[/x]"`` or ``"temperature": 5`` is
+    ignored here and reported by ``validate_config``.
+    """
     cfg = cfg or load_config()
     stored = cfg.get("sampling") or {}
     if not isinstance(stored, dict):
@@ -2333,18 +2338,9 @@ def get_sampling(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         if value is None:
             continue
         try:
-            if key in ("temperature", "top_p"):
-                number = float(value)
-                if math.isfinite(number):
-                    clean[key] = number
-            elif key == "max_tokens":
-                clean[key] = int(value)
-            else:
-                effort = str(value).strip().lower()
-                if effort:
-                    clean[key] = effort
-        except _NUMBER_ERRORS:
-            continue
+            clean[key] = _coerce_sampling(key, value)
+        except ValueError:
+            continue  # unusable: ignored here, reported by validate_config
     return clean
 
 
@@ -2380,7 +2376,7 @@ def _coerce_sampling(key: str, value: Any) -> Any:
 def set_sampling(updates: dict[str, Any]) -> dict[str, Any]:
     """Set/clear sampling parameters (a value of None or "" clears a key)."""
     cfg = load_config()
-    current = dict(cfg.get("sampling") or {})
+    current = _as_map(cfg.get("sampling"))
     for key, value in updates.items():
         if key not in SAMPLING_KEYS:
             raise ValueError(
@@ -3780,7 +3776,7 @@ def save_profile(
     if values is None:
         values = _capture_profile_values(cfg)
     profile = _normalize_profile(name, values, cfg)
-    stored = dict(cfg.get("profiles") or {})
+    stored = _as_map(cfg.get("profiles"))
     stored[_profile_name(name)] = profile
     cfg["profiles"] = stored
     save_config(cfg)
@@ -3843,7 +3839,7 @@ def remove_profile(name: str) -> bool:
     if not cleaned:
         return False
     cfg = load_config()
-    stored = dict(cfg.get("profiles") or {})
+    stored = _as_map(cfg.get("profiles"))
     if cleaned not in stored:
         return False
     del stored[cleaned]
@@ -3855,7 +3851,7 @@ def remove_profile(name: str) -> bool:
 def rename_profile(old: str, new: str) -> bool:
     """Rename a saved profile. Returns whether the old name existed."""
     cfg = load_config()
-    stored = dict(cfg.get("profiles") or {})
+    stored = _as_map(cfg.get("profiles"))
     old_clean = str(old).strip()
     if old_clean not in stored:
         return False

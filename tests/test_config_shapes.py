@@ -10,6 +10,12 @@ failed, not just the ones that use the section. An entry of the wrong type
 
 Such a value now counts as empty, the rest of the config still loads, and
 ``validate_config`` still reports it.
+
+``budget``, ``sampling`` and ``profiles`` had the same flaw in their writers
+(``set_budget``, ``set_sampling``, ``save_profile``, ``remove_profile``,
+``rename_profile`` copied the stored value with ``dict(...)``), and
+``get_sampling`` accepted values ``set_sampling`` would refuse. They are covered
+at the end of this file.
 """
 
 from __future__ import annotations
@@ -246,5 +252,210 @@ def test_the_commands_that_show_state_survive_a_section_of_the_wrong_type(
             dispatch(command.replace("{V}", "x"), session, console)
         except Exception as exc:
             crashes.append(f"{command} -> {type(exc).__name__}: {exc}")
+
+    assert not crashes, "\n".join(crashes)
+
+
+# --- budget, sampling and profiles ---------------------------------------------
+
+WRITTEN_SECTIONS = ("budget", "sampling", "profiles")
+
+
+@pytest.mark.parametrize("shape", NOT_MAPS)
+@pytest.mark.parametrize("section", WRITTEN_SECTIONS)
+def test_a_section_that_is_not_a_map_is_read_as_empty(section, shape):
+    _store(**{section: NOT_MAPS[shape], "output_style": "concise"})
+
+    assert config.load_config()["output_style"] == "concise"
+    assert config.get_budget() == {}
+    assert config.get_sampling() == {}
+    assert config.get_profiles() == {}
+    assert any(i["key"] == section for i in config.validate_config())
+
+
+@pytest.mark.parametrize("shape", NOT_MAPS)
+def test_set_budget_replaces_a_budget_that_is_not_a_map(shape):
+    _store(budget=NOT_MAPS[shape])
+
+    assert config.set_budget(max_tokens=100) == {"max_tokens": 100}
+
+    _store(budget=NOT_MAPS[shape])
+    assert config.set_budget(max_cost_usd=1.5) == {"max_cost_usd": 1.5}
+    assert config.load_config()["budget"] == {"max_cost_usd": 1.5}
+
+    _store(budget=NOT_MAPS[shape])
+    config.clear_budget()
+    assert config.load_config()["budget"] == {}
+
+
+@pytest.mark.parametrize("shape", NOT_MAPS)
+def test_set_sampling_replaces_a_sampling_value_that_is_not_a_map(shape):
+    _store(sampling=NOT_MAPS[shape])
+
+    assert config.set_sampling({"temperature": 0.5}) == {"temperature": 0.5}
+
+    _store(sampling=NOT_MAPS[shape])
+    config.reset_sampling()
+    assert config.load_config()["sampling"] == {}
+
+
+@pytest.mark.parametrize("shape", NOT_MAPS)
+def test_profiles_can_be_saved_removed_and_renamed_over_a_value_that_is_not_a_map(shape):
+    _store(profiles=NOT_MAPS[shape])
+    config.save_profile("work", {"model": "m"})
+    assert list(config.get_profiles()) == ["work"]
+
+    _store(profiles=NOT_MAPS[shape])
+    assert config.remove_profile("work") is False
+    assert config.rename_profile("work", "home") is False
+
+    _store(profiles=NOT_MAPS[shape])
+    config.save_profile("snapshot")  # captures the current settings
+    assert "snapshot" in config.get_profiles()
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("reasoning_effort", "[/x]"),
+        ("reasoning_effort", ["low"]),
+        ("reasoning_effort", "extreme"),
+        ("temperature", 5),
+        ("temperature", -1),
+        ("temperature", "hot"),
+        ("top_p", 1.5),
+        ("max_tokens", 0),
+        ("max_tokens", -5),
+        ("max_tokens", [1]),
+        ("max_tokens", "many"),
+    ],
+    ids=repr,
+)
+def test_a_sampling_value_set_sampling_would_refuse_is_ignored(key, value):
+    other = {"temperature": 0.9} if key == "top_p" else {"top_p": 0.9}
+    _store(sampling={key: value, **other})
+
+    assert config.get_sampling() == other
+    assert any(i["key"] == f"sampling.{key}" for i in config.validate_config())
+    # ... and a profile can still be captured from the settings
+    config.save_profile("snapshot")
+    assert config.get_profile("snapshot")["sampling"] == other
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("reasoning_effort", " High ", "high"),
+        ("temperature", "0.7", 0.7),
+        ("temperature", 2, 2.0),
+        ("top_p", 0, 0.0),
+        ("max_tokens", 100.0, 100),
+    ],
+)
+def test_usable_sampling_values_are_kept(key, value, expected):
+    _store(sampling={key: value})
+
+    assert config.get_sampling() == {key: expected}
+
+
+BAD_PROFILE_ENTRIES = {
+    "str": {"p": "x"},
+    "int": {"p": 5},
+    "list": {"p": ["x"]},
+    "none": {"p": None},
+    "inner-lists": {"p": {"budget": ["x"], "sampling": ["x"], "command_rules": "x"}},
+    "inner-dicts": {"p": {"budget": "x", "sampling": "x", "always_allowed": {"a": 1}}},
+}
+
+
+@pytest.mark.parametrize("shape", BAD_PROFILE_ENTRIES)
+def test_a_profile_that_does_not_validate_is_left_out_but_can_be_removed(shape):
+    _store(profiles={**BAD_PROFILE_ENTRIES[shape], "ok": {"model": "m"}})
+
+    # `None` is an empty profile, which is valid; the others do not validate
+    assert sorted(config.get_profiles()) == (["ok", "p"] if shape == "none" else ["ok"])
+    if shape != "none":
+        with pytest.raises(ValueError):  # a clean error, not a TypeError
+            config.apply_profile("p")
+
+    assert config.remove_profile("p") is True
+    assert list(config.load_config()["profiles"]) == ["ok"]
+
+
+@pytest.mark.parametrize("shape", ["str", "int", "list", "inner-lists", "inner-dicts"])
+def test_renaming_a_profile_that_does_not_validate_says_so(shape):
+    _store(profiles=BAD_PROFILE_ENTRIES[shape])
+
+    with pytest.raises(ValueError):
+        config.rename_profile("p", "q")
+
+
+# The commands that write these sections, run over a value that is not a map.
+WRITING_COMMANDS = [
+    (["config", "budget", "tokens", "100"], "budget", {"max_tokens": 100}),
+    (["config", "budget", "cost", "1.5"], "budget", {"max_cost_usd": 1.5}),
+    (["config", "budget", "clear"], "budget", {}),
+    (["config", "sampling", "set", "temperature=0.5"], "sampling", {"temperature": 0.5}),
+    (["config", "sampling", "reset"], "sampling", {}),
+]
+
+
+@pytest.mark.parametrize("shape", NOT_MAPS)
+@pytest.mark.parametrize(("argv", "section", "expected"), WRITING_COMMANDS, ids=" ".join)
+def test_the_commands_that_write_a_section_replace_a_value_that_is_not_a_map(
+    argv, section, expected, shape, cli, monkeypatch  # noqa: F811 (imported fixture)
+):
+    _install(monkeypatch, "zzz")
+    _store(**{section: NOT_MAPS[shape]})
+
+    result = CliRunner().invoke(main.app, argv, env={"HOME": str(cli)})
+
+    assert result.exception is None, result.exception
+    assert result.exit_code == 0, result.output
+    assert config.load_config()[section] == expected
+
+
+@pytest.mark.parametrize("shape", NOT_MAPS)
+def test_the_profile_commands_replace_a_value_that_is_not_a_map(shape, cli, monkeypatch):  # noqa: F811
+    _install(monkeypatch, "zzz")
+    runner = CliRunner()
+    env = {"HOME": str(cli)}
+    _store(profiles=NOT_MAPS[shape])
+
+    save = runner.invoke(main.app, ["config", "profile", "save", "work"], env=env)
+    rename = runner.invoke(main.app, ["config", "profile", "rename", "work", "home"], env=env)
+    remove = runner.invoke(main.app, ["config", "profile", "remove", "home"], env=env)
+
+    for result in (save, rename, remove):
+        assert result.exception is None, result.exception
+        assert result.exit_code == 0, result.output
+    assert config.load_config()["profiles"] == {}
+
+
+@pytest.mark.parametrize("section", WRITTEN_SECTIONS)
+def test_every_command_that_shows_state_survives_these_sections_too(
+    section, cli, monkeypatch, leaves, tmp_path  # noqa: F811 (imported fixtures)
+):
+    _install(monkeypatch, "zzz")
+    runner = CliRunner()
+    crashes = []
+    for shape, value in {**NOT_MAPS, "entries": {"p": "x", "max_tokens": ["x"]}}.items():
+        _store(**{section: value})
+        for path, command in leaves:
+            required = [p for p in command.params if _is_argument(p) and p.required]
+            if _is_wipe(path) or (_string_params(command) and required):
+                continue
+            result = runner.invoke(main.app, list(path), env={"HOME": str(cli)})
+            if result.exception is not None and not isinstance(result.exception, SystemExit):
+                crashes.append(f"{shape}: {' '.join(path)} -> {type(result.exception).__name__}")
+        session = Session(
+            provider_id="openrouter", model="m", mode=PermissionMode.ASK, workspace_root=tmp_path
+        )
+        console = StrictConsole("zzz")
+        for command in (*SHOW_COMMANDS, "/cost"):
+            try:
+                dispatch(command.replace("{V}", "x"), session, console)
+            except Exception as exc:
+                crashes.append(f"{shape}: {command} -> {type(exc).__name__}: {exc}")
 
     assert not crashes, "\n".join(crashes)
