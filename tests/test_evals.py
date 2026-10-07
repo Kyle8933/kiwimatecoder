@@ -111,6 +111,22 @@ def test_parse_case_rejects_unsafe_paths(bad_path):
         )
 
 
+def test_parse_case_rejects_rooted_paths_windows_flavour(monkeypatch):
+    # On Windows "/etc/passwd" has a root but no drive, so is_absolute() is False.
+    from pathlib import PureWindowsPath
+
+    monkeypatch.setattr(eval_cases, "Path", PureWindowsPath)
+    for bad in ("/etc/passwd", "C:/x", "C:x"):
+        with pytest.raises(eval_cases.CaseError):
+            eval_cases.parse_case(
+                {"name": "n", "prompt": "p", "files": {bad: "x"}, "expect": {}}
+            )
+    case = eval_cases.parse_case(
+        {"name": "n", "prompt": "p", "files": {"dir/a.txt": "x"}, "expect": {}}
+    )
+    assert "dir/a.txt" in case.files
+
+
 def test_load_case_reports_invalid_json(tmp_path):
     path = tmp_path / "bad.json"
     path.write_text("{not json", encoding="utf-8")

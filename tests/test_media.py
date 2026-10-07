@@ -306,6 +306,16 @@ def test_validate_config_flags_bad_media():
     } <= keys
 
 
+def test_media_output_dir_rejects_rooted_and_drive_paths_windows_flavour(monkeypatch):
+    # On Windows "/abs" has a root but no drive, so Path.is_absolute() is False.
+    from pathlib import PureWindowsPath
+
+    monkeypatch.setattr(config, "Path", PureWindowsPath)
+    for bad in ("/abs", "\\abs", "C:/abs", "C:abs", "\\\\srv\\share\\x", "../x", "~/x"):
+        assert config._valid_media_output_dir(bad) is None, bad
+    assert config._valid_media_output_dir("art/generated") == "art/generated"
+
+
 def test_validate_config_accepts_media_defaults():
     cfg = config._empty_config()
     assert config.validate_config(cfg) == []

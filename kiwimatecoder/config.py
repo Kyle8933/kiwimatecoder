@@ -47,7 +47,7 @@ import re
 import socket
 import time
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from kiwimatecoder import catalog
@@ -2763,13 +2763,23 @@ VIDEO_DURATION_MIN = 1
 VIDEO_DURATION_MAX = 60
 
 
+def has_path_anchor(path: PurePath) -> bool:
+    """Whether ``path`` is absolute, rooted, or drive-qualified (not workspace-relative).
+
+    On Windows a rooted path such as "/etc" or a drive-relative one such as "C:foo"
+    is not ``is_absolute()``, yet joining it onto a workspace root escapes the
+    workspace. On POSIX this is the same as ``is_absolute()``.
+    """
+    return path.is_absolute() or bool(path.root) or bool(path.drive)
+
+
 def _valid_media_output_dir(value: object) -> str | None:
     """Return a relative output dir that stays inside the workspace, or None."""
     text = str(value or "").strip()
     if not text or "~" in text:
         return None
     path = Path(text)
-    if path.is_absolute():
+    if has_path_anchor(path):
         return None
     if any(part == ".." for part in path.parts):
         return None

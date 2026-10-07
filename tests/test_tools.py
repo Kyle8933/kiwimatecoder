@@ -1,9 +1,16 @@
+from pathlib import PureWindowsPath
+
 import pytest
 
 from kiwimatecoder import tools
 from kiwimatecoder.tools.ask import _ask_user
 from kiwimatecoder.tools.list_dir import _list_dir
-from kiwimatecoder.tools.paths import PathError, resolve_in_workspace
+from kiwimatecoder.tools.paths import (
+    PathError,
+    display_path,
+    resolve_in_workspace,
+    workspace_ref,
+)
 from kiwimatecoder.tools.read_file import _read_file
 from kiwimatecoder.tools.run_bash import _run_bash
 from kiwimatecoder.tools.search import _search
@@ -187,3 +194,19 @@ def test_ask_user_rejects_empty_answer(session):
     result = _ask_user({"question": "Pick"}, session)
 
     assert not result.ok
+
+
+def test_workspace_ref_is_posix_but_display_path_is_native_on_windows():
+    """Simulate Windows path semantics on any OS (stored refs must be portable)."""
+
+    class WinPath(PureWindowsPath):
+        def resolve(self, strict=False):  # pure paths have no resolve(); these are absolute
+            return self
+
+    root = WinPath("C:/ws")
+    nested = WinPath("C:/ws/out/new.txt")
+    assert workspace_ref(nested, root) == "out/new.txt"  # stored in touched/context files
+    assert display_path(nested, root) == "out\\new.txt"  # shown to the user, OS-native
+    assert workspace_ref(WinPath("C:/ws/top.py"), root) == "top.py"
+    # outside the workspace: unchanged, still absolute and native
+    assert workspace_ref(WinPath("D:/other/x.txt"), root) == "D:\\other\\x.txt"

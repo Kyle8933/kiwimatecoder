@@ -301,7 +301,8 @@ The assistant has these capabilities, all scoped to the workspace:
 
 `run_bash` starts a fresh process per call, so `cd` and exported environment
 variables never survive between commands. The `shell` tool instead drives one
-long-lived shell per session (`/bin/sh` on POSIX, `cmd.exe` on Windows) so state
+long-lived shell per session (`/bin/sh` on POSIX, Git Bash on Windows; install
+Git for Windows, or turn it off with `config shell persistent off`) so state
 sticks:
 
 ```text
@@ -1672,7 +1673,9 @@ receive `KIWI_EVENT` and `KIWI_WORKSPACE`, plus `KIWI_TOOL_NAME`,
 `KIWI_TOOL_OK` (`true`/`false`), `KIWI_TOOL_ARGS` (JSON; secrets redacted), and
 `KIWI_TOOL_DURATION_MS` for tool events. A non-zero exit from a `pre_tool` hook
 blocks the tool call; every hook times out after 60 seconds and never crashes
-the agent. `/config` does not manage hooks yet — edit the JSON directly.
+the agent. Commands run through the platform shell (`/bin/sh` on POSIX,
+`cmd.exe` on Windows), so write them in that shell's syntax; the examples above
+are POSIX. `/config` does not manage hooks yet — edit the JSON directly.
 
 ## Configuration
 

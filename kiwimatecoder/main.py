@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shlex
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -775,7 +774,9 @@ def mcp_add(
     if command:
         spec["command"] = command
     if args:
-        spec["args"] = shlex.split(args)
+        from kiwimatecoder.commands import split_args
+
+        spec["args"] = split_args(args)
     if url:
         spec["url"] = url
     if header:

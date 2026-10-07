@@ -1,9 +1,12 @@
 import io
+import os
+import shlex
 
 import pytest
 from rich.console import Console
 
-from kiwimatecoder import catalog, config, ui
+from kiwimatecoder import catalog, config, share, ui
+from kiwimatecoder import commands as commands_module
 from kiwimatecoder.commands import (
     EXPERIMENTAL_GROUP,
     CommandResult,
@@ -12,6 +15,7 @@ from kiwimatecoder.commands import (
     dispatch,
     slash_argument_completions,
     slash_command_completions,
+    split_args,
 )
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import REGISTRY
@@ -1965,3 +1969,82 @@ def test_context_add_refuses_a_rooted_glob(session, pattern):
 
     assert "Glob patterns must be relative to the workspace" in _output(console)
     assert session.context_files == []
+
+
+# --- typed arguments on Windows: a backslash is a path separator, not an escape ---------
+
+WINDOWS_ARGUMENT_CASES = [
+    # (typed text, what a Windows user means)
+    (r"C:\Users\me\ca.pem", [r"C:\Users\me\ca.pem"]),
+    (r'"C:\my dir\ca.pem"', [r"C:\my dir\ca.pem"]),
+    (r"'C:\my dir\ca.pem'", [r"C:\my dir\ca.pem"]),  # what shlex.quote / shlex.join emit
+    (r"\\server\share\ca.pem", [r"\\server\share\ca.pem"]),
+    (r"import C:\a\b.json --name 'x y'", ["import", r"C:\a\b.json", "--name", "x y"]),
+    (r'"C:\dir\"', ["C:\\dir\\"]),  # a trailing backslash does not escape the closing quote
+    (r"'C:\[x]'=1", [r"C:\[x]=1"]),  # quotes still join with the text around them
+]
+
+
+@pytest.mark.parametrize(("text", "expected"), WINDOWS_ARGUMENT_CASES)
+def test_split_args_keeps_backslashes_on_windows(text, expected):
+    assert split_args(text, windows=True) == expected
+
+
+def test_split_args_reads_back_what_shlex_quotes_on_windows():
+    values = [r"C:\Users\me\ca.pem", r"C:\[x]", "it's", r"C:\O'Brien\ca.pem", "a b", ""]
+    assert split_args(shlex.join(values), windows=True) == values
+
+
+def test_split_args_is_shlex_split_on_posix():
+    for text in (r"a\ b", r'"a\"b"', r"C:\dir\f", "it's", "x #y", "'[/x]'=1"):
+        try:
+            expected: object = shlex.split(text)
+        except ValueError:
+            with pytest.raises(ValueError):
+                split_args(text, windows=False)
+        else:
+            assert split_args(text, windows=False) == expected
+    assert split_args(r"a\ b", windows=False) == ["a b"]  # the escape still works here
+
+
+def test_split_args_reports_an_unterminated_quote_on_windows():
+    with pytest.raises(ValueError):
+        split_args(r"C:\Users\O'Brien\ca.pem", windows=True)  # quote it: "C:\Users\O'Brien\ca.pem"
+
+
+def test_split_args_follows_os_name_by_default(monkeypatch):
+    with monkeypatch.context() as patch:  # only around the call: Path() needs the real name
+        patch.setattr(os, "name", "nt")
+        on_windows = split_args(r"C:\a\b.json")
+    assert on_windows == [r"C:\a\b.json"]
+    assert split_args(r"C:\a\b.json", windows=False) == ["C:ab.json"]
+
+
+def test_slash_commands_get_windows_paths_intact(session, monkeypatch):
+    # Simulates Windows on any platform: every handler reads its argument through
+    # commands.split_args, so make that behave as it does on Windows.
+    real = commands_module.split_args
+    monkeypatch.setattr(commands_module, "split_args", lambda text: real(text, windows=True))
+    seen: list[str] = []
+
+    def fake_set_network(**kwargs):
+        seen.append(kwargs["ca_bundle"])
+        return {"proxy": "", "ca_bundle": kwargs["ca_bundle"], "offline": False}
+
+    def fake_import(path, name=None):
+        seen.append(path)
+        return session.workspace_root / "shared_x.json"
+
+    monkeypatch.setattr(commands_module, "set_network", fake_set_network)
+    monkeypatch.setattr(share, "import_share", fake_import)
+    console = _console()
+    path = r"C:\Users\runneradmin\AppData\Local\Temp\pytest-0\dir\ca.pem"
+    spaced = r"C:\Users\Jane Doe\ca.pem"
+
+    dispatch(f"/config network ca {path}", session, console)
+    dispatch(f'/config network ca "{spaced}"', session, console)
+    dispatch(f"/config network ca {shlex.quote(spaced)}", session, console)
+    dispatch(f"/share import {path}", session, console)
+    dispatch(f'/share import "{spaced}" --name x', session, console)
+
+    assert seen == [path, spaced, spaced, path, spaced]

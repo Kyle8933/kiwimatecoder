@@ -8,6 +8,7 @@ Playwright or opens a network connection.
 from __future__ import annotations
 
 import io
+import os
 import re
 import struct
 import sys
@@ -312,7 +313,8 @@ def test_screenshot_saves_and_attaches_to_pending_images(
     result = _browser({"action": "screenshot"}, session)
 
     assert result.ok
-    assert "Saved screenshot to .kiwimatecoder/screenshots/" in result.content
+    shots = os.path.join(".kiwimatecoder", "screenshots") + os.sep  # display_path is OS-native
+    assert f"Saved screenshot to {shots}" in result.content
     assert len(fake_driver.calls) == 1
     kind, saved = fake_driver.calls[0]
     assert kind == "screenshot"

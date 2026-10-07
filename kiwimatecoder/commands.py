@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import shlex
 import time
 from collections.abc import Callable, Sequence
@@ -131,6 +132,7 @@ from kiwimatecoder.tools.paths import (
     display_path,
     resolve_for_read,
     resolve_in_workspace,
+    workspace_ref,
 )
 
 if TYPE_CHECKING:
@@ -191,6 +193,26 @@ CONFIG_KEY_SECTIONS = frozenset({"keys", "key", "api-key", "api-keys"})
 CONFIG_KEY_SET_ACTIONS = frozenset({"set", "save", "add"})
 
 
+def split_args(text: str, *, windows: bool | None = None) -> list[str]:
+    """Split a typed slash-command argument the way ``shlex.split`` does.
+
+    On Windows a backslash is the path separator, not an escape: POSIX
+    ``shlex.split`` turns ``C:\\Users\\me\\ca.pem`` into ``C:Usersmeca.pem``. There
+    the backslash is kept literally, so quoting is the only way to keep a space, a
+    quote or ``#`` in one argument. Both ``"..."`` and ``'...'`` still quote, so the
+    single-quoted output of ``shlex.quote``/``shlex.join`` (the /config menu runs its
+    commands through ``shlex.join``) reads back unchanged. Everywhere else this is
+    exactly ``shlex.split``. ``windows`` overrides the platform test (for tests).
+    Raises ``ValueError`` for an unterminated quote, as ``shlex.split`` does.
+    """
+    lex = shlex.shlex(text, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    if (os.name == "nt") if windows is None else windows:
+        lex.escape = ""
+    return list(lex)
+
+
 def line_carries_secret(line: str) -> bool:
     """Whether a typed line is a ``/config key set <provider> <key>`` command.
 
@@ -202,7 +224,7 @@ def line_carries_secret(line: str) -> bool:
     if not text.startswith("/"):
         return False
     try:
-        parts = shlex.split(text[1:])
+        parts = split_args(text[1:])
     except ValueError:  # an unterminated quote: be conservative, not exact
         parts = text[1:].split()
     return (
@@ -884,7 +906,7 @@ def _looks_binary(path: Path) -> bool:
 
 def _context_ref(path: str, session: Session) -> str:
     resolved = resolve_in_workspace(path, session.workspace_root)
-    return display_path(resolved, session.workspace_root)
+    return workspace_ref(resolved, session.workspace_root)
 
 
 def _expand_context_input(
@@ -934,7 +956,7 @@ def _add_context(paths: list[str], session: Session, console: Console) -> None:
             console.print(f"[yellow]Skipped {escape(str(raw_path))}: {escape(str(error))}[/yellow]")
 
         for resolved in matches:
-            rel = display_path(resolved, session.workspace_root)
+            rel = workspace_ref(resolved, session.workspace_root)
             if not resolved.exists():
                 skipped += 1
                 console.print(f"[yellow]Skipped {escape(str(rel))}: file not found[/yellow]")
@@ -1012,7 +1034,7 @@ def _show_context(session: Session, console: Console) -> None:
 
 def _context(arg: str, session: Session, console: Console) -> str:
     try:
-        parts = shlex.split(arg)
+        parts = split_args(arg)
     except ValueError as exc:
         console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
@@ -3315,7 +3337,7 @@ def _config(arg: str, session: Session, console: Console,
             prompt_input: Callable[[str], str] | None = None,
             secret_input: Callable[[str], str] | None = None) -> str:
     try:
-        parts = shlex.split(arg)
+        parts = split_args(arg)
     except ValueError as exc:
         console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
@@ -4962,7 +4984,7 @@ def _share(arg: str, session: Session, console: Console) -> str:
     from kiwimatecoder import share as share_module
 
     try:
-        parts = shlex.split(arg)
+        parts = split_args(arg)
     except ValueError as exc:
         console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE
@@ -5299,7 +5321,7 @@ def _jobs(arg: str, session: Session, console: Console) -> str:
     from kiwimatecoder import jobs as jobs_module
 
     try:
-        parts = shlex.split(arg)
+        parts = split_args(arg)
     except ValueError as exc:
         console.print(f"[red]Could not parse command: {escape(str(exc))}[/red]")
         return CommandResult.CONTINUE

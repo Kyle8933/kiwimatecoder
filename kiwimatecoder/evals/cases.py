@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kiwimatecoder.config import has_path_anchor
+
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CASES_DIR = PACKAGE_ROOT / "evals" / "cases"
 
@@ -64,7 +66,7 @@ def _safe_relpath(value: Any, *, key: str, source: Path | None) -> str:
     if "\\" in value:
         raise _fail(source, f"'{key}' path {value!r} must use forward slashes")
     path = Path(value)
-    if path.is_absolute() or value.startswith("~"):
+    if has_path_anchor(path) or value.startswith("~"):
         raise _fail(source, f"'{key}' path {value!r} must be relative to the workspace")
     if ".." in path.parts:
         raise _fail(source, f"'{key}' path {value!r} must not contain '..'")

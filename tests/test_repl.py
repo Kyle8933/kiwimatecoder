@@ -401,7 +401,11 @@ def test_option_groups_all_grouped_leaves_plain_group_empty():
 
 
 def test_checkbox_choice_keyboard_interaction():
-    with create_pipe_input() as pipe_input:
+    # An explicit DummyOutput keeps prompt_toolkit from opening a real console
+    # output, which fails on Windows CI runners that have no console attached.
+    with create_pipe_input() as pipe_input, create_app_session(
+        input=pipe_input, output=DummyOutput()
+    ):
         # Initial focus is on 'openrouter' (default checked)
         # Send: down to openai, space (toggle openai), enter (confirm)
         pipe_input.send_text("\x1b[B \r")
@@ -413,7 +417,6 @@ def test_checkbox_choice_keyboard_interaction():
                 ("anthropic", "Anthropic"),
             ],
             default_values=["openrouter"],
-            input=pipe_input,
         )
         assert result == ["openrouter", "openai"]
 

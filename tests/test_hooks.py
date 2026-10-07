@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -39,10 +40,22 @@ def hook_session(tmp_path):
     )
 
 
+def _shell_quote(value: str, *, windows: bool = os.name == "nt") -> str:
+    """Quote one word for the platform shell (sh on POSIX, cmd.exe on Windows).
+
+    ``shlex.quote`` wraps backslash paths in single quotes, which cmd.exe treats
+    as literal characters, so the command would never find the interpreter.
+    """
+    if windows:
+        return f'"{value}"'
+    return shlex.quote(value)
+
+
 def _script_command(workspace: Path, name: str, body: str) -> str:
+    """A hook command that runs ``body`` as a Python script (same on sh and cmd.exe)."""
     script = workspace / f"{name}.py"
     script.write_text(body)
-    return f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    return f"{_shell_quote(sys.executable)} {_shell_quote(str(script))}"
 
 
 def _mock_tool_stream(tool: str, arguments: dict[str, Any], reply: str = "done"):
@@ -70,6 +83,15 @@ def _mock_tool_stream(tool: str, arguments: dict[str, Any], reply: str = "done")
 # ---------------------------------------------------------------------------
 # run_hooks
 # ---------------------------------------------------------------------------
+
+
+def test_shell_quote_matches_the_platform_shell():
+    exe = r"C:\hostedtoolcache\windows\Python\3.12.7\x64\python.exe"
+    # cmd.exe has no single-quote quoting; the Windows form must use double quotes.
+    assert _shell_quote(exe, windows=True) == '"' + exe + '"'
+    assert "'" not in _shell_quote(exe, windows=True)
+    assert _shell_quote("/usr/bin/python3", windows=False) == "/usr/bin/python3"
+    assert _shell_quote("/tmp/my dir/x.py", windows=False) == "'/tmp/my dir/x.py'"
 
 
 def test_run_hooks_without_configuration_is_empty(hook_session):
@@ -224,7 +246,12 @@ def test_repl_lifecycle_hooks_emit_and_never_raise(hook_session):
 
 @pytest.mark.anyio
 async def test_failing_pre_tool_hook_blocks_write(hook_session):
-    config.add_hook("pre_tool", "echo block reason >&2; exit 7")
+    command = _script_command(
+        hook_session.workspace_root,
+        "block",
+        "import sys\nsys.stderr.write('block reason')\nsys.exit(7)\n",
+    )
+    config.add_hook("pre_tool", command)
     agent = Agent(
         hook_session,
         Console(quiet=True),
@@ -285,7 +312,13 @@ async def test_successful_pre_tool_hook_runs_before_write(hook_session):
 
 @pytest.mark.anyio
 async def test_post_tool_hook_sees_success(hook_session):
-    config.add_hook("post_tool", 'echo "$KIWI_TOOL_OK" > post.marker')
+    command = _script_command(
+        hook_session.workspace_root,
+        "post_ok",
+        "import os, pathlib\n"
+        "pathlib.Path('post.marker').write_text(os.environ['KIWI_TOOL_OK'])\n",
+    )
+    config.add_hook("post_tool", command)
     agent = Agent(
         hook_session,
         Console(quiet=True),
