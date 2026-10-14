@@ -1126,12 +1126,22 @@ def set_model_filter(provider_id: str, mode: str, models: list[str] | None = Non
     save_config(cfg)
 
 
-def apply_model_filter(provider_id: str, models: Sequence[str]) -> list[str]:
-    """Apply the provider's allow/deny visibility filter to ``models``."""
+def apply_model_filter(
+    provider_id: str, models: Sequence[str], *, kind: str = "chat"
+) -> list[str]:
+    """Apply the provider's allow/deny visibility filter to ``models``.
+
+    For chat, an allow-list is returned wholesale. For image / video catalogs
+    it is intersected with ``models`` (keeping their order) so a chat
+    allow-list never leaks chat models into a media picker.
+    """
     model_filter = get_model_filter(provider_id)
     mode = model_filter["mode"]
     filtered = model_filter["models"]
     if mode == "allow":
+        if kind != "chat":
+            allowed = set(filtered)
+            return [model for model in models if model in allowed]
         return list(filtered)
     if mode == "deny":
         denied = set(filtered)
@@ -5162,7 +5172,7 @@ def list_visible_models(
     model_catalog = get_model_catalog(
         provider_id, refresh=refresh, force=force, keep=keep, kind=kind
     )
-    return apply_model_filter(provider_id, model_catalog.models)
+    return apply_model_filter(provider_id, model_catalog.models, kind=kind)
 
 
 def search_model_catalog(
@@ -5185,7 +5195,7 @@ def search_model_catalog(
     model_catalog = get_model_catalog(
         provider_id, refresh=refresh, force=force, keep=keep, limit=None, kind=kind
     )
-    visible = apply_model_filter(provider_id, model_catalog.models)
+    visible = apply_model_filter(provider_id, model_catalog.models, kind=kind)
     return catalog.search_models(visible, query)
 
 

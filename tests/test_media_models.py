@@ -266,3 +266,45 @@ def test_media_catalog_with_no_matching_models_reports_the_error(monkeypatch):
 
     assert result.models == []
     assert "no usable video models" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Model filters on media catalogs
+# ---------------------------------------------------------------------------
+
+
+def test_chat_allow_list_does_not_leak_into_media_catalogs(monkeypatch):
+    config.set_key("openai", "sk-test")
+    _listing_client(monkeypatch, [])
+    config.set_model_filter("openai", "allow", ["gpt-4o"])
+
+    assert config.list_visible_models("openai", refresh=True, kind="image") == []
+    assert config.search_model_catalog("openai", "gpt", refresh=True, kind="image") == []
+    assert config.list_visible_models("openai", refresh=True) == ["gpt-4o"]
+
+
+def test_allow_list_intersects_the_media_catalog(monkeypatch):
+    config.set_key("openai", "sk-test")
+    _listing_client(monkeypatch, [])
+    config.set_model_filter("openai", "allow", ["gpt-4o", "gpt-image-1"])
+
+    assert config.list_visible_models("openai", refresh=True, kind="image") == [
+        "gpt-image-1"
+    ]
+    assert config.list_visible_models("openai", refresh=True, kind="video") == []
+
+
+def test_deny_list_hides_a_media_model(monkeypatch):
+    config.set_key("openai", "sk-test")
+    _listing_client(monkeypatch, [])
+    config.set_model_filter("openai", "deny", ["gpt-image-1"])
+
+    assert config.list_visible_models("openai", refresh=True, kind="image") == []
+    assert config.list_visible_models("openai", refresh=True, kind="video") == [
+        "sora-2"
+    ]
+
+
+def test_get_model_catalog_rejects_an_unknown_kind():
+    with pytest.raises(ValueError):
+        config.get_model_catalog("openai", kind="bogus")
