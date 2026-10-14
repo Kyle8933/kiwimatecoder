@@ -587,3 +587,98 @@ def test_help_keeps_the_media_model_descriptions_visible_at_100_columns(session)
         "with the word 'model' needs `--` first, e.g. `/image -- model train`."
     ) in text
     assert "Choose the video model (remembered per provider)." in text
+    assert (
+        "Show readiness and recent generated files, or choose the media provider."
+    ) in text
+
+
+# ---------------------------------------------------------------------------
+# /media provider and /config media
+# ---------------------------------------------------------------------------
+
+
+def test_media_provider_without_a_selector_prints_a_table(session):
+    config.set_media_model("openai", "image", "gpt-image-1")
+    console = _console()
+
+    dispatch("/media provider", session, console)
+
+    output = _output(console)
+    assert "openai" in output and "openrouter" in output
+    assert "gpt-image-1" in output
+
+
+def test_media_provider_by_id_switches_and_offers_both_model_pickers(session, monkeypatch):
+    config.set_key("openrouter", "sk-or")
+    _install_listing(monkeypatch)
+    selector = _Selector(lambda prompt: prompt.options[0].value)
+
+    dispatch("/media provider openrouter", session, _console(), selector)
+
+    assert config.get_media()["provider"] == "openrouter"
+    assert config.get_media_model("openrouter", "image") == "gpt-image-1"
+    assert config.get_media_model("openrouter", "video") == "sora-2"
+    assert len(selector.prompts) == 2
+
+
+def test_media_provider_skips_pickers_for_kinds_that_already_have_a_model(session):
+    config.set_media_model("openrouter", "image", "keep-me")
+    config.set_media_model("openrouter", "video", "keep-me-too")
+    selector = _Selector(None)
+
+    dispatch("/media provider openrouter", session, _console(), selector)
+
+    assert selector.prompts == []
+    assert config.get_media()["model"] == "keep-me"
+
+
+def test_media_provider_without_a_selector_prints_the_hints(session):
+    console = _console()
+
+    dispatch("/media provider openrouter", session, console)
+
+    output = _output(console)
+    assert config.get_media()["provider"] == "openrouter"
+    assert "/image model" in output and "/video model" in output
+
+
+def test_media_provider_rejects_an_unknown_id(session):
+    console = _console()
+
+    dispatch("/media provider nope", session, console)
+
+    assert config.get_media()["provider"] == "openai"
+    assert "nope" in _output(console)
+
+
+def test_media_status_lists_models_per_provider(session):
+    config.set_media_model("openai", "image", "gpt-image-1")
+    config.set_media_model("openrouter", "video", "vendor/video-2")
+    console = _console()
+
+    dispatch("/media", session, console)
+
+    output = _output(console)
+    assert "openai: image gpt-image-1" in output
+    assert "openrouter: image none chosen, video vendor/video-2" in output
+
+
+def test_config_media_model_takes_an_optional_provider(session):
+    dispatch("/config media model gpt-image-1", session, _console())
+    dispatch("/config media model or-image openrouter", session, _console())
+    dispatch("/config media video-model vendor/video-2 openrouter", session, _console())
+
+    assert config.get_media_model("openai", "image") == "gpt-image-1"
+    assert config.get_media_model("openrouter", "image") == "or-image"
+    assert config.get_media_model("openrouter", "video") == "vendor/video-2"
+
+    dispatch("/config media video-model none openrouter", session, _console())
+    assert config.get_media_model("openrouter", "video") == ""
+
+
+def test_config_media_status_says_none_chosen_for_the_image_model(session):
+    console = _console()
+
+    dispatch("/config media show", session, console)
+
+    assert "image model none chosen" in _output(console)

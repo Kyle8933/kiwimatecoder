@@ -327,6 +327,15 @@ def test_media_list_shows_current_values_and_a_done_entry(session):
     assert "__done__" in labels
 
 
+def test_media_list_says_none_chosen_without_an_image_model(session):
+    script = Script("media")
+
+    _run(session, script)
+
+    labels = {o.value: o.label for o in script.prompts[1].options}
+    assert labels["model"] == "Image model — none chosen"
+
+
 def test_media_invalid_value_reports_the_error_and_keeps_the_old_one(session):
     console = _run(session, Script("media", "size"), Typed("big"))
 

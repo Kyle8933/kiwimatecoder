@@ -516,10 +516,10 @@ def test_state_read_from_a_saved_session_is_shown_literally(hostile, setup):
         ("/undo bogus", "[count]"),
         ("/compact bogus", "[token_budget]"),
         ("/jobs bogus", "[list|show <id>|cancel <id>|tick|run <prompt>]"),
-        ("/media bogus", "[list [count]]"),
+        ("/media bogus", "[list [count]|provider [id]]"),
         ("/config budget bogus", "[show|tokens <n>|cost <usd>|clear]"),
         ("/config ui bogus", "[show|color <auto|always|never>|"),
-        ("/config media bogus", "[show|enable on|off|model <id>|"),
+        ("/config media bogus", "[show|enable on|off|model <id> [provider]|"),
         ("/config permissions bogus", "[list|remove <tool>|clear]"),
     ],
 )

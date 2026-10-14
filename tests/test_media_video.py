@@ -975,7 +975,8 @@ def test_enabling_media_mentions_video_model(session):
 
     output = _output(console)
     assert "/video" in output
-    assert "video-model" in output
+    assert "/video model" in output
+    assert "/image model" in output
 
 
 def test_new_commands_are_listed_in_help_and_completions(session):

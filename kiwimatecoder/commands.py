@@ -30,6 +30,7 @@ from kiwimatecoder.config import (
     clear_always_allowed_tools,
     clear_budget,
     clear_command_rules,
+    MEDIA_KINDS,
     OUTPUT_STYLES,
     REASONING_EFFORTS,
     TELEMETRY_LEVELS,
@@ -2799,11 +2800,12 @@ def _config_vision(action_parts: list[str], console: Console) -> None:
 
 
 def _media_status_line(settings: dict[str, Any]) -> str:
+    image_model = settings["model"] or "none chosen"
     video_model = settings["video_model"] or "none chosen"
     return (
         f"Media: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan] "
         f"(provider [cyan]{escape(settings['provider'])}[/cyan], "
-        f"image model [cyan]{escape(settings['model'])}[/cyan], "
+        f"image model [cyan]{escape(image_model)}[/cyan], "
         f"size [cyan]{settings['size']}[/cyan], "
         f"video model [cyan]{escape(video_model)}[/cyan], "
         f"video [cyan]{settings['video_duration']}s"
@@ -2814,10 +2816,18 @@ def _media_status_line(settings: dict[str, Any]) -> str:
 
 
 _MEDIA_USAGE = (
-    "Usage: /config media [show|enable on|off|model <id>|provider <id>|"
-    "size <WxH>|video-model <id|none>|duration <seconds>|video-size <WxH|720p|"
-    "default>|output-dir <path>]"
+    "Usage: /config media [show|enable on|off|model <id> [provider]|provider <id>|"
+    "size <WxH>|video-model <id|none> [provider]|duration <seconds>|"
+    "video-size <WxH|720p|default>|output-dir <path>]"
 )
+
+
+def _print_media_status(console: Console) -> None:
+    """The media status line followed by each provider's chosen models."""
+    settings = get_media()
+    console.print(_media_status_line(settings))
+    for line in media_module.format_models(settings):
+        console.print(f"  [dim]{escape(line)}[/dim]")
 
 
 def _config_media(action_parts: list[str], console: Console) -> None:
@@ -2825,7 +2835,7 @@ def _config_media(action_parts: list[str], console: Console) -> None:
     rest = action_parts[1:]
 
     if action in {"show", "list", "ls", "status"}:
-        console.print(_media_status_line(get_media()))
+        _print_media_status(console)
         return
 
     if action in {"enable", "on", "off", "disable"}:
@@ -2857,40 +2867,64 @@ def _config_media(action_parts: list[str], console: Console) -> None:
                 "generate_image / generate_video tools) are now available. "
                 "Media API calls cost money; `/media` shows what is ready.[/dim]"
             )
+            if not get_media()["model"]:
+                console.print(
+                    "[dim]For images, also choose a model: /image model[/dim]"
+                )
             if not get_media()["video_model"]:
                 console.print(
-                    "[dim]For video, also choose a model: "
-                    "/config media video-model <id>[/dim]"
+                    "[dim]For video, also choose a model: /video model[/dim]"
                 )
         return
 
+    if action in {"model", "video-model", "video_model"}:
+        kind = "image" if action == "model" else "video"
+        if not rest:
+            usage = "model <id>" if kind == "image" else "video-model <id|none>"
+            console.print(
+                f"[yellow]Usage: /config media {usage} \\[provider][/yellow]"
+            )
+            return
+        provider_id = get_media()["provider"]
+        words = list(rest)
+        if len(words) >= 2:
+            try:
+                get_provider_config(words[-1])
+            except KeyError:
+                pass  # not a provider id: the whole tail is the model id
+            else:
+                provider_id = words.pop()
+        value = " ".join(words)
+        cleared = kind == "video" and value.lower() in {"none", "default", "clear", "-"}
+        try:
+            set_media_model(provider_id, kind, "" if cleared else value)
+        except ValueError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            return
+        console.print(_media_status_line(get_media()))
+        return
+
     hints = {
-        "model": "<id>",
         "provider": "<id>",
         "size": "<WxH>",
-        "video-model": "<id|none>",
         "duration": "<seconds>",
         "video-size": "<WxH|720p|default>",
         "output-dir": "<path>",
     }
-    action = {"video_model": "video-model", "video_size": "video-size",
+    action = {"video_size": "video-size",
               "output_dir": "output-dir", "dir": "output-dir"}.get(action, action)
     if action in hints:
         if not rest:
             console.print(f"[yellow]Usage: /config media {action} {hints[action]}[/yellow]")
             return
         value = " ".join(rest)
-        # ``none`` / ``default`` clear the optional video settings.
+        # ``none`` / ``default`` clear the optional video size.
         cleared = value.lower() in {"none", "default", "clear", "-"}
         try:
-            if action == "model":
-                set_media(model=value)
-            elif action == "provider":
+            if action == "provider":
                 set_media(provider=rest[0])
             elif action == "size":
                 set_media(size=rest[0])
-            elif action == "video-model":
-                set_media(video_model="" if cleared else value)
             elif action == "duration":
                 set_media(video_duration=rest[0])
             elif action == "video-size":
@@ -5927,27 +5961,92 @@ def _age(seconds: float) -> str:
     return f"{int(seconds // 86400)} d ago"
 
 
+def _media_provider_label(provider: ProviderConfig, settings: dict[str, Any]) -> str:
+    kinds = settings["models"].get(provider.id, {})
+    image = kinds.get("image") or "none chosen"
+    video = kinds.get("video") or "none chosen"
+    return f"{provider.name} ({provider.id}) — image {image}, video {video}"
+
+
+def _media_provider(
+    arg: str, console: Console, selector: CommandSelector | None
+) -> None:
+    """``/media provider [id]``: show the providers or switch the media provider."""
+    settings = get_media()
+    provider_id = arg.strip()
+    if not provider_id:
+        if selector is not None:
+            prompt = SelectionPrompt(
+                title="Media provider",
+                text=f"Current media provider: {settings['provider']}",
+                options=tuple(
+                    CommandOption(p.id, _media_provider_label(p, settings))
+                    for p in list_provider_configs()
+                ),
+                selected=settings["provider"],
+            )
+            provider_id = _run_selector(selector, prompt) or ""
+            if not provider_id:
+                return
+        else:
+            table = Table(title="Media providers", show_header=True)
+            table.add_column("id", style="cyan")
+            table.add_column("image model")
+            table.add_column("video model")
+            for p in list_provider_configs():
+                kinds = settings["models"].get(p.id, {})
+                marker = " (current)" if p.id == settings["provider"] else ""
+                table.add_row(
+                    escape(p.id + marker),
+                    escape(kinds.get("image") or "—"),
+                    escape(kinds.get("video") or "—"),
+                )
+            console.print(table)
+            return
+    try:
+        provider = get_provider_config(provider_id)
+        set_media(provider=provider.id)
+    except (ValueError, KeyError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        return
+    console.print(f"Media provider set to [cyan]{escape(provider.id)}[/cyan].")
+    for kind in MEDIA_KINDS:
+        if get_media_model(provider.id, kind):
+            continue
+        if selector is not None:
+            _pick_media_model(kind, provider, "", console, selector)
+        else:
+            console.print(
+                f"[yellow]No {kind} model chosen for {escape(provider.name)} — "
+                f"choose one with /{kind} model.[/yellow]"
+            )
+
+
 def _media(
     arg: str,
     session: Session,
     console: Console,
     selector: CommandSelector | None = None,
 ) -> str:
-    """Show media readiness and recently generated files."""
+    """Show media readiness and recently generated files, or choose the provider."""
     words = arg.split()
+    if words and words[0].lower() == "provider":
+        _media_provider(" ".join(words[1:]), console, selector)
+        return CommandResult.CONTINUE
+    usage = "[yellow]Usage: /media \\[list \\[count]|provider \\[id]][/yellow]"
     if words and words[0].lower() not in {"list", "ls", "show", "status", "recent"}:
-        console.print("[yellow]Usage: /media \\[list \\[count]][/yellow]")
+        console.print(usage)
         return CommandResult.CONTINUE
     limit = 10
     if len(words) > 1:
         try:
             limit = max(1, min(int(words[1]), 100))
         except ValueError:
-            console.print("[yellow]Usage: /media \\[list \\[count]][/yellow]")
+            console.print(usage)
             return CommandResult.CONTINUE
 
     settings = get_media()
-    console.print(_media_status_line(settings))
+    _print_media_status(console)
     ok, bad = escape(glyph("check")), escape(glyph("cross"))
     if not settings["enabled"]:
         # One line, not one per kind: nothing else matters until it is enabled.
@@ -6172,9 +6271,9 @@ _HELP_GROUPS = [
                 "`/video -- model railway`.",
             ),
             (
-                "/media [list [count]]",
-                "Show whether image/video generation is ready and list recent "
-                "generated files.",
+                "/media [list [count]|provider [id]]",
+                "Show readiness and recent generated files, or choose the "
+                "media provider.",
             ),
         ],
     ),
@@ -6261,6 +6360,7 @@ _VIDEO_ACTION_DESCRIPTIONS = {
 
 _MEDIA_ACTION_DESCRIPTIONS = {
     "list": "Show readiness and recent generated files.",
+    "provider": "Choose the media provider (shows each provider's image and video model).",
 }
 
 _MODEL_ACTION_DESCRIPTIONS = {
