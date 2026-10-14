@@ -137,10 +137,9 @@ def _empty_config() -> dict[str, Any]:
         "media": {
             "enabled": False,
             "provider": "openai",
-            "model": "gpt-image-1",
+            "models": {},
             "size": "1024x1024",
             "output_dir": ".kiwimatecoder/media",
-            "video_model": "",
             "video_duration": 5,
             "video_size": "",
         },
@@ -496,6 +495,10 @@ def _rename_shadowed_custom_providers(cfg: dict[str, Any]) -> None:
         if provider_id in models:
             models[new_id] = models.pop(provider_id)
             cfg["provider_models"] = models
+        media = cfg.get("media")
+        if isinstance(media, dict) and isinstance(media.get("models"), dict):
+            if provider_id in media["models"]:
+                media["models"][new_id] = media["models"].pop(provider_id)
         cfg["active_providers"] = [
             new_id if pid == provider_id else pid for pid in cfg["active_providers"]
         ]
@@ -719,6 +722,9 @@ def remove_provider(provider_id: str) -> None:
     models = _normalized_provider_models(cfg.get("provider_models"))
     models.pop(provider_id, None)
     cfg["provider_models"] = models
+    media = cfg.get("media")
+    if isinstance(media, dict) and isinstance(media.get("models"), dict):
+        media["models"].pop(provider_id, None)
     # Drop the provider from the active roster; the first remaining id becomes
     # the primary. selected_provider stays aligned with that roster.
     active = [
@@ -2760,13 +2766,52 @@ def set_vision(
 MEDIA_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "provider": "openai",
-    "model": "gpt-image-1",
+    "model": "",
+    "models": {},
     "size": "1024x1024",
     "output_dir": ".kiwimatecoder/media",
     "video_model": "",
     "video_duration": 5,
     "video_size": "",
 }
+MEDIA_KINDS = ("image", "video")
+_LEGACY_MEDIA_KEYS = {"image": "model", "video": "video_model"}
+
+
+def _normalized_media_models(raw: object) -> dict[str, dict[str, str]]:
+    """Keep only ``provider id -> {kind -> non-empty model id}`` string pairs.
+
+    Stored raw so :func:`validate_config` can report bad entries; every reader
+    and writer goes through here instead.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    models: dict[str, dict[str, str]] = {}
+    for provider_id, kinds in raw.items():
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            continue
+        if not isinstance(kinds, dict):
+            continue
+        chosen = {
+            kind: value.strip()
+            for kind in MEDIA_KINDS
+            if isinstance(value := kinds.get(kind), str) and value.strip()
+        }
+        if chosen:
+            models[provider_id.strip()] = chosen
+    return models
+
+
+def _media_models_with_legacy(
+    stored: dict[str, Any], provider_id: str
+) -> dict[str, dict[str, str]]:
+    """``media.models`` plus the old global keys, applied to ``provider_id``."""
+    models = _normalized_media_models(stored.get("models"))
+    for kind, legacy_key in _LEGACY_MEDIA_KEYS.items():
+        legacy = stored.get(legacy_key)
+        if isinstance(legacy, str) and legacy.strip():
+            models.setdefault(provider_id, {}).setdefault(kind, legacy.strip())
+    return models
 MEDIA_SIZE_RE = re.compile(r"^\d+x\d+$")
 # Video sizes are an exact WxH, or a resolution tier such as 720p / 1080p / 2K.
 VIDEO_SIZE_RE = re.compile(r"^(?:\d+x\d+|\d{3,4}p|[1-8]K)$", re.IGNORECASE)
@@ -2815,18 +2860,17 @@ def get_media(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     provider = str(stored.get("provider") or "").strip()
     if provider:
         effective["provider"] = provider
-    model = str(stored.get("model") or "").strip()
-    if model:
-        effective["model"] = model
+    models = _media_models_with_legacy(stored, effective["provider"])
+    effective["models"] = models
+    chosen = models.get(effective["provider"], {})
+    effective["model"] = chosen.get("image", "")
+    effective["video_model"] = chosen.get("video", "")
     size = str(stored.get("size") or "").strip()
     if MEDIA_SIZE_RE.match(size):
         effective["size"] = size
     output_dir = _valid_media_output_dir(stored.get("output_dir"))
     if output_dir is not None:
         effective["output_dir"] = output_dir
-    video_model = stored.get("video_model")
-    if isinstance(video_model, str):
-        effective["video_model"] = video_model.strip()
     duration = stored.get("video_duration")
     if (
         isinstance(duration, int)
@@ -2877,7 +2921,7 @@ def set_media(
         cleaned_model = str(model).strip()
         if not cleaned_model:
             raise ValueError("media model must be a non-empty string.")
-        current["model"] = cleaned_model
+        current["models"].setdefault(current["provider"], {})["image"] = cleaned_model
     if size is not None:
         cleaned_size = str(size).strip()
         if not MEDIA_SIZE_RE.match(cleaned_size):
@@ -2891,7 +2935,12 @@ def set_media(
             )
         current["output_dir"] = cleaned_dir
     if video_model is not None:
-        current["video_model"] = str(video_model).strip()
+        cleaned_video = str(video_model).strip()
+        kinds = current["models"].setdefault(current["provider"], {})
+        if cleaned_video:
+            kinds["video"] = cleaned_video
+        else:
+            kinds.pop("video", None)
     if video_duration is not None:
         try:
             # Accept "8" and "8s" alike.
@@ -2912,8 +2961,51 @@ def set_media(
                 "720p, 1080p or 2K; use an empty value for the provider default."
             )
         current["video_size"] = cleaned_video_size
-    cfg["media"] = current
+    _save_media(cfg, current)
+    return get_media(cfg)
+
+
+def _save_media(cfg: dict[str, Any], current: dict[str, Any]) -> None:
+    """Persist ``current``; the effective model keys are derived, never stored."""
+    current["models"] = {
+        provider_id: kinds for provider_id, kinds in current["models"].items() if kinds
+    }
+    cfg["media"] = {
+        key: value for key, value in current.items() if key not in {"model", "video_model"}
+    }
     save_config(cfg)
+
+
+def get_media_model(
+    provider_id: str, kind: str, cfg: dict[str, Any] | None = None
+) -> str:
+    """Return the ``kind`` model chosen for ``provider_id``, or ``""``."""
+    cfg = cfg or load_config()
+    return get_media(cfg)["models"].get(provider_id, {}).get(kind, "")
+
+
+def set_media_model(
+    provider_id: str,
+    kind: str,
+    model: str | None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Remember the ``kind`` model for ``provider_id`` (None or "" forgets it)."""
+    if kind not in MEDIA_KINDS:
+        raise ValueError(f"media model kind must be one of: {', '.join(MEDIA_KINDS)}.")
+    cfg = cfg or load_config()
+    try:
+        get_provider_config(provider_id, cfg)
+    except KeyError as exc:
+        raise ValueError(str(exc)) from exc
+    current = get_media(cfg)
+    kinds = current["models"].setdefault(provider_id, {})
+    cleaned = (model or "").strip()
+    if cleaned:
+        kinds[kind] = cleaned
+    else:
+        kinds.pop(kind, None)
+    _save_media(cfg, current)
     return get_media(cfg)
 
 
@@ -4601,6 +4693,32 @@ def validate_config(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
                 )
             if "video_model" in media and not isinstance(media["video_model"], str):
                 add("error", "media.video_model", "'video_model' must be a string.")
+            if "models" in media:
+                raw_models = media["models"]
+                if not isinstance(raw_models, dict):
+                    add("error", "media.models", "'models' must be an object of provider ids.")
+                else:
+                    for pid, kinds in raw_models.items():
+                        if not isinstance(kinds, dict):
+                            add(
+                                "error",
+                                f"media.models.{pid}",
+                                "must be an object with 'image' and/or 'video'.",
+                            )
+                            continue
+                        for kind, value in kinds.items():
+                            if kind not in MEDIA_KINDS:
+                                add(
+                                    "error",
+                                    f"media.models.{pid}.{kind}",
+                                    "kind must be 'image' or 'video'.",
+                                )
+                            elif not isinstance(value, str) or not value.strip():
+                                add(
+                                    "error",
+                                    f"media.models.{pid}.{kind}",
+                                    "model must be a non-empty string.",
+                                )
             duration = media.get("video_duration")
             if duration is not None and (
                 not isinstance(duration, int)
@@ -4895,7 +5013,8 @@ def clear_model_cache(provider_id: str | None = None) -> None:
     if provider_id is None:
         cache["providers"] = {}
     else:
-        cache["providers"].pop(provider_id, None)
+        for key in (provider_id, *(f"{provider_id}:{kind}" for kind in MEDIA_KINDS)):
+            cache["providers"].pop(key, None)
     save_model_cache(cache)
 
 

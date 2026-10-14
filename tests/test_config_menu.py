@@ -386,14 +386,14 @@ def test_escape_in_the_section_list_leaves_cleanly(session):
 def test_empty_typed_value_changes_nothing(session):
     console = _run(session, Script("media", "model"), Typed(""))
 
-    assert config.get_media()["model"] == "gpt-image-1"
+    assert config.get_media()["model"] == ""
     assert "nothing changed" in _output(console)
 
 
 def test_cancelling_typed_input_changes_nothing(session):
     console = _run(session, Script("media", "model"), Typed())  # raises EOFError
 
-    assert config.get_media()["model"] == "gpt-image-1"
+    assert config.get_media()["model"] == ""
     assert "Cancelled" in _output(console)
 
 

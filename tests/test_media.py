@@ -56,6 +56,7 @@ def _forbid_client(monkeypatch) -> None:
 
 def _enable_media(**kwargs) -> None:
     config.set_media(enabled=True, **kwargs)
+    config.set_media_model("openai", "image", "gpt-image-1")
     config.set_key("openai", "sk-test")
 
 

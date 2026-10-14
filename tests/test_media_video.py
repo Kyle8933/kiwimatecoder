@@ -849,6 +849,7 @@ def test_image_command_unknown_option_and_usage(session, monkeypatch):
     calls: list[dict] = []
     monkeypatch.setattr(media_module, "generate_image", _fake_generate(calls))
     config.set_media(enabled=True)
+    config.set_media_model("openai", "image", "gpt-image-1")
 
     console = _console()
     dispatch("/image --colour red a cat", session, console)

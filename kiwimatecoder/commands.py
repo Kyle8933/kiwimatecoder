@@ -3982,7 +3982,7 @@ _CONFIG_SECTIONS: dict[str, _Section] = {
                 _text(
                     "model",
                     "Image model",
-                    lambda _s: get_media()["model"],
+                    lambda _s: _preview(get_media()["model"], "none chosen"),
                     "Image model id",
                     "model",
                 ),
