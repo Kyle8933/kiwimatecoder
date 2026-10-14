@@ -87,6 +87,7 @@ from kiwimatecoder.config import (
     set_lsp,
     set_mcp_server,
     set_media,
+    set_media_model,
     set_memory,
     set_model_filter,
     set_network,
@@ -2515,16 +2516,20 @@ def _set_filter(provider: str | None, mode: str, models: list[str]) -> None:
 
 
 def _print_media(settings: dict[str, Any]) -> None:
+    from kiwimatecoder import media as media_module
+
     console.print(
         f"Media: [cyan]{'on' if settings['enabled'] else 'off'}[/cyan]\n"
         f"Provider: [cyan]{escape(str(settings['provider']))}[/cyan]\n"
-        f"Image model: [cyan]{escape(str(settings['model']))}[/cyan]\n"
+        f"Image model: [cyan]{escape(str(settings['model'] or 'none chosen'))}[/cyan]\n"
         f"Image size: [cyan]{settings['size']}[/cyan]\n"
         f"Video model: [cyan]{escape(settings['video_model'] or 'none chosen')}[/cyan]\n"
         f"Video length: [cyan]{settings['video_duration']}s[/cyan]\n"
         f"Video size: [cyan]{escape(settings['video_size'] or 'provider default')}[/cyan]\n"
         f"Output dir: [cyan]{escape(str(settings['output_dir']))}[/cyan]"
     )
+    for line in media_module.format_models(settings):
+        console.print(escape(line))
 
 
 @media_app.command("show")
@@ -2566,15 +2571,22 @@ def media_enable(
 
 
 @media_app.command("model")
-def media_model(model: Annotated[str, typer.Argument(help="Image model id")]) -> None:
-    """Set the model used for image generation."""
+def media_model(
+    model: Annotated[str, typer.Argument(help="Image model id")],
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Provider id (default: the media provider)")
+    ] = None,
+) -> None:
+    """Set the model used for image generation (remembered per provider)."""
     try:
-        set_media(model=model)
+        provider_id = provider or get_media()["provider"]
+        set_media_model(provider_id, "image", model)
     except ValueError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     console.print(
-        f"[green]{_check()} Media model set to[/green] [cyan]{escape(str(model))}[/cyan]."
+        f"[green]{_check()} Image model for {escape(provider_id)} set to[/green] "
+        f"[cyan]{escape(str(model))}[/cyan]."
     )
 
 
@@ -2609,11 +2621,15 @@ def media_size(size: Annotated[str, typer.Argument(help="Image size as WxH")]) -
 @media_app.command("video-model")
 def media_video_model(
     model: Annotated[str, typer.Argument(help="Video model id, or 'none' to clear")],
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Provider id (default: the media provider)")
+    ] = None,
 ) -> None:
-    """Set the video generation model."""
+    """Set the video generation model (remembered per provider)."""
     cleared = model.strip().lower() in {"none", "clear", "default", "-"}
     try:
-        set_media(video_model="" if cleared else model)
+        provider_id = provider or get_media()["provider"]
+        set_media_model(provider_id, "video", "" if cleared else model)
     except ValueError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
@@ -2621,7 +2637,8 @@ def media_video_model(
         console.print(f"[green]{_check()} Video model cleared.[/green]")
     else:
         console.print(
-            f"[green]{_check()} Video model set to[/green] [cyan]{escape(model)}[/cyan]."
+            f"[green]{_check()} Video model for {escape(provider_id)} set to[/green] "
+            f"[cyan]{escape(model)}[/cyan]."
         )
 
 

@@ -682,3 +682,70 @@ def test_config_media_status_says_none_chosen_for_the_image_model(session):
     dispatch("/config media show", session, console)
 
     assert "image model none chosen" in _output(console)
+
+
+# ---------------------------------------------------------------------------
+# CLI and tools
+# ---------------------------------------------------------------------------
+
+
+def test_cli_media_model_and_video_model_take_a_provider():
+    from typer.testing import CliRunner
+
+    from kiwimatecoder.main import app
+
+    runner = CliRunner()
+    assert runner.invoke(app, ["config", "media", "model", "m1"]).exit_code == 0
+    result = runner.invoke(
+        app, ["config", "media", "model", "m2", "--provider", "openrouter"]
+    )
+    assert result.exit_code == 0
+    assert runner.invoke(
+        app, ["config", "media", "video-model", "v1", "--provider", "openrouter"]
+    ).exit_code == 0
+
+    assert config.get_media_model("openai", "image") == "m1"
+    assert config.get_media_model("openrouter", "image") == "m2"
+    assert config.get_media_model("openrouter", "video") == "v1"
+
+    assert runner.invoke(
+        app, ["config", "media", "video-model", "none", "--provider", "openrouter"]
+    ).exit_code == 0
+    assert config.get_media_model("openrouter", "video") == ""
+
+    bad = runner.invoke(app, ["config", "media", "model", "x", "--provider", "nope"])
+    assert bad.exit_code == 1
+
+
+def test_cli_media_show_lists_models_per_provider():
+    from typer.testing import CliRunner
+
+    from kiwimatecoder.main import app
+
+    config.set_media_model("openrouter", "image", "or-image")
+
+    result = CliRunner().invoke(app, ["config", "media", "show"])
+    output = " ".join(result.output.split())
+
+    assert "Image model: none chosen" in output
+    assert "openrouter: image or-image" in output
+
+
+def test_tool_previews_say_none_chosen(session):
+    from kiwimatecoder.tools.image import generate_image_preview, generate_video_preview
+
+    assert "(none chosen)" in generate_image_preview({"prompt": "a cat"}, session)
+    assert "(none chosen)" in generate_video_preview({"prompt": "a boat"}, session)
+    config.set_media_model("openai", "image", "gpt-image-1")
+    assert "gpt-image-1" in generate_image_preview({"prompt": "a cat"}, session)
+
+
+def test_generate_image_tool_without_a_model_returns_guidance(session):
+    from kiwimatecoder.tools.image import generate_image_tool
+
+    config.set_media(enabled=True)
+    config.set_key("openai", "sk-test")
+
+    result = generate_image_tool.func({"prompt": "a cat"}, session)
+
+    assert "/image model" in result.content

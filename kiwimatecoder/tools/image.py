@@ -111,7 +111,7 @@ def generate_image_preview(args: dict[str, Any], session: Session) -> str:
     prompt = redact(str(args.get("prompt") or "")).strip()
     if len(prompt) > 300:
         prompt = prompt[:297] + "..."
-    model = str(args.get("model") or settings["model"]).strip()
+    model = str(args.get("model") or settings["model"]).strip() or "(none chosen)"
     size = str(args.get("size") or settings["size"]).strip()
     return (
         f"Provider: {settings['provider']}\n"

@@ -184,9 +184,9 @@ paths outside the workspace root; writes stay sandboxed.
 | `/tools` | List available tools. |
 | `/files` | List files changed this session. |
 | `/context [list\|add\|remove\|clear]` | Pin files to include as context on every turn. |
-| `/image [--size WxH] [--model id] <prompt>` | Generate an image with the configured media provider and attach it to your next message (opt-in; see [Image and video generation](#image-and-video-generation)). |
-| `/video [--duration s] [--size 720p] [--model id] [--image path] <prompt>`, `/video resume <job-id>` | Generate a short video (billed per second; takes minutes), or fetch a job that was still rendering. |
-| `/media [list [count]]` | Show whether image and video generation are ready and list recently generated files. |
+| `/image [model [refresh\|search\|id]]`, `/image [--size WxH] [--model id] <prompt>` | Generate an image with the configured media provider and attach it to your next message (opt-in; see [Image and video generation](#image-and-video-generation)). |
+| `/video [model [refresh\|search\|id]]`, `/video [--duration s] [--size 720p] [--model id] [--image path] <prompt>`, `/video resume <job-id>` | Generate a short video (billed per second; takes minutes), or fetch a job that was still rendering. |
+| `/media [list [count]\|provider [id]]` | Show whether image and video generation are ready, list recently generated files, or switch the media provider. |
 | `/memory [list\|add\|add-user\|clear]` | Show or edit persistent project and user memory. |
 | `/index [status\|build\|clear]` | Show, refresh, or delete the local codebase index used by semantic search. |
 | `/jobs [list\|show <id>\|cancel <id>\|tick\|run <prompt>]` | List or manage detached background agent jobs; `tick` starts due scheduled runs. |
@@ -606,10 +606,19 @@ money:
 ```text
 /config media enable on
 /config media provider openai
-/config media model gpt-image-1
+/image model                      # pick an image model (or: /image model <id>)
 /config media size 1024x1024
 /image a red fox reading a book
 ```
+
+Media models are chosen **per provider**, and there is no default: ids and prices
+change quickly, so you pick one yourself. `/image model` and `/video model` list
+that provider's image or video models (`/image model refresh` re-fetches the
+list, `/image model <search>` filters it, `/image model <id>` sets one directly),
+and `/media provider` switches the provider the media tools use. Each provider
+remembers its own image and video model, so switching providers does not lose
+your choice. Because `model` is a subcommand, a prompt that starts with the word
+`model` needs `--` first (`/image -- model railway in the snow`).
 
 `/image [--size WxH] [--model <id>] <prompt>` saves a PNG under
 `.kiwimatecoder/media/` and queues it for the next request. Options come before
@@ -626,8 +635,8 @@ yourself (there is no default: ids and prices change quickly and a clip is bille
 per second):
 
 ```text
-/config media provider openrouter
-/config media video-model <video model id>
+/media provider openrouter
+/video model                      # pick a video model (or: /video model <id>)
 /config media duration 5          # seconds
 /config media video-size 720p     # or 1280x720; "default" clears it
 /video a paper boat drifting down a rainy street
@@ -653,12 +662,14 @@ format is covered by mocked-transport tests only; please report anything a live
 endpoint rejects.
 
 `/media` shows whether image and video generation are ready (and what is missing:
-disabled, offline, no API key, no video model) and lists the most recent files;
+disabled, offline, no API key, no model chosen) and lists the most recent files;
 reference an image from the list with `@<path>` to attach it again. Provider auth,
 API versioning (Azure-style `?api-version=`), proxy, and custom CA settings all
 come from the normal config. Configure it from the shell with
-`config media show|enable on|off|model <id>|provider <id>|size <WxH>|video-model
-<id>|duration <seconds>|video-size <size>|output-dir <path>`.
+`config media show|enable on|off|model <id> [--provider <id>]|provider <id>|size <WxH>|video-model
+<id|none> [--provider <id>]|duration <seconds>|video-size <size>|output-dir <path>`
+(inside the REPL, `/config media model <id> [provider]` takes the provider as a
+trailing word).
 
 ## Notebooks, PDFs, and docx
 
