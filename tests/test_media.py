@@ -344,6 +344,7 @@ def test_image_command_generates_and_attaches(session, monkeypatch):
 
     monkeypatch.setattr(media_module, "generate_image", fake)
     config.set_media(enabled=True)
+    config.set_media_model("openai", "image", "gpt-image-1")
     console = _console()
 
     dispatch("/image a cat", session, console)

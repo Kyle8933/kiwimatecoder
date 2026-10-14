@@ -385,3 +385,183 @@ def test_format_models_lists_each_provider():
     assert media_module.format_models(
         {"models": {}}
     ) == []
+
+
+# ---------------------------------------------------------------------------
+# /image model and /video model
+# ---------------------------------------------------------------------------
+
+
+class _Selector:
+    """A selector that picks a fixed value (or calls ``choice(prompt)``) and records prompts."""
+
+    def __init__(self, choice):
+        self.choice = choice
+        self.prompts = []
+
+    def __call__(self, prompt):
+        self.prompts.append(prompt)
+        return self.choice(prompt) if callable(self.choice) else self.choice
+
+
+def _install_listing(monkeypatch):
+    seen: list[str] = []
+    _listing_client(monkeypatch, seen)
+    return seen
+
+
+def test_image_model_without_arguments_shows_the_current_choice(session):
+    console = _console()
+    dispatch("/image model", session, console)
+    assert "none chosen" in _output(console)
+
+    config.set_media_model("openai", "image", "gpt-image-1")
+    console = _console()
+    dispatch("/image model", session, console)
+    assert "gpt-image-1" in _output(console)
+
+
+def test_image_model_sets_by_name_and_does_not_require_media_to_be_enabled(session):
+    console = _console()
+
+    dispatch("/image model my-image-model", session, console)
+
+    assert config.get_media()["enabled"] is False
+    assert config.get_media_model("openai", "image") == "my-image-model"
+    assert "my-image-model" in _output(console)
+
+
+def test_video_model_sets_the_video_model_only(session):
+    dispatch("/video model vendor/video-2", session, _console())
+
+    assert config.get_media_model("openai", "video") == "vendor/video-2"
+    assert config.get_media_model("openai", "image") == ""
+
+
+def test_image_model_list_opens_a_picker_and_saves_the_choice(session, monkeypatch):
+    config.set_key("openai", "sk-test")
+    _install_listing(monkeypatch)
+    selector = _Selector("gpt-image-1")
+
+    dispatch("/image model list", session, _console(), selector)
+
+    assert [o.value for o in selector.prompts[0].options] == ["gpt-image-1"]
+    assert config.get_media_model("openai", "image") == "gpt-image-1"
+
+
+def test_video_model_list_without_a_selector_prints_a_table(session, monkeypatch):
+    config.set_key("openai", "sk-test")
+    _install_listing(monkeypatch)
+    console = _console()
+
+    dispatch("/video model list", session, console)
+
+    assert "sora-2" in _output(console)
+    assert config.get_media_model("openai", "video") == ""
+
+
+def test_image_model_search_filters_the_full_catalog(session, monkeypatch):
+    config.set_key("openai", "sk-test")
+    _install_listing(monkeypatch)
+    selector = _Selector("gpt-image-1")
+
+    dispatch("/image model search image", session, _console(), selector)
+
+    assert [o.value for o in selector.prompts[0].options] == ["gpt-image-1"]
+    console = _console()
+    dispatch("/image model search zzz", session, console)
+    assert "No" in _output(console) and "zzz" in _output(console)
+
+
+def test_image_model_refresh_forces_a_new_fetch(session, monkeypatch):
+    config.set_key("openai", "sk-test")
+    seen = _install_listing(monkeypatch)
+
+    dispatch("/image model list", session, _console())
+    first = len(seen)
+    dispatch("/image model refresh", session, _console())
+
+    assert len(seen) == first + 1
+
+
+def test_image_without_a_model_opens_the_picker_then_generates(session, monkeypatch):
+    config.set_key("openai", "sk-test")
+    config.set_media(enabled=True)
+    _install_listing(monkeypatch)
+    calls = []
+
+    def fake(prompt, *, session, size=None, model=None, provider_id=None):
+        calls.append(model)
+        raise media_module.MediaError("stop here")
+
+    monkeypatch.setattr(media_module, "generate_image", fake)
+    selector = _Selector("gpt-image-1")
+
+    dispatch("/image a cat", session, _console(), selector)
+
+    assert config.get_media_model("openai", "image") == "gpt-image-1"
+    assert calls == [None]  # the saved model is picked up by generate_image
+
+
+def test_image_without_a_model_and_without_a_selector_names_the_fix(session, monkeypatch):
+    config.set_media(enabled=True)
+    monkeypatch.setattr(
+        media_module,
+        "generate_image",
+        lambda *a, **k: pytest.fail("must not generate without a model"),
+    )
+    console = _console()
+
+    dispatch("/image a cat", session, console)
+
+    assert "/image model" in _output(console)
+
+
+def test_video_without_a_model_and_without_a_selector_names_the_fix(session):
+    config.set_media(enabled=True)
+    console = _console()
+
+    dispatch("/video a boat", session, console)
+
+    assert "/video model" in _output(console)
+
+
+def test_per_call_model_override_is_not_saved(session, monkeypatch):
+    config.set_media(enabled=True)
+    calls = []
+
+    def fake(prompt, *, session, size=None, model=None, provider_id=None):
+        calls.append(model)
+        raise media_module.MediaError("stop here")
+
+    monkeypatch.setattr(media_module, "generate_image", fake)
+
+    dispatch("/image --model one-off a cat", session, _console())
+
+    assert calls == ["one-off"]
+    assert config.get_media_model("openai", "image") == ""
+
+
+def test_a_prompt_starting_with_model_needs_a_leading_double_dash(session, monkeypatch):
+    config.set_media(enabled=True)
+    config.set_media_model("openai", "image", "gpt-image-1")
+    prompts = []
+
+    def fake(prompt, *, session, size=None, model=None, provider_id=None):
+        prompts.append(prompt)
+        raise media_module.MediaError("stop here")
+
+    monkeypatch.setattr(media_module, "generate_image", fake)
+
+    dispatch("/image -- model railway at dusk", session, _console())
+
+    assert prompts == ["model railway at dusk"]
+
+
+def test_image_model_with_several_words_is_not_saved_as_an_id(session):
+    console = _console()
+
+    dispatch("/image model a red fox", session, console)
+
+    assert config.get_media_model("openai", "image") == ""
+    assert "Usage: /image model [list|refresh|search <term>|<id>]" in _output(console)

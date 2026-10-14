@@ -842,6 +842,7 @@ def test_image_command_double_dash_ends_options(session, monkeypatch):
     calls: list[dict] = []
     monkeypatch.setattr(media_module, "generate_image", _fake_generate(calls))
     config.set_media(enabled=True)
+    config.set_media_model("openai", "image", "gpt-image-1")
 
     dispatch("/image -- --a neon sign", session, _console())
 
@@ -872,6 +873,7 @@ def test_image_command_reports_ctrl_c(session, monkeypatch):
 
     monkeypatch.setattr(media_module, "generate_image", interrupted)
     config.set_media(enabled=True)
+    config.set_media_model("openai", "image", "gpt-image-1")
     console = _console()
 
     dispatch("/image a cat", session, console)

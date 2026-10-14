@@ -44,6 +44,7 @@ from kiwimatecoder.config import (
     get_mcp_servers,
     get_memory,
     get_media,
+    get_media_model,
     get_model_catalog,
     get_model_filter,
     get_network,
@@ -83,6 +84,7 @@ from kiwimatecoder.config import (
     set_key,
     set_lsp,
     set_media,
+    set_media_model,
     set_model_filter,
     set_network,
     set_output_style,
@@ -298,6 +300,10 @@ def dispatch(
     if name == "provider":
         # Switching to a provider with no chosen model asks for one.
         return _provider(arg, session, console, selector)
+    selector_handler = _SELECTOR_COMMANDS.get(name)
+    if selector_handler is not None:
+        # /image and /video open a model picker when no model is chosen.
+        return selector_handler(arg, session, console, selector)
     return handler(arg, session, console)
 
 
@@ -399,6 +405,7 @@ def _report_catalog(
     console: Console,
     *,
     verbose: bool,
+    command: str = "/model",
 ) -> None:
     """Print what a catalog refresh changed.
 
@@ -428,7 +435,7 @@ def _report_catalog(
             console.print(
                 f"[yellow]Current model[/yellow] [cyan]{escape(current)}[/cyan] "
                 f"[yellow]is no longer offered by {escape(provider.name)}.[/yellow] "
-                "Pick another with /model."
+                f"Pick another with {command}."
             )
         return
 
@@ -449,11 +456,16 @@ def _provider_catalog(
     *,
     force: bool = False,
     verbose: bool = False,
+    kind: str = "chat",
 ) -> ModelCatalog:
     """Resolve ``provider``'s catalog (``current`` pinned first) and report changes."""
-    with console.status(f"Checking {escape(provider.name)} for new models…"):
-        catalog = get_model_catalog(provider.id, refresh=True, force=force, keep=(current,))
-    _report_catalog(catalog, provider, current, console, verbose=verbose)
+    noun = "models" if kind == "chat" else f"{kind} models"
+    with console.status(f"Checking {escape(provider.name)} for new {noun}…"):
+        catalog = get_model_catalog(
+            provider.id, refresh=True, force=force, keep=(current,), kind=kind
+        )
+    command = "/model" if kind == "chat" else f"/{kind} model"
+    _report_catalog(catalog, provider, current, console, verbose=verbose, command=command)
     return catalog
 
 
@@ -473,29 +485,36 @@ def model_selection_prompt(
     *,
     force: bool = False,
     title: str | None = None,
+    kind: str = "chat",
 ) -> SelectionPrompt:
     """Offer ``provider``'s models, refreshing its catalog first.
 
     Session-free so the setup wizard and ``/provider`` can ask for a model for
     a provider that is not (yet) the session's primary. ``force`` refetches the
     live listing even when the cache is fresh (e.g. right after a key is set).
+    ``kind`` picks the chat catalog (default) or an ``image`` / ``video`` one.
     """
     quiet = console or Console(quiet=True)
-    catalog = _provider_catalog(provider, current, quiet, force=force)
-    models = apply_model_filter(provider.id, catalog.models)
+    catalog = _provider_catalog(provider, current, quiet, force=force, kind=kind)
+    models = apply_model_filter(provider.id, catalog.models, kind=kind)
+    noun = "model" if kind == "chat" else f"{kind} model"
+    empty = (
+        f"No models are visible for {provider.id}. "
+        "Use /config models clear or /model <name>."
+        if kind == "chat"
+        else f"No {kind} models are listed for {provider.id}. "
+        f"Type one by name with /{kind} model <id>."
+    )
     return SelectionPrompt(
-        title=title or f"Choose a model for {provider.name}",
+        title=title or f"Choose a {noun} for {provider.name}",
         text=(
-            f"Choose a model from {provider.name} "
+            f"Choose a {noun} from {provider.name} "
             f"({provider.id}) — {_catalog_status(catalog)}."
-            f"\nCurrent model: {current or '(none chosen)'}"
+            f"\nCurrent {noun}: {current or '(none chosen)'}"
         ),
         options=tuple(CommandOption(model, model) for model in models),
         selected=current if current in models else None,
-        empty_message=(
-            f"No models are visible for {provider.id}. "
-            "Use /config models clear or /model <name>."
-        ),
+        empty_message=empty,
     )
 
 
@@ -5513,8 +5532,168 @@ _VIDEO_OPTIONS = {
 }
 
 
-def _image(arg: str, session: Session, console: Console) -> str:
+def _media_provider_config(console: Console) -> ProviderConfig | None:
+    """The provider media is currently set to use, or None (after saying why)."""
+    provider_id = get_media()["provider"]
+    try:
+        return get_provider_config(provider_id)
+    except KeyError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        return None
+
+
+def _save_media_model(
+    kind: str, provider: ProviderConfig, model: str, console: Console
+) -> bool:
+    try:
+        set_media_model(provider.id, kind, model)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        return False
+    console.print(
+        f"{kind.capitalize()} model for {escape(provider.name)} set to "
+        f"[cyan]{escape(model)}[/cyan]."
+    )
+    return True
+
+
+def _pick_media_model(
+    kind: str,
+    provider: ProviderConfig,
+    current: str,
+    console: Console,
+    selector: CommandSelector,
+) -> str:
+    """Offer ``provider``'s ``kind`` models, save the pick, and return it ("" if none)."""
+    prompt = model_selection_prompt(provider, current, console, kind=kind)
+    if not prompt.options:
+        console.print(f"[yellow]{escape(prompt.empty_message)}[/yellow]")
+        return ""
+    chosen = _run_selector(selector, prompt)
+    if not chosen:
+        return ""
+    return chosen if _save_media_model(kind, provider, chosen, console) else ""
+
+
+def _print_media_models(
+    kind: str,
+    provider: ProviderConfig,
+    models: Sequence[str],
+    current: str,
+    console: Console,
+    title: str,
+) -> None:
+    if not models:
+        console.print(
+            f"[yellow]{escape(title)}: no {kind} models listed.[/yellow] Type one "
+            f"by name with /{kind} model <id>."
+        )
+        return
+    table = Table(title=escape(title), show_header=True)
+    table.add_column("model", style="cyan")
+    table.add_column("")
+    for model in models:
+        table.add_row(escape(model), "active" if model == current else "")
+    console.print(table)
+
+
+def _media_model(
+    kind: str, arg: str, console: Console, selector: CommandSelector | None
+) -> None:
+    """``/image model`` and ``/video model``: show, list, refresh, search, or set."""
+    provider = _media_provider_config(console)
+    if provider is None:
+        return
+    current = get_media_model(provider.id, kind)
+    parts = arg.strip().split(maxsplit=1)
+    action = parts[0].lower() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if not action:
+        console.print(
+            f"Current {kind} model for {escape(provider.name)}: "
+            f"[cyan]{escape(current or '(none chosen)')}[/cyan]"
+        )
+        return
+
+    if action in _MODEL_REFRESH_WORDS or action in _MODEL_LIST_WORDS:
+        if action in _MODEL_LIST_WORDS and selector is not None:
+            _pick_media_model(kind, provider, current, console, selector)
+            return
+        catalog = _provider_catalog(
+            provider,
+            current,
+            console,
+            force=action in _MODEL_REFRESH_WORDS,
+            verbose=action in _MODEL_REFRESH_WORDS,
+            kind=kind,
+        )
+        visible = apply_model_filter(provider.id, catalog.models, kind=kind)
+        _print_media_models(
+            kind,
+            provider,
+            visible,
+            current,
+            console,
+            f"{provider.name} {kind} models ({_catalog_status(catalog)})",
+        )
+        return
+
+    if action in _MODEL_SEARCH_WORDS:
+        if not rest:
+            console.print(f"[yellow]Usage: /{kind} model search <term>[/yellow]")
+            return
+        with console.status(f"Searching {escape(provider.name)} {kind} models…"):
+            matches = search_model_catalog(
+                provider.id, rest, refresh=True, keep=(current,), kind=kind
+            )
+        if not matches:
+            console.print(
+                f"[yellow]No {kind} models match '{escape(rest)}' for "
+                f"{escape(provider.name)}.[/yellow] Type an id with "
+                f"/{kind} model <id>."
+            )
+            return
+        if selector is not None:
+            prompt = SelectionPrompt(
+                title=f"Search: {rest}",
+                text=(
+                    f"{len(matches)} match(es) from {provider.name} "
+                    f"({provider.id}).\nCurrent {kind} model: {current or '(none chosen)'}"
+                ),
+                options=tuple(CommandOption(model, model) for model in matches),
+                selected=current if current in matches else None,
+            )
+            chosen = _run_selector(selector, prompt)
+            if chosen:
+                _save_media_model(kind, provider, chosen, console)
+            return
+        _print_media_models(
+            kind, provider, matches, current, console, f"{len(matches)} match(es) for '{rest}'"
+        )
+        return
+
+    if rest:
+        # A model id is one word; "/image model a red fox" is a mistyped prompt.
+        console.print(
+            f"[yellow]Usage: /{kind} model "
+            f"{escape('[list|refresh|search <term>|<id>]')}[/yellow]"
+        )
+        return
+    _save_media_model(kind, provider, arg.strip(), console)
+
+
+def _image(
+    arg: str,
+    session: Session,
+    console: Console,
+    selector: CommandSelector | None = None,
+) -> str:
     """Generate an image from a prompt and attach it to the next message."""
+    words = arg.split(None, 1)
+    if words and words[0].lower() == "model":
+        _media_model("image", words[1] if len(words) > 1 else "", console, selector)
+        return CommandResult.CONTINUE
     settings = get_media()
     if not settings["enabled"]:
         _media_disabled_hint(console)
@@ -5527,12 +5706,25 @@ def _image(arg: str, session: Session, console: Console) -> str:
     if not prompt:
         console.print(
             "[yellow]Usage: /image [--size WxH] [--model <id>] <prompt>[/yellow]\n"
-            f"[dim]Now: {escape(str(settings['provider']))}/{escape(str(settings['model']))} at "
+            f"[yellow]       /image model {escape('[list|refresh|search <term>|<id>]')}"
+            "[/yellow]\n"
+            f"[dim]Now: {escape(str(settings['provider']))}/"
+            f"{escape(str(settings['model'] or 'no model chosen'))} at "
             f"{settings['size']}. Example: /image a red fox reading a book[/dim]"
         )
         return CommandResult.CONTINUE
 
     model = options.get("model") or settings["model"]
+    if not model:
+        provider = _media_provider_config(console)
+        if provider is None:
+            return CommandResult.CONTINUE
+        if selector is None:
+            console.print(f"[yellow]{escape(media_module.NO_IMAGE_MODEL_MESSAGE)}[/yellow]")
+            return CommandResult.CONTINUE
+        if not _pick_media_model("image", provider, "", console, selector):
+            return CommandResult.CONTINUE
+        model = get_media_model(provider.id, "image")
     size = options.get("size") or settings["size"]
     label = f"Generating {size} image with {settings['provider']}/{model}"
     try:
@@ -5569,14 +5761,22 @@ def _image(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
-def _video(arg: str, session: Session, console: Console) -> str:
+def _video(
+    arg: str,
+    session: Session,
+    console: Console,
+    selector: CommandSelector | None = None,
+) -> str:
     """Generate a short video, or resume a job that was still rendering."""
+    words = arg.split(None, 1)
+    if words and words[0].lower() == "model":
+        _media_model("video", words[1] if len(words) > 1 else "", console, selector)
+        return CommandResult.CONTINUE
     settings = get_media()
     if not settings["enabled"]:
         _media_disabled_hint(console)
         return CommandResult.CONTINUE
 
-    words = arg.split(None, 1)
     resume_id = ""
     if words and words[0].lower() == "resume":
         resume_id = words[1].strip() if len(words) > 1 else ""
@@ -5597,6 +5797,8 @@ def _video(arg: str, session: Session, console: Console) -> str:
                 "[yellow]Usage: /video [--duration <s>] [--size <WxH|720p>] "
                 "[--model <id>] [--image <path>] <prompt>[/yellow]\n"
                 "[yellow]       /video resume <job-id>[/yellow]\n"
+                f"[yellow]       /video model {escape('[list|refresh|search <term>|<id>]')}"
+                "[/yellow]\n"
                 f"[dim]Now: {escape(str(settings['provider']))}/{escape(video_model)}, "
                 f"{settings['video_duration']}s. Video is billed per second and "
                 "takes minutes to render. Example: /video a paper boat drifting "
@@ -5629,8 +5831,17 @@ def _video(arg: str, session: Session, console: Console) -> str:
 
     # Fail on the cheap, local problems before announcing a long, paid job.
     if not resume_id and not (options.get("model") or settings["video_model"]):
-        console.print(f"[yellow]{escape(media_module.NO_VIDEO_MODEL_MESSAGE)}[/yellow]")
-        return CommandResult.CONTINUE
+        provider = _media_provider_config(console)
+        if provider is None:
+            return CommandResult.CONTINUE
+        if selector is None or not _pick_media_model(
+            "video", provider, "", console, selector
+        ):
+            if selector is None:
+                console.print(
+                    f"[yellow]{escape(media_module.NO_VIDEO_MODEL_MESSAGE)}[/yellow]"
+                )
+            return CommandResult.CONTINUE
 
     seen_job: list[str] = []
 
@@ -5653,7 +5864,7 @@ def _video(arg: str, session: Session, console: Console) -> str:
     if resume_id:
         label = f"Resuming video job {resume_id}"
     else:
-        model = options.get("model") or settings["video_model"]
+        model = options.get("model") or get_media_model(settings["provider"], "video")
         seconds = duration or settings["video_duration"]
         console.print(
             f"[dim]Requesting a video ({seconds}s) from {escape(str(settings['provider']))}/"
@@ -5716,7 +5927,12 @@ def _age(seconds: float) -> str:
     return f"{int(seconds // 86400)} d ago"
 
 
-def _media(arg: str, session: Session, console: Console) -> str:
+def _media(
+    arg: str,
+    session: Session,
+    console: Console,
+    selector: CommandSelector | None = None,
+) -> str:
     """Show media readiness and recently generated files."""
     words = arg.split()
     if words and words[0].lower() not in {"list", "ls", "show", "status", "recent"}:
@@ -5809,6 +6025,11 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "lsp": _lsp,
     "jobs": _jobs,
 }
+
+# Commands whose handler also takes the interactive selector (see dispatch).
+_SELECTOR_COMMANDS: dict[
+    str, Callable[[str, Session, Console, CommandSelector | None], str]
+] = {"image": _image, "video": _video, "media": _media}
 
 
 def has_command(name: str) -> bool:
@@ -5929,14 +6150,16 @@ _HELP_GROUPS = [
                 "Manage pinned files included with each turn.",
             ),
             (
-                "/image [--size WxH] [--model id] <prompt>",
-                "Generate an image with the configured media provider and "
-                "attach it to your next message.",
+                "/image [--size WxH] [--model id] <prompt>  |  /image model [list|refresh|search <term>|<id>]",
+                "Generate an image and attach it to your next message, or choose "
+                "the image model (remembered per provider). A prompt starting "
+                "with the word 'model' needs `--` first: /image -- model train.",
             ),
             (
-                "/video [--duration s] [--size 720p] [--image path] <prompt>",
-                "Generate a short video (billed per second; takes minutes). "
-                "`/video resume <job-id>` fetches a job that was still rendering.",
+                "/video [--duration s] [--size 720p] [--image path] <prompt>  |  /video model [list|refresh|search <term>|<id>]",
+                "Generate a short video (billed per second; takes minutes), "
+                "choose the video model, or `/video resume <job-id>` to fetch a "
+                "job that was still rendering.",
             ),
             (
                 "/media [list [count]]",
@@ -6017,8 +6240,13 @@ _CONTEXT_ACTION_DESCRIPTIONS = {
     "clear": "Remove all pinned context files.",
 }
 
+_IMAGE_ACTION_DESCRIPTIONS = {
+    "model": "Choose the image model (list, refresh, search, or an id).",
+}
+
 _VIDEO_ACTION_DESCRIPTIONS = {
     "resume": "Fetch a video job that was still rendering.",
+    "model": "Choose the video model (list, refresh, search, or an id).",
 }
 
 _MEDIA_ACTION_DESCRIPTIONS = {
@@ -6167,6 +6395,8 @@ def slash_argument_completions(
     command = command.lower()
     if command in {"context", "ctx"}:
         choices = _CONTEXT_ACTION_DESCRIPTIONS
+    elif command == "image":
+        choices = _IMAGE_ACTION_DESCRIPTIONS
     elif command == "video":
         choices = _VIDEO_ACTION_DESCRIPTIONS
     elif command == "media":
