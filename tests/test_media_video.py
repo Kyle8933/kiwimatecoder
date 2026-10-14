@@ -107,6 +107,7 @@ def _enable_openrouter_video(model: str = "vendor/video-1", **kwargs) -> None:
     config.set_media(
         enabled=True, provider="openrouter", video_model=model, **kwargs
     )
+    config.set_media_model("openrouter", "image", "vendor/img")
     config.set_key("openrouter", "sk-or-test")
 
 
@@ -554,6 +555,8 @@ def test_readiness_reports_what_is_missing():
     assert any("No API key" in p for p in media_module.readiness())
 
     config.set_key("openrouter", "sk-or-test")
+    assert media_module.readiness() == [media_module.NO_IMAGE_MODEL_MESSAGE]
+    config.set_media_model("openrouter", "image", "vendor/img")
     assert media_module.readiness() == []
     assert media_module.readiness(video=True) == [media_module.NO_VIDEO_MODEL_MESSAGE]
 

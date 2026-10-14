@@ -308,3 +308,80 @@ def test_deny_list_hides_a_media_model(monkeypatch):
 def test_get_model_catalog_rejects_an_unknown_kind():
     with pytest.raises(ValueError):
         config.get_model_catalog("openai", kind="bogus")
+
+
+# ---------------------------------------------------------------------------
+# media.py
+# ---------------------------------------------------------------------------
+
+
+def test_generate_image_without_a_model_names_the_fix(session):
+    config.set_media(enabled=True)
+    config.set_key("openai", "sk-test")
+
+    with pytest.raises(media_module.MediaError) as exc:
+        media_module.generate_image("a cat", session=session)
+
+    assert "/image model" in str(exc.value)
+
+
+def test_generate_video_without_a_model_names_the_fix(session):
+    config.set_media(enabled=True)
+    config.set_key("openai", "sk-test")
+
+    with pytest.raises(media_module.MediaError) as exc:
+        media_module.generate_video("a boat", session=session)
+
+    assert "/video model" in str(exc.value)
+
+
+def test_generate_image_uses_the_model_of_the_requested_provider(session, monkeypatch):
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        seen["payload"] = _json.loads(request.content)
+        return httpx.Response(
+            200, json={"data": [{"b64_json": "iVBORw0KGgo="}]}, request=request
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        media_module, "_client", lambda timeout: httpx.Client(timeout=timeout, transport=transport)
+    )
+    config.set_media(enabled=True)  # media.provider stays openai
+    config.set_key("openrouter", "sk-or")
+    config.set_media_model("openai", "image", "openai-model")
+    config.set_media_model("openrouter", "image", "or-model")
+
+    try:
+        media_module.generate_image("a cat", session=session, provider_id="openrouter")
+    except media_module.MediaError:
+        pass  # the stub body is not a valid PNG; only the request matters
+
+    assert seen["payload"]["model"] == "or-model"
+
+
+def test_readiness_reports_a_missing_image_model():
+    config.set_media(enabled=True)
+    config.set_key("openai", "sk-test")
+
+    assert media_module.readiness() == [media_module.NO_IMAGE_MODEL_MESSAGE]
+    config.set_media_model("openai", "image", "gpt-image-1")
+    assert media_module.readiness() == []
+
+
+def test_format_models_lists_each_provider():
+    config.set_media_model("openai", "image", "gpt-image-1")
+    config.set_media_model("openrouter", "video", "vendor/video-2")
+
+    lines = media_module.format_models(config.get_media())
+
+    assert lines == [
+        "openai: image gpt-image-1, video none chosen",
+        "openrouter: image none chosen, video vendor/video-2",
+    ]
+    assert media_module.format_models(
+        {"models": {}}
+    ) == []

@@ -70,9 +70,13 @@ _DISABLED_MESSAGE = (
     "Media generation is disabled. Enable it with `/config media enable on` "
     "(or `kiwimatecoder config media enable on`)."
 )
+NO_IMAGE_MODEL_MESSAGE = (
+    "No image model chosen. Pick one with `/image model` "
+    "(or `kiwimatecoder config media model <id>`)."
+)
 NO_VIDEO_MODEL_MESSAGE = (
-    "No video model chosen. Pick one with `/config media video-model <id>` "
-    "(for example an id from your provider's video model list)."
+    "No video model chosen. Pick one with `/video model` "
+    "(or `kiwimatecoder config media video-model <id>`)."
 )
 
 
@@ -135,6 +139,16 @@ def format_bytes(count: int) -> str:
             return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
     return f"{count} B"  # pragma: no cover - loop always returns
+
+
+def format_models(settings: dict[str, Any]) -> list[str]:
+    """One plain-text line per provider that has a chosen image or video model."""
+    lines: list[str] = []
+    for provider_id, kinds in sorted(settings.get("models", {}).items()):
+        image = kinds.get("image") or "none chosen"
+        video = kinds.get("video") or "none chosen"
+        lines.append(f"{provider_id}: image {image}, video {video}")
+    return lines
 
 
 def _client(timeout: float) -> httpx.Client:
@@ -343,8 +357,9 @@ def readiness(*, video: bool = False, cfg: dict[str, Any] | None = None) -> list
     except MediaError as exc:
         problems.append(str(exc))
         settings = config.get_media(cfg)
-    if video and not settings["video_model"]:
-        problems.append(NO_VIDEO_MODEL_MESSAGE)
+    kind = "video" if video else "image"
+    if not config.get_media_model(settings["provider"], kind, cfg):
+        problems.append(NO_VIDEO_MODEL_MESSAGE if video else NO_IMAGE_MODEL_MESSAGE)
     return problems
 
 
@@ -395,11 +410,12 @@ def generate_image(
     settings, resolved_provider, provider, key = _resolve_provider(
         provider_id, cfg, "image generation"
     )
-    del resolved_provider
 
-    chosen_model = str(model or settings["model"]).strip()
+    chosen_model = str(
+        model or config.get_media_model(resolved_provider, "image", cfg)
+    ).strip()
     if not chosen_model:
-        raise MediaError("A model is required to generate an image.")
+        raise MediaError(NO_IMAGE_MODEL_MESSAGE)
     chosen_size = str(size or settings["size"]).strip()
     if not config.MEDIA_SIZE_RE.match(chosen_size):
         raise MediaError("Image size must look like WxH, e.g. 1024x1024.")
@@ -777,9 +793,10 @@ def generate_video(
     settings, resolved_provider, provider, key = _resolve_provider(
         provider_id, cfg, "video generation"
     )
-    del resolved_provider
 
-    chosen_model = str(model or settings["video_model"]).strip()
+    chosen_model = str(
+        model or config.get_media_model(resolved_provider, "video", cfg)
+    ).strip()
     if not chosen_model:
         raise MediaError(NO_VIDEO_MODEL_MESSAGE)
     seconds = settings["video_duration"] if duration is None else duration
@@ -872,7 +889,6 @@ def resume_video(
     settings, resolved_provider, provider, key = _resolve_provider(
         provider_id, cfg, "video generation"
     )
-    del resolved_provider
     return _finish_video(
         provider,
         key,
@@ -881,7 +897,7 @@ def resume_video(
         cleaned,
         None,
         f"video {cleaned}",
-        str(settings["video_model"]) or "resumed job",
+        config.get_media_model(resolved_provider, "video", cfg) or "resumed job",
         progress=progress,
         poll_interval=poll_interval,
         max_wait=max_wait,
