@@ -169,6 +169,14 @@ def normalize_model_id(raw: object) -> str:
     return model_id
 
 
+# Name fragments that mark an id as a model of the given media kind; used only
+# when the provider's listing has no modality metadata.
+MEDIA_NAME_MARKERS: dict[str, tuple[str, ...]] = {
+    "image": ("image", "imagen", "dall-e", "flux", "diffusion"),
+    "video": ("video", "veo", "sora"),
+}
+
+
 def is_chat_model(
     entry: dict[str, Any], model_id: str, *, require_tools: bool = True
 ) -> bool:
@@ -213,10 +221,28 @@ def is_chat_model(
     return True
 
 
+def is_media_model(entry: dict[str, Any], model_id: str, kind: str) -> bool:
+    """Return whether a listed model produces ``kind`` ("image" or "video").
+
+    ``architecture.output_modalities`` wins when the provider reports it
+    (OpenRouter does); otherwise the id is matched against
+    :data:`MEDIA_NAME_MARKERS`.
+    """
+    lowered = model_id.lower()
+    if not lowered:
+        return False
+    architecture = entry.get("architecture")
+    if isinstance(architecture, dict):
+        outputs = architecture.get("output_modalities")
+        if isinstance(outputs, list) and outputs:
+            return kind in outputs
+    return any(marker in lowered for marker in MEDIA_NAME_MARKERS[kind])
+
+
 def parse_models_response(
-    payload: object, *, require_tools: bool = True
+    payload: object, *, require_tools: bool = True, kind: str = "chat"
 ) -> list[RemoteModel]:
-    """Extract usable chat models from a provider's listing payload.
+    """Extract usable models of ``kind`` (chat by default) from a provider's listing payload.
 
     Accepts the OpenAI shape (``{"data": [...]}``), a bare list, or a
     ``{"models": [...]}`` variant, and tolerates entries that are plain strings.
@@ -245,7 +271,11 @@ def parse_models_response(
         model_id = normalize_model_id(entry.get("id") or entry.get("name"))
         if not model_id or model_id in models:
             continue
-        if not is_chat_model(entry, model_id, require_tools=require_tools):
+        if kind == "chat":
+            usable = is_chat_model(entry, model_id, require_tools=require_tools)
+        else:
+            usable = is_media_model(entry, model_id, kind)
+        if not usable:
             continue
 
         created = _parse_timestamp(
@@ -264,6 +294,7 @@ def fetch_models(
     *,
     timeout: float = FETCH_TIMEOUT,
     transport: httpx.BaseTransport | None = None,
+    kind: str = "chat",
 ) -> list[RemoteModel]:
     """Fetch and parse ``provider``'s live model listing.
 
@@ -306,9 +337,11 @@ def fetch_models(
             f"{provider.name} returned a non-JSON model list from {url}"
         ) from exc
 
-    models = parse_models_response(payload, require_tools=provider.supports_tools)
+    models = parse_models_response(
+        payload, require_tools=provider.supports_tools, kind=kind
+    )
     if not models:
-        raise CatalogFetchError(f"{provider.name} listed no usable chat models")
+        raise CatalogFetchError(f"{provider.name} listed no usable {kind} models")
     return models
 
 

@@ -5055,6 +5055,7 @@ def get_model_catalog(
     timeout: float | None = None,
     limit: int | None = catalog.MAX_CATALOG_MODELS,
     cfg: dict[str, Any] | None = None,
+    kind: str = "chat",
 ) -> ModelCatalog:
     """Return the models offered for a provider, newest first.
 
@@ -5069,12 +5070,18 @@ def get_model_catalog(
     additions/removals; ``limit`` only trims the list this call returns (used by
     the interactive selector to stay snappy). Pass ``limit=None`` to get
     everything, e.g. for a search that must see the whole catalog.
+
+    ``kind`` selects the chat catalog or the image / video one; media catalogs
+    have no curated list.
     """
+    if kind != "chat" and kind not in MEDIA_KINDS:
+        raise ValueError(f"Unknown model kind '{kind}'.")
+    cache_key = provider_id if kind == "chat" else f"{provider_id}:{kind}"
     provider = get_provider_config(provider_id, cfg)
-    curated = _curated_models(provider)
+    curated = _curated_models(provider) if kind == "chat" else []
 
     cache = load_model_cache()
-    entry = cache["providers"].get(provider_id)
+    entry = cache["providers"].get(cache_key)
     entry = dict(entry) if isinstance(entry, dict) else {}
     cached_models = [
         str(model).strip() for model in entry.get("models") or [] if str(model).strip()
@@ -5096,11 +5103,12 @@ def get_model_catalog(
                 provider,
                 get_key(provider_id),
                 timeout=timeout if timeout is not None else catalog.FETCH_TIMEOUT,
+                **({} if kind == "chat" else {"kind": kind}),
             )
         except CatalogFetchError as exc:
             error = str(exc)
             entry["failed_at"] = now
-            cache["providers"][provider_id] = entry
+            cache["providers"][cache_key] = entry
             save_model_cache(cache)
         else:
             models = catalog.merge_catalog(provider, remote, keep=keep, limit=None)
@@ -5109,7 +5117,7 @@ def get_model_catalog(
             baseline = cached_models or curated
             added = [model for model in models if model not in baseline]
             removed = [model for model in baseline if model not in models]
-            cache["providers"][provider_id] = {"fetched_at": now, "models": models}
+            cache["providers"][cache_key] = {"fetched_at": now, "models": models}
             save_model_cache(cache)
             return ModelCatalog(
                 provider_id=provider_id,
@@ -5143,6 +5151,7 @@ def list_visible_models(
     refresh: bool = False,
     force: bool = False,
     keep: Sequence[str] = (),
+    kind: str = "chat",
 ) -> list[str]:
     """Return models that should be offered in model-selection UI.
 
@@ -5151,7 +5160,7 @@ def list_visible_models(
     refetched, or ``force=True`` to refetch unconditionally.
     """
     model_catalog = get_model_catalog(
-        provider_id, refresh=refresh, force=force, keep=keep
+        provider_id, refresh=refresh, force=force, keep=keep, kind=kind
     )
     return apply_model_filter(provider_id, model_catalog.models)
 
@@ -5163,6 +5172,7 @@ def search_model_catalog(
     refresh: bool = False,
     force: bool = False,
     keep: Sequence[str] = (),
+    kind: str = "chat",
 ) -> list[str]:
     """Return models for ``provider_id`` whose id matches ``query``.
 
@@ -5173,7 +5183,7 @@ def search_model_catalog(
     model survives a refresh.
     """
     model_catalog = get_model_catalog(
-        provider_id, refresh=refresh, force=force, keep=keep, limit=None
+        provider_id, refresh=refresh, force=force, keep=keep, limit=None, kind=kind
     )
     visible = apply_model_filter(provider_id, model_catalog.models)
     return catalog.search_models(visible, query)
