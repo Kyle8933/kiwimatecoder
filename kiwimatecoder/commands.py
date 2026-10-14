@@ -6150,16 +6150,26 @@ _HELP_GROUPS = [
                 "Manage pinned files included with each turn.",
             ),
             (
-                "/image [--size WxH] [--model id] <prompt>  |  /image model [list|refresh|search <term>|<id>]",
-                "Generate an image and attach it to your next message, or choose "
-                "the image model (remembered per provider). A prompt starting "
-                "with the word 'model' needs `--` first: /image -- model train.",
+                "/image [--size WxH] [--model id] <prompt>",
+                "Generate an image with the configured media provider and "
+                "attach it to your next message.",
             ),
             (
-                "/video [--duration s] [--size 720p] [--image path] <prompt>  |  /video model [list|refresh|search <term>|<id>]",
-                "Generate a short video (billed per second; takes minutes), "
-                "choose the video model, or `/video resume <job-id>` to fetch a "
-                "job that was still rendering.",
+                "/image model [list|refresh|search <term>|<id>]",
+                "Choose the image model (remembered per provider). A prompt "
+                "starting with the word 'model' needs `--` first, e.g. "
+                "`/image -- model train`.",
+            ),
+            (
+                "/video [--duration s] [--size 720p] [--image path] <prompt>",
+                "Generate a short video (billed per second; takes minutes). "
+                "`/video resume <job-id>` fetches a job that was still rendering.",
+            ),
+            (
+                "/video model [list|refresh|search <term>|<id>]",
+                "Choose the video model (remembered per provider). A prompt "
+                "starting with the word 'model' needs `--` first, e.g. "
+                "`/video -- model railway`.",
             ),
             (
                 "/media [list [count]]",

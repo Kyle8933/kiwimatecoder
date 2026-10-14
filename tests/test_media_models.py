@@ -565,3 +565,25 @@ def test_image_model_with_several_words_is_not_saved_as_an_id(session):
 
     assert config.get_media_model("openai", "image") == ""
     assert "Usage: /image model [list|refresh|search <term>|<id>]" in _output(console)
+
+
+def _help_descriptions(width: int, session) -> str:
+    """The text of every help Description cell, rewrapped onto one line."""
+    console = Console(file=io.StringIO(), force_terminal=False, width=width)
+    dispatch("/help", session, console)
+    cells = []
+    for line in _output(console).splitlines():
+        parts = [part.strip() for part in line.split("│")]
+        if len(parts) >= 4:  # │ command │ description │
+            cells.append(parts[2])
+    return " ".join(" ".join(cells).split())
+
+
+def test_help_keeps_the_media_model_descriptions_visible_at_100_columns(session):
+    text = _help_descriptions(100, session)
+
+    assert (
+        "Choose the image model (remembered per provider). A prompt starting "
+        "with the word 'model' needs `--` first, e.g. `/image -- model train`."
+    ) in text
+    assert "Choose the video model (remembered per provider)." in text
