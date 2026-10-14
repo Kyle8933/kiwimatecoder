@@ -24,7 +24,12 @@ from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.providers import REGISTRY
 from kiwimatecoder.session import Session
 from kiwimatecoder.tools.base import FunctionTool, ToolResult
-from tests.test_config_markup import HOSTILE, StrictConsole, path_safe
+from tests.test_config_markup import (
+    HOSTILE,
+    StrictConsole,
+    add_existing_provider,
+    path_safe,
+)
 
 # Each command with the hostile value as its argument. Left out on purpose:
 # /config (its own test), /exit and /quit, /doctor (probes services), /model
@@ -442,7 +447,7 @@ def test_loading_a_session_that_names_a_provider_with_a_hostile_id(hostile, setu
     # A saved session is a file anyone can edit; /load echoes the provider it names.
     provider_id = hostile.lower()  # ids are stored lower-case
     session = _session(setup(hostile), hostile)
-    config.add_provider(provider_id, "Name", "http://localhost:1/v1", "m1")
+    add_existing_provider(provider_id)
     saved = _write_session_naming(provider_id, session)
     console = StrictConsole(provider_id)
 
@@ -477,7 +482,7 @@ def test_the_provider_checklist_summary_shows_ids_and_model_literally(
     provider_id = hostile.lower()
     ids = [provider_id, "openrouter"] if hostile_first else ["openrouter", provider_id]
     session = _session(setup(hostile), hostile)
-    config.add_provider(provider_id, "Name", "http://localhost:1/v1", "m1")
+    add_existing_provider(provider_id)
     console = StrictConsole(provider_id)
 
     dispatch("/provider", session, console, multi_selector=lambda _prompt: ids)
@@ -519,7 +524,7 @@ def test_state_read_from_a_saved_session_is_shown_literally(hostile, setup):
         ("/media bogus", "[list [count]|provider [id]]"),
         ("/config budget bogus", "[show|tokens <n>|cost <usd>|clear]"),
         ("/config ui bogus", "[show|color <auto|always|never>|"),
-        ("/config media bogus", "[show|enable on|off|model <id> [provider]|"),
+        ("/config media bogus", "[show|enable on|off|model <id|none> [provider]|"),
         ("/config permissions bogus", "[list|remove <tool>|clear]"),
     ],
 )

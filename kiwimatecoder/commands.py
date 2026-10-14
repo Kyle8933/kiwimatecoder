@@ -407,12 +407,15 @@ def _report_catalog(
     *,
     verbose: bool,
     command: str = "/model",
+    kind: str = "chat",
 ) -> None:
     """Print what a catalog refresh changed.
 
     Kept quiet on the selector path (``verbose=False``) — only real news is
     worth interrupting a model pick: models that appeared, models the provider
-    retired, and a current model that no longer exists.
+    retired, and a current model that no longer exists. Media listings are
+    filtered by name/modality, so a typed media id they do not list may still
+    exist; for those kinds only a model the refresh actually removed is news.
     """
     if catalog.source == "live":
         if verbose:
@@ -432,7 +435,12 @@ def _report_catalog(
             )
         if verbose and not catalog.added and not catalog.removed:
             console.print("[dim]No changes since the last check.[/dim]")
-        if current and current not in catalog.models:
+        gone = (
+            current not in catalog.models
+            if kind == "chat"
+            else current in catalog.removed
+        )
+        if current and gone:
             console.print(
                 f"[yellow]Current model[/yellow] [cyan]{escape(current)}[/cyan] "
                 f"[yellow]is no longer offered by {escape(provider.name)}.[/yellow] "
@@ -466,7 +474,9 @@ def _provider_catalog(
             provider.id, refresh=True, force=force, keep=(current,), kind=kind
         )
     command = "/model" if kind == "chat" else f"/{kind} model"
-    _report_catalog(catalog, provider, current, console, verbose=verbose, command=command)
+    _report_catalog(
+        catalog, provider, current, console, verbose=verbose, command=command, kind=kind
+    )
     return catalog
 
 
@@ -1358,11 +1368,12 @@ def _config_help(console: Console) -> None:
             "Set image attachment size and per-turn count limits.",
         ),
         (
-            "/config media [show|enable on|off|model <id>|provider <id>|"
-            "size <WxH>|video-model <id>|duration <s>|video-size <size>|"
-            "output-dir <path>]",
+            "/config media [show|<setting> <value>]",
             "Configure opt-in image and video generation (/image, /video, "
-            "generate_image, generate_video).",
+            "generate_image, generate_video). Settings: enable on|off, "
+            "provider <id>, model <id|none> \\[provider], "
+            "video-model <id|none> \\[provider], size <WxH>, duration <seconds>, "
+            "video-size <WxH|720p|default>, output-dir <path>.",
         ),
         (
             "/config telemetry [show|enable on|off|level <lvl>|"
@@ -2816,7 +2827,7 @@ def _media_status_line(settings: dict[str, Any]) -> str:
 
 
 _MEDIA_USAGE = (
-    "Usage: /config media [show|enable on|off|model <id> [provider]|provider <id>|"
+    "Usage: /config media [show|enable on|off|model <id|none> [provider]|provider <id>|"
     "size <WxH>|video-model <id|none> [provider]|duration <seconds>|"
     "video-size <WxH|720p|default>|output-dir <path>]"
 )
@@ -2880,7 +2891,7 @@ def _config_media(action_parts: list[str], console: Console) -> None:
     if action in {"model", "video-model", "video_model"}:
         kind = "image" if action == "model" else "video"
         if not rest:
-            usage = "model <id>" if kind == "image" else "video-model <id|none>"
+            usage = "model <id|none>" if kind == "image" else "video-model <id|none>"
             console.print(
                 f"[yellow]Usage: /config media {usage} \\[provider][/yellow]"
             )
@@ -2895,13 +2906,23 @@ def _config_media(action_parts: list[str], console: Console) -> None:
             else:
                 provider_id = words.pop()
         value = " ".join(words)
-        cleared = kind == "video" and value.lower() in {"none", "default", "clear", "-"}
+        cleared = value.lower() in _CLEAR_WORDS
         try:
             set_media_model(provider_id, kind, "" if cleared else value)
         except ValueError as exc:
             console.print(f"[red]{escape(str(exc))}[/red]")
             return
-        console.print(_media_status_line(get_media()))
+        if cleared:
+            console.print(
+                f"[green]{kind.capitalize()} model for {escape(provider_id)} "
+                "cleared.[/green]"
+            )
+        else:
+            console.print(
+                f"[green]{kind.capitalize()} model for {escape(provider_id)} set to "
+                f"[/green][cyan]{escape(value)}[/cyan][green].[/green]"
+            )
+        _print_media_status(console)
         return
 
     hints = {
@@ -4038,6 +4059,7 @@ _CONFIG_SECTIONS: dict[str, _Section] = {
                     lambda _s: _preview(get_media()["model"], "none chosen"),
                     "Image model id",
                     "model",
+                    clear="clear",
                 ),
                 _text(
                     "size",

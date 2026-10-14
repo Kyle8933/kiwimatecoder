@@ -749,3 +749,222 @@ def test_generate_image_tool_without_a_model_returns_guidance(session):
     result = generate_image_tool.func({"prompt": "a cat"}, session)
 
     assert "/image model" in result.content
+
+
+# ---------------------------------------------------------------------------
+# Final review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_project_media_model_pin_overrides_the_global_models(tmp_path, monkeypatch):
+    import json
+
+    config.set_media_model("openai", "image", "gpt-image-1")
+    config.set_media_model("openai", "video", "sora-2")
+    project = tmp_path / "project.json"
+    project.write_text(
+        json.dumps({"media": {"model": "dall-e-3", "video_model": "sora-2-pro"}})
+    )
+    monkeypatch.setenv(config.PROJECT_CONFIG_ENV, str(project))
+
+    assert config.get_media()["model"] == "dall-e-3"
+    assert config.get_media()["video_model"] == "sora-2-pro"
+    assert config.get_media_model("openai", "image") == "dall-e-3"
+
+    config.set_media(size="512x512")
+
+    stored = json.loads(config.CONFIG_FILE.read_text())["media"]
+    assert "model" not in stored
+    assert "video_model" not in stored
+    # The project pin still wins on the next read.
+    assert config.get_media()["model"] == "dall-e-3"
+
+
+def test_config_media_model_for_another_provider_confirms_the_saved_value(session):
+    console = _console()
+
+    dispatch("/config media model or-image openrouter", session, console)
+
+    output = _output(console)
+    assert "Image model for openrouter set to or-image." in output
+    assert "openrouter: image or-image" in output
+
+    console = _console()
+    dispatch("/config media video-model vendor/[b]v openrouter", session, console)
+    output = _output(console)
+    assert "Video model for openrouter set to vendor/[b]v." in output
+
+    console = _console()
+    dispatch("/config media video-model none openrouter", session, console)
+    assert "Video model for openrouter cleared." in _output(console)
+
+
+@pytest.mark.parametrize("word", ["none", "clear", "default", "-", "NONE"])
+def test_config_media_model_clear_words_clear_the_image_model(session, word):
+    config.set_media_model("openai", "image", "gpt-image-1")
+    console = _console()
+
+    dispatch(f"/config media model {word}", session, console)
+
+    assert config.get_media_model("openai", "image") == ""
+    assert "Image model for openai cleared." in _output(console)
+
+
+def test_image_model_none_still_sets_the_literal_id(session):
+    dispatch("/image model none", session, _console())
+
+    assert config.get_media_model("openai", "image") == "none"
+
+
+def test_cli_media_model_none_clears_the_image_model():
+    from typer.testing import CliRunner
+
+    from kiwimatecoder.main import app
+
+    config.set_media_model("openrouter", "image", "or-image")
+
+    result = CliRunner().invoke(
+        app, ["config", "media", "model", "none", "--provider", "openrouter"]
+    )
+
+    assert result.exit_code == 0
+    assert config.get_media_model("openrouter", "image") == ""
+    output = " ".join(result.output.split())
+    assert "cleared" in output
+    assert "set to" not in output
+
+
+def test_config_menu_clears_the_image_model(session):
+    from tests.test_config_menu import Script, Typed, _run
+
+    _run(session, Script("media", "model", "model", "__done__"), Typed("my-model", "clear"))
+
+    assert config.get_media_model("openai", "image") == ""
+
+
+def test_media_refresh_does_not_warn_about_a_typed_id_the_listing_does_not_mark(
+    session, monkeypatch
+):
+    config.set_key("openai", "sk-test")
+    _install_listing(monkeypatch)
+    config.set_media_model("openai", "image", "my-custom-image")
+    console = _console()
+
+    dispatch("/image model refresh", session, console)
+
+    assert "no longer offered" not in _output(console)
+
+
+def test_media_refresh_warns_when_the_current_model_was_removed(session, monkeypatch):
+    config.set_key("openai", "sk-test")
+    cache = config.load_model_cache()
+    cache["providers"]["openai:image"] = {
+        "fetched_at": 1.0,
+        "models": ["old-image", "gpt-image-1"],
+    }
+    config.save_model_cache(cache)
+    _install_listing(monkeypatch)
+    config.set_media_model("openai", "image", "old-image")
+    console = _console()
+
+    dispatch("/image model refresh", session, console)
+
+    output = " ".join(_output(console).split())
+    assert "Current model old-image is no longer offered" in output
+    assert "/image model" in output
+
+
+def test_cli_config_show_says_none_chosen_for_the_image_model():
+    from typer.testing import CliRunner
+
+    from kiwimatecoder.main import app
+
+    result = CliRunner().invoke(app, ["config", "show"])
+
+    output = " ".join(result.output.split())
+    assert "image model none chosen" in output
+
+
+def test_config_help_media_row_matches_the_usage(session):
+    console = Console(file=io.StringIO(), force_terminal=False, width=400)
+
+    dispatch("/config help", session, console)
+
+    row = next(
+        line for line in _output(console).splitlines() if "/config media [" in line
+    )
+    assert "model <id|none> [provider]" in row
+    assert "video-model <id|none> [provider]" in row
+    # The Command cell stays short; the detail lives in the description.
+    assert "/config media [show|<setting> <value>]" in row
+
+
+def test_media_tool_descriptions_point_at_the_model_commands():
+    from kiwimatecoder.tools.image import generate_image_tool, generate_video_tool
+
+    assert "/image model" in generate_image_tool.description
+    assert "/video model" in generate_video_tool.description
+    assert "/config media video-model" not in generate_video_tool.description
+
+
+def test_cli_media_provider_hints_at_missing_models():
+    from typer.testing import CliRunner
+
+    from kiwimatecoder.main import app
+
+    config.set_media_model("openrouter", "image", "or-image")
+
+    result = CliRunner().invoke(app, ["config", "media", "provider", "openrouter"])
+
+    assert result.exit_code == 0
+    output = " ".join(result.output.split())
+    assert "/video model" in output
+    assert "/image model" not in output
+
+    config.set_media_model("openai", "image", "img")
+    config.set_media_model("openai", "video", "vid")
+    result = CliRunner().invoke(app, ["config", "media", "provider", "openai"])
+    output = " ".join(result.output.split())
+    assert "/image model" not in output and "/video model" not in output
+
+
+def test_add_provider_rejects_a_colon_in_new_ids():
+    with pytest.raises(ValueError, match=":"):
+        config.add_provider("local:image", "Local", "http://localhost:1234/v1")
+    assert "local:image" not in config.load_config()["providers"]
+
+
+def test_video_without_a_model_opens_the_picker_then_generates(session, monkeypatch):
+    config.set_key("openai", "sk-test")
+    config.set_media(enabled=True)
+    _install_listing(monkeypatch)
+    calls = []
+
+    def fake(prompt, **kwargs):
+        calls.append(kwargs.get("model"))
+        raise media_module.MediaError("stop here")
+
+    monkeypatch.setattr(media_module, "generate_video", fake)
+    selector = _Selector("sora-2")
+
+    dispatch("/video a boat", session, _console(), selector)
+
+    assert config.get_media_model("openai", "video") == "sora-2"
+    assert len(calls) == 1
+
+
+def test_video_picker_cancelled_saves_nothing_and_does_not_generate(session, monkeypatch):
+    config.set_key("openai", "sk-test")
+    config.set_media(enabled=True)
+    _install_listing(monkeypatch)
+    monkeypatch.setattr(
+        media_module,
+        "generate_video",
+        lambda *a, **k: pytest.fail("must not generate without a model"),
+    )
+    selector = _Selector(None)
+
+    dispatch("/video a boat", session, _console(), selector)
+
+    assert len(selector.prompts) == 1
+    assert config.get_media_model("openai", "video") == ""

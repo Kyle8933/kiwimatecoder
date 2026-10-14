@@ -669,6 +669,9 @@ def add_provider(
     provider_id = provider_id.strip().lower()
     if not provider_id or any(ch.isspace() for ch in provider_id):
         raise ValueError("Provider id must be non-empty and contain no spaces.")
+    if ":" in provider_id:
+        # Media catalogs are cached under "<id>:image" / "<id>:video".
+        raise ValueError("Provider id cannot contain ':'.")
     if provider_id in REGISTRY:
         raise ValueError(
             f"'{provider_id}' is a built-in provider and cannot be replaced."
@@ -2770,9 +2773,11 @@ def set_vision(
 # Media generation (images and video)
 # ---------------------------------------------------------------------------
 
-# ``video_model`` is empty on purpose: like chat models, a video model is the
-# user's choice (ids and prices move quickly and a clip costs real money), so
-# /video asks for one instead of silently spending on a stale default.
+# ``model`` and ``video_model`` are empty on purpose: like chat models, media
+# models are the user's choice (ids and prices move quickly and every image or
+# clip costs real money), so /image and /video ask for one instead of silently
+# spending on a stale default. Both are derived from ``models`` for the
+# effective provider and are never written back.
 MEDIA_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "provider": "openai",
@@ -2815,13 +2820,21 @@ def _normalized_media_models(raw: object) -> dict[str, dict[str, str]]:
 def _media_models_with_legacy(
     stored: dict[str, Any], provider_id: str
 ) -> dict[str, dict[str, str]]:
-    """``media.models`` plus the old global keys, applied to ``provider_id``."""
+    """``media.models`` with the old global keys applied to ``provider_id``.
+
+    A legacy ``model`` / ``video_model`` key overrides ``models`` for the
+    effective provider: new writes always drop those keys, so they only sit
+    next to ``models`` when a project ``.kiwimatecoder.json`` (or a hand edit)
+    pins one, and that pin is the more specific value.
+    """
     models = _normalized_media_models(stored.get("models"))
     for kind, legacy_key in _LEGACY_MEDIA_KEYS.items():
         legacy = stored.get(legacy_key)
         if isinstance(legacy, str) and legacy.strip():
-            models.setdefault(provider_id, {}).setdefault(kind, legacy.strip())
+            models.setdefault(provider_id, {})[kind] = legacy.strip()
     return models
+
+
 MEDIA_SIZE_RE = re.compile(r"^\d+x\d+$")
 # Video sizes are an exact WxH, or a resolution tier such as 720p / 1080p / 2K.
 VIDEO_SIZE_RE = re.compile(r"^(?:\d+x\d+|\d{3,4}p|[1-8]K)$", re.IGNORECASE)

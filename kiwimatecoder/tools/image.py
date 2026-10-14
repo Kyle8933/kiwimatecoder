@@ -128,8 +128,9 @@ generate_image_tool = FunctionTool(
     description=(
         "Generate an image from a text prompt through the configured media "
         "provider and attach it to the conversation. Costs money and requires "
-        "media generation to be enabled (`/config media enable on`). Use it "
-        "for mockups, icons, diagrams, and illustrations."
+        "media generation to be enabled (`/config media enable on`) and an "
+        "image model to be chosen (`/image model`). Use it for mockups, icons, "
+        "diagrams, and illustrations."
     ),
     parameters={
         "type": "object",
@@ -252,7 +253,7 @@ generate_video_tool = FunctionTool(
         "provider and save it under the media output directory. Slow (minutes) "
         "and billed per second, so use it only when asked for a video. Requires "
         "media generation to be enabled and a video model to be chosen "
-        "(`/config media video-model <id>`). If a job times out, call again "
+        "(`/video model`). If a job times out, call again "
         "with its `resume_job_id` instead of regenerating."
     ),
     parameters={

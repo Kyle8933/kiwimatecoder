@@ -46,8 +46,11 @@ Out of scope:
 - Models are stored in `media.models` as `{provider_id: {"image": str, "video": str}}`.
   An absent kind means no model is chosen.
 - `media.model` and `media.video_model` stay readable for existing configs.
-  `get_media()` treats a legacy value as the choice for `media.provider` when
-  `media.models` has no entry for that provider and kind. The next
+  `get_media()` treats a legacy value as the choice for `media.provider`, and
+  it overrides any `media.models` entry for that provider and kind: new writes
+  always drop the legacy keys, so they only sit next to `media.models` when a
+  project `.kiwimatecoder.json` (or a hand edit) pins one, and that pin is the
+  more specific value ("project values override global config"). The next
   `set_media*` call writes `media.models` and drops the legacy keys.
 - `MEDIA_DEFAULTS["model"]` becomes `""`. The default `media` block in the
   config template changes to match.
@@ -56,8 +59,12 @@ Out of scope:
   current provider, so existing callers keep working.
 - New helpers mirror `get_provider_model` / `set_provider_model`:
   `get_media_model(provider_id, kind, cfg=None) -> str` and
-  `set_media_model(provider_id, kind, model | None)`. Both validate the
-  provider id (`UnknownProviderError`) and the kind.
+  `set_media_model(provider_id, kind, model | None)`. `set_media_model`
+  validates the provider id and the kind and raises `ValueError`; `None` or
+  `""` forgets the choice. `get_media_model` is a reader: it returns `""` for
+  an unknown provider or kind instead of raising.
+- New custom provider ids may not contain `:`, so the media cache keys
+  `<id>:image` / `<id>:video` cannot collide with another provider's id.
 - `validate_config` checks `media.models` shape (object of objects of strings)
   and keeps checking the legacy keys.
 - Malformed `media.models` values are ignored by `get_media()`, never raised,
@@ -79,7 +86,9 @@ Out of scope:
     markers (`image`, `imagen`, `flux`, `dall-e`, `diffusion` for images;
     `video`, `veo`, `sora` for video).
 - The allow/deny model filter (`apply_model_filter`) applies per provider to
-  media lists as well.
+  media lists as well. For media kinds an allow-list is intersected with the
+  media catalog (the chat allow-list is never offered wholesale as image or
+  video models); a deny-list hides matching media ids as for chat.
 - Providers have no curated media list, so the curated fallback is empty. A
   provider with no key and no cache shows an empty list with the usual
   "choose by name" hint.
@@ -106,9 +115,14 @@ Out of scope:
 - Existing `/config media …` forms keep working. `/config media model` and
   `/config media video-model` accept an optional trailing provider id, like
   `config model set <model> --provider`, and default to `media.provider`.
+  In both forms (and the CLI ones) `none`, `clear`, `default` or `-` clears
+  the model for that provider; they confirm the saved value for the provider
+  that was changed and then list every provider's models. `/image model <id>`
+  and `/video model <id>` always set the id literally.
 - `config media model`, `config media video-model` and `config media provider`
-  in the CLI get the same behaviour. `config media show` and `/media` list the
-  chosen models per provider.
+  in the CLI get the same behaviour; `config media provider` names each kind
+  with no model chosen for the new provider. `config media show` and `/media`
+  list the chosen models per provider.
 - Command help, tab completion and the slash-command coverage list include the
   new subcommands.
 

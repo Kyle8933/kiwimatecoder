@@ -671,10 +671,11 @@ disabled, offline, no API key, no model chosen) and lists the most recent files;
 reference an image from the list with `@<path>` to attach it again. Provider auth,
 API versioning (Azure-style `?api-version=`), proxy, and custom CA settings all
 come from the normal config. Configure it from the shell with
-`config media show|enable on|off|model <id> [--provider <id>]|provider <id>|size <WxH>|video-model
+`config media show|enable on|off|model <id|none> [--provider <id>]|provider <id>|size <WxH>|video-model
 <id|none> [--provider <id>]|duration <seconds>|video-size <size>|output-dir <path>`
-(inside the REPL, `/config media model <id> [provider]` and `/config media
-video-model <id|none> [provider]` take the provider as an optional trailing word).
+(inside the REPL, `/config media model <id|none> [provider]` and `/config media
+video-model <id|none> [provider]` take the provider as an optional trailing word;
+`none`, `clear`, `default` or `-` clears the model for that provider).
 
 ## Notebooks, PDFs, and docx
 

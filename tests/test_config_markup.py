@@ -60,6 +60,19 @@ def path_safe(name: str) -> str:
     return re.sub(r'[<>:"|?*\\]', "_", name) if sys.platform == "win32" else name
 
 
+def add_existing_provider(provider_id: str) -> None:
+    """Store a custom provider the way an older version saved it.
+
+    ``add_provider`` rejects a ``:`` in new ids, but a config written before
+    that rule (or by hand) can still name one, so the hostile ids are stored
+    directly.
+    """
+    cfg = config.load_config()
+    cfg["providers"][provider_id] = {"name": "Name", "base_url": "http://localhost:1/v1"}
+    cfg["provider_models"][provider_id] = "m1"
+    config.save_config(cfg)
+
+
 class StrictConsole(Console):
     """A console that records every string that does not survive rendering."""
 
@@ -547,7 +560,7 @@ def test_empty_picker_message_keeps_a_hostile_provider_id(hostile, tmp_path, mon
     from kiwimatecoder import commands
 
     hostile = hostile.lower()  # provider ids are stored lower-case
-    config.add_provider(hostile, "Name", "http://localhost:1/v1", "m1")
+    add_existing_provider(hostile)
     session = Session(
         provider_id=hostile,
         model="m1",

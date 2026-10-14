@@ -2452,7 +2452,7 @@ def config_show() -> None:
         "Media: "
         + f"[cyan]{'on' if media_config['enabled'] else 'off'}[/cyan] "
         + f"(provider [cyan]{escape(str(media_config['provider']))}[/cyan], "
-        + f"image model [cyan]{escape(str(media_config['model']))}[/cyan], "
+        + f"image model [cyan]{escape(str(media_config['model'] or 'none chosen'))}[/cyan], "
         + f"size [cyan]{media_config['size']}[/cyan], "
         + f"video model [cyan]{escape(str(media_config['video_model'] or 'none chosen'))}[/cyan], "
         + f"output [cyan]{escape(str(media_config['output_dir']))}[/cyan])"
@@ -2572,37 +2572,54 @@ def media_enable(
 
 @media_app.command("model")
 def media_model(
-    model: Annotated[str, typer.Argument(help="Image model id")],
+    model: Annotated[str, typer.Argument(help="Image model id, or 'none' to clear")],
     provider: Annotated[
         str | None, typer.Option("--provider", help="Provider id (default: the media provider)")
     ] = None,
 ) -> None:
-    """Set the model used for image generation (remembered per provider)."""
+    """Set or clear the image model for a provider.
+
+    The choice is remembered per provider; 'none' (or clear, default, -)
+    forgets it.
+    """
+    cleared = model.strip().lower() in {"none", "clear", "default", "-"}
     try:
         provider_id = provider or get_media()["provider"]
-        set_media_model(provider_id, "image", model)
+        set_media_model(provider_id, "image", "" if cleared else model)
     except ValueError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
-    console.print(
-        f"[green]{_check()} Image model for {escape(provider_id)} set to[/green] "
-        f"[cyan]{escape(str(model))}[/cyan]."
-    )
+    if cleared:
+        console.print(
+            f"[green]{_check()} Image model for {escape(provider_id)} cleared.[/green]"
+        )
+    else:
+        console.print(
+            f"[green]{_check()} Image model for {escape(provider_id)} set to[/green] "
+            f"[cyan]{escape(str(model))}[/cyan]."
+        )
 
 
 @media_app.command("provider")
 def media_provider(
     provider: Annotated[str, typer.Argument(help="Provider id")],
 ) -> None:
-    """Set the provider used for image generation."""
+    """Set the media provider for images and video."""
     try:
-        set_media(provider=provider)
+        settings = set_media(provider=provider)
     except (ValueError, KeyError) as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
+    provider_id = str(settings["provider"])
     console.print(
-        f"[green]{_check()} Media provider set to[/green] [cyan]{escape(str(provider))}[/cyan]."
+        f"[green]{_check()} Media provider set to[/green] [cyan]{escape(provider_id)}[/cyan]."
     )
+    for kind, command in (("image", "model"), ("video", "video-model")):
+        if not settings["models"].get(provider_id, {}).get(kind):
+            console.print(
+                f"[yellow]No {kind} model chosen for {escape(provider_id)} — choose "
+                f"one with /{kind} model, or `config media {command} <id>`.[/yellow]"
+            )
 
 
 @media_app.command("size")
@@ -2625,7 +2642,11 @@ def media_video_model(
         str | None, typer.Option("--provider", help="Provider id (default: the media provider)")
     ] = None,
 ) -> None:
-    """Set the video generation model (remembered per provider)."""
+    """Set or clear the video model for a provider.
+
+    The choice is remembered per provider; 'none' (or clear, default, -)
+    forgets it.
+    """
     cleared = model.strip().lower() in {"none", "clear", "default", "-"}
     try:
         provider_id = provider or get_media()["provider"]
@@ -2634,7 +2655,9 @@ def media_video_model(
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
     if cleared:
-        console.print(f"[green]{_check()} Video model cleared.[/green]")
+        console.print(
+            f"[green]{_check()} Video model for {escape(provider_id)} cleared.[/green]"
+        )
     else:
         console.print(
             f"[green]{_check()} Video model for {escape(provider_id)} set to[/green] "
