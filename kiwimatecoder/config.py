@@ -5179,7 +5179,7 @@ def get_model_catalog(
                 provider,
                 get_key(provider_id),
                 timeout=timeout if timeout is not None else catalog.FETCH_TIMEOUT,
-                **({} if kind == "chat" else {"kind": kind}),
+                kind=kind,
             )
         except CatalogFetchError as exc:
             error = str(exc)

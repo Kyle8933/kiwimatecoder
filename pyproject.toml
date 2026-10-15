@@ -29,6 +29,8 @@ kiwimatecoder = "kiwimatecoder.main:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
+# Without this, `tests/` and `scripts/` get shipped as top-level packages.
+include = ["kiwimatecoder*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
