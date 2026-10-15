@@ -1012,3 +1012,55 @@ def test_remove_provider_drops_its_chosen_model():
     config.remove_provider("custom")
 
     assert config.load_config()["provider_models"] == {"openai": "gpt-chosen"}
+
+
+# ---------------------------------------------------------------------------
+# Update settings
+# ---------------------------------------------------------------------------
+
+
+def test_get_update_defaults():
+    settings = config.get_update()
+    assert settings == {"auto_check": True, "check_interval_hours": 24}
+
+
+def test_set_update_auto_check_roundtrip():
+    settings = config.set_update(auto_check=False)
+    assert settings["auto_check"] is False
+    assert config.get_update()["auto_check"] is False
+
+
+def test_set_update_interval_roundtrip():
+    settings = config.set_update(check_interval_hours=12)
+    assert settings["check_interval_hours"] == 12
+    assert config.get_update()["check_interval_hours"] == 12
+
+
+def test_set_update_interval_validation():
+    with pytest.raises(ValueError):
+        config.set_update(check_interval_hours=0)
+    with pytest.raises(ValueError):
+        config.set_update(check_interval_hours=1000)
+
+
+def test_set_update_auto_check_validation():
+    with pytest.raises(ValueError):
+        config.set_update(auto_check="yes")
+
+
+def test_get_update_drops_malformed_values():
+    cfg = config.load_config()
+    cfg["update"] = {"auto_check": "yes", "check_interval_hours": "bad"}
+    config.save_config(cfg)
+
+    settings = config.get_update()
+    assert settings == {"auto_check": True, "check_interval_hours": 24}
+
+
+def test_get_update_tolerates_non_object_section():
+    cfg = config.load_config()
+    cfg["update"] = "not a dict"
+    config.save_config(cfg)
+
+    settings = config.get_update()
+    assert settings == {"auto_check": True, "check_interval_hours": 24}

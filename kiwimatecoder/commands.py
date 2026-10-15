@@ -62,6 +62,7 @@ from kiwimatecoder.config import (
     get_team,
     get_telemetry,
     get_ui,
+    get_update,
     get_vision,
     get_web,
     list_provider_configs,
@@ -102,6 +103,7 @@ from kiwimatecoder.config import (
     set_telemetry,
     set_trusted_workspace,
     set_ui,
+    set_update,
     set_verify_command,
     set_vision,
     set_web,
@@ -1408,6 +1410,10 @@ def _config_help(console: Console) -> None:
         (
             "/config cache [on|off]",
             "Cache the system prompt and tools on native Anthropic providers.",
+        ),
+        (
+            "/config update [show|auto-check <on|off>|interval <hours>]",
+            "Configure the periodic update check (auto_check, interval).",
         ),
         ("/doctor", "Run environment, config, and provider diagnostics."),
     ]
@@ -3229,6 +3235,57 @@ def _config_cache(action_parts: list[str], console: Console) -> None:
     console.print("[yellow]Usage: /config cache \\[on|off][/yellow]")
 
 
+def _config_update(action_parts: list[str], console: Console) -> None:
+    action = action_parts[0].lower() if action_parts else "show"
+    rest = action_parts[1:]
+
+    if action in {"show", "list", "status"}:
+        settings = get_update()
+        state = "on" if settings["auto_check"] else "off"
+        console.print(
+            f"Update auto-check: [cyan]{state}[/cyan]\n"
+            f"Check interval: [cyan]{settings['check_interval_hours']}h[/cyan]"
+        )
+        return
+
+    if action in {"auto-check", "auto_check", "autocheck"}:
+        if not rest:
+            current = "on" if get_update()["auto_check"] else "off"
+            console.print(f"Update auto-check: [cyan]{current}[/cyan]")
+            return
+        token = rest[0].strip().lower()
+        if token in {"on", "true", "yes", "enable", "enabled"}:
+            set_update(auto_check=True)
+            console.print("[green]Update auto-check on.[/green]")
+        elif token in {"off", "false", "no", "disable", "disabled"}:
+            set_update(auto_check=False)
+            console.print("[green]Update auto-check off.[/green]")
+        else:
+            console.print("[yellow]Usage: /config update auto-check <on|off>[/yellow]")
+        return
+
+    if action in {"interval", "check-interval", "check_interval"}:
+        if not rest:
+            console.print(
+                f"Update check interval: [cyan]{get_update()['check_interval_hours']}h[/cyan]"
+            )
+            return
+        try:
+            set_update(check_interval_hours=float(rest[0].rstrip("h")))
+        except ValueError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            return
+        console.print(
+            f"[green]Update check interval: {get_update()['check_interval_hours']}h[/green]"
+        )
+        return
+
+    console.print(
+        "[yellow]Usage: /config update "
+        "\\[show|auto-check <on|off>|interval <hours>][/yellow]"
+    )
+
+
 def _config_profile(
     action_parts: list[str], session: Session, console: Console
 ) -> None:
@@ -3406,6 +3463,94 @@ def _doctor(arg: str, session: Session, console: Console) -> str:
     return CommandResult.CONTINUE
 
 
+def _update(arg: str, session: Session, console: Console) -> str:
+    """Check for updates, run the self-updater, or toggle auto-check."""
+    from kiwimatecoder import updater
+
+    parts = arg.strip().split(maxsplit=1)
+    action = parts[0].lower() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if action in {"check", "status"}:
+        with console.status("Checking for updates…"):
+            info = updater.check_for_update(force=True)
+        if info.error:
+            console.print(f"[yellow]Could not check for updates: {escape(info.error)}[/yellow]")
+            return CommandResult.CONTINUE
+        if info.update_available:
+            if info.current_sha and info.latest_sha:
+                behind = f" ({info.commits_behind} commit(s) behind)" if info.commits_behind else ""
+                console.print(
+                    f"[yellow]Update available:[/yellow] "
+                    f"[cyan]{escape(info.current_sha)}[/cyan] → "
+                    f"[cyan]{escape(info.latest_sha)}[/cyan]{behind}\n"
+                    f"[dim]Run /update to install, or Ctrl+U.[/dim]"
+                )
+            else:
+                console.print(
+                    f"[yellow]Update available:[/yellow] "
+                    f"[cyan]{escape(info.current_version)}[/cyan] → "
+                    f"[cyan]{escape(info.latest_version)}[/cyan]\n"
+                    f"[dim]Run /update to install, or Ctrl+U.[/dim]"
+                )
+        else:
+            console.print(
+                f"[green]KiwiMateCoder is up to date[/green] "
+                f"(v{escape(info.current_version)})."
+            )
+        return CommandResult.CONTINUE
+
+    if action == "auto-check":
+        if not rest:
+            settings = get_update()
+            state = "on" if settings["auto_check"] else "off"
+            console.print(f"Auto-update check: [cyan]{state}[/cyan]")
+            return CommandResult.CONTINUE
+        token = rest.lower()
+        if token in {"on", "true", "yes", "enable", "enabled"}:
+            set_update(auto_check=True)
+            console.print("[green]Auto-update check enabled.[/green]")
+        elif token in {"off", "false", "no", "disable", "disabled"}:
+            set_update(auto_check=False)
+            console.print("[green]Auto-update check disabled.[/green]")
+        else:
+            console.print("[yellow]Usage: /update auto-check [on|off][/yellow]")
+        return CommandResult.CONTINUE
+
+    if action in {"interval", "check-interval"}:
+        if not rest:
+            settings = get_update()
+            console.print(
+                f"Update check interval: [cyan]{settings['check_interval_hours']}h[/cyan]"
+            )
+            return CommandResult.CONTINUE
+        try:
+            set_update(check_interval_hours=float(rest.rstrip("h")))
+        except ValueError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            return CommandResult.CONTINUE
+        settings = get_update()
+        console.print(
+            f"[green]Update check interval: {settings['check_interval_hours']}h[/green]"
+        )
+        return CommandResult.CONTINUE
+
+    if action and not action.startswith("-"):
+        console.print(
+            f"[yellow]Unknown /update action '{escape(action)}'. "
+            "Usage: /update [check|auto-check [on|off]|interval <hours>][/yellow]"
+        )
+        return CommandResult.CONTINUE
+
+    ref = rest if rest else None
+    code = updater.run_update(console, ref=ref)
+    if code == 0:
+        console.print(
+            "[yellow]Restart KiwiMateCoder to use the updated version.[/yellow]"
+        )
+    return CommandResult.CONTINUE
+
+
 def _config(arg: str, session: Session, console: Console,
             selector: CommandSelector | None = None,
             prompt_input: Callable[[str], str] | None = None,
@@ -3482,6 +3627,8 @@ def _config(arg: str, session: Session, console: Console,
         _config_team(rest, console)
     elif section in {"cache", "prompt-cache"}:
         _config_cache(rest, console)
+    elif section == "update":
+        _config_update(rest, console)
     else:
         console.print("[yellow]Unknown config command. Try /config help.[/yellow]")
     return CommandResult.CONTINUE
@@ -4270,6 +4417,27 @@ _CONFIG_SECTIONS: dict[str, _Section] = {
                 ),
             ),
         ),
+        _Section(
+            "update",
+            "Self-update",
+            "Check GitHub for a newer KiwiMateCoder on startup (cached, "
+            "non-blocking).",
+            (
+                _toggle(
+                    "auto-check",
+                    "Auto-check on startup",
+                    lambda _s: _onoff(get_update()["auto_check"]),
+                    "auto-check",
+                ),
+                _text(
+                    "interval",
+                    "Check interval (hours)",
+                    lambda _s: f"{get_update()['check_interval_hours']}h",
+                    "Hours between update checks",
+                    "interval",
+                ),
+            ),
+        ),
     )
 }
 
@@ -4854,6 +5022,10 @@ def _config_interact(
             CommandOption("profile", "Save or apply configuration profiles"),
             CommandOption("team", "Load a shared team policy overlay"),
             CommandOption("cache", "Toggle Anthropic prompt caching"),
+            CommandOption(
+                "update",
+                "Configure the periodic update check (auto-check, interval)",
+            ),
             CommandOption("help", "Show all /config commands"),
         ),
     )
@@ -6127,6 +6299,7 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "config": _config,
     "cost": _cost,
     "doctor": _doctor,
+    "update": _update,
     "save": _save,
     "load": _load,
     "sessions": _sessions,
@@ -6200,6 +6373,11 @@ _HELP_GROUPS = [
             ("/clear", "Clear the conversation history."),
             ("/cost", "Show token usage for this session."),
             ("/doctor", "Run environment, config, and provider diagnostics."),
+            (
+                "/update [check|auto-check [on|off]|interval <hours>]",
+                "Check for updates, update KiwiMateCoder, or toggle the "
+                "periodic auto-check. Ctrl+U also updates.",
+            ),
             ("/files", "List files changed this session."),
             ("/tools", "List available tools."),
             ("/save [name]", "Save the active session state."),
@@ -6344,6 +6522,7 @@ _COMMAND_DESCRIPTIONS = {
     ),
     "cost": "Show token usage for this session.",
     "doctor": "Run environment, config, and provider diagnostics.",
+    "update": "Check for updates, update KiwiMateCoder, or configure auto-check.",
     "save": "Save the current session to disk.",
     "load": "Load a saved session from disk.",
     "sessions": "List all saved sessions.",
@@ -6443,6 +6622,7 @@ _CONFIG_ACTION_DESCRIPTIONS = {
     "team": "Load a shared team policy overlay (global-only; no server).",
     "ui": "Set theme, color, output verbosity, ASCII mode, locale, keys, notifications, and spinners.",
     "cache": "Toggle prompt caching for native Anthropic providers.",
+    "update": "Configure the periodic update check (auto-check, interval).",
 }
 
 _MCP_ACTION_DESCRIPTIONS = {

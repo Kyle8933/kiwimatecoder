@@ -304,3 +304,416 @@ def test_run_update_packaged_ref_failure_prints_pinned_guidance(monkeypatch):
 
     assert code == 1
     assert f"git+{updater.GITHUB_REPO_URL}@v0.2.0" in console.export_text()
+
+
+# ---------------------------------------------------------------------------
+# Update check tests
+# ---------------------------------------------------------------------------
+
+
+def test_check_for_update_offline_mode(monkeypatch):
+    monkeypatch.setattr("kiwimatecoder.network.offline_enabled", lambda: True)
+    monkeypatch.setattr("kiwimatecoder.updater.load_update_state", lambda: {})
+
+    info = updater.check_for_update()
+
+    assert info.update_available is False
+    assert info.error == "offline mode is enabled"
+
+
+def test_check_for_update_source_checkout_up_to_date(monkeypatch, tmp_path):
+    root = tmp_path / "kiwimatecoder"
+    root.mkdir()
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='kiwimatecoder'\n")
+
+    monkeypatch.setattr(updater, "find_source_root", lambda: root)
+    monkeypatch.setattr(updater, "_has_git_remote", lambda source_root: True)
+    monkeypatch.setattr(updater, "_get_short_sha", lambda source_root: "abc1234")
+    monkeypatch.setattr(updater, "_get_branch", lambda source_root: "main")
+    monkeypatch.setattr(updater, "_get_remote_head_sha", lambda branch="main": "abc1234")
+    monkeypatch.setattr(updater, "_commits_behind", lambda source_root, branch: 0)
+    monkeypatch.setattr("kiwimatecoder.network.offline_enabled", lambda: False)
+    monkeypatch.setattr("kiwimatecoder.updater.load_update_state", lambda: {})
+    monkeypatch.setattr("kiwimatecoder.updater.save_update_state", lambda state: None)
+
+    info = updater.check_for_update()
+
+    assert info.update_available is False
+    assert info.current_sha == "abc1234"
+    assert info.latest_sha == "abc1234"
+    assert info.error is None
+
+
+def test_check_for_update_source_checkout_behind(monkeypatch, tmp_path):
+    root = tmp_path / "kiwimatecoder"
+    root.mkdir()
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='kiwimatecoder'\n")
+
+    monkeypatch.setattr(updater, "find_source_root", lambda: root)
+    monkeypatch.setattr(updater, "_has_git_remote", lambda source_root: True)
+    monkeypatch.setattr(updater, "_get_short_sha", lambda source_root: "abc1234")
+    monkeypatch.setattr(updater, "_get_branch", lambda source_root: "main")
+    monkeypatch.setattr(updater, "_get_remote_head_sha", lambda branch="main": "def5678")
+    monkeypatch.setattr(updater, "_commits_behind", lambda source_root, branch: 3)
+    monkeypatch.setattr("kiwimatecoder.network.offline_enabled", lambda: False)
+    monkeypatch.setattr("kiwimatecoder.updater.load_update_state", lambda: {})
+    monkeypatch.setattr("kiwimatecoder.updater.save_update_state", lambda state: None)
+
+    info = updater.check_for_update()
+
+    assert info.update_available is True
+    assert info.current_sha == "abc1234"
+    assert info.latest_sha == "def5678"
+    assert info.commits_behind == 3
+
+
+def test_check_for_update_remote_unreachable(monkeypatch, tmp_path):
+    root = tmp_path / "kiwimatecoder"
+    root.mkdir()
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='kiwimatecoder'\n")
+
+    monkeypatch.setattr(updater, "find_source_root", lambda: root)
+    monkeypatch.setattr(updater, "_has_git_remote", lambda source_root: True)
+    monkeypatch.setattr(updater, "_get_short_sha", lambda source_root: "abc1234")
+    monkeypatch.setattr(updater, "_get_branch", lambda source_root: "main")
+    monkeypatch.setattr(updater, "_get_remote_head_sha", lambda branch="main": None)
+    monkeypatch.setattr("kiwimatecoder.network.offline_enabled", lambda: False)
+    monkeypatch.setattr("kiwimatecoder.updater.load_update_state", lambda: {})
+
+    info = updater.check_for_update()
+
+    assert info.update_available is False
+    assert info.error == "could not reach GitHub"
+
+
+def test_check_for_update_uses_cache(monkeypatch):
+    import time
+
+    cached_state = {
+        "last_check": time.time() - 3600,
+        "update_available": True,
+        "current_version": "0.1.0",
+        "latest_version": "0.2.0",
+        "current_sha": "abc1234",
+        "latest_sha": "def5678",
+        "commits_behind": 2,
+    }
+    monkeypatch.setattr("kiwimatecoder.network.offline_enabled", lambda: False)
+    monkeypatch.setattr("kiwimatecoder.updater.load_update_state", lambda: cached_state)
+    monkeypatch.setattr(
+        "kiwimatecoder.config.get_update",
+        lambda cfg=None: {"auto_check": True, "check_interval_hours": 24},
+    )
+    # Should not reach the network at all
+    monkeypatch.setattr(
+        updater, "find_source_root", lambda: (_ for _ in ()).throw(AssertionError("should not check"))
+    )
+
+    info = updater.check_for_update()
+
+    assert info.update_available is True
+    assert info.current_sha == "abc1234"
+    assert info.latest_sha == "def5678"
+
+
+def test_check_for_update_force_bypasses_cache(monkeypatch, tmp_path):
+    import time
+
+    root = tmp_path / "kiwimatecoder"
+    root.mkdir()
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='kiwimatecoder'\n")
+
+    cached_state = {
+        "last_check": time.time(),
+        "update_available": False,
+        "current_version": "0.1.0",
+        "latest_version": "0.1.0",
+    }
+    monkeypatch.setattr("kiwimatecoder.network.offline_enabled", lambda: False)
+    monkeypatch.setattr("kiwimatecoder.updater.load_update_state", lambda: cached_state)
+    monkeypatch.setattr("kiwimatecoder.updater.save_update_state", lambda state: None)
+    monkeypatch.setattr(updater, "find_source_root", lambda: root)
+    monkeypatch.setattr(updater, "_has_git_remote", lambda source_root: True)
+    monkeypatch.setattr(updater, "_get_short_sha", lambda source_root: "abc1234")
+    monkeypatch.setattr(updater, "_get_branch", lambda source_root: "main")
+    monkeypatch.setattr(updater, "_get_remote_head_sha", lambda branch="main": "abc1234")
+    monkeypatch.setattr(updater, "_commits_behind", lambda source_root, branch: 0)
+
+    info = updater.check_for_update(force=True)
+
+    assert info.update_available is False
+    assert info.current_sha == "abc1234"
+
+
+def test_should_check_for_update_first_run(monkeypatch):
+    monkeypatch.setattr(
+        "kiwimatecoder.config.get_update",
+        lambda cfg=None: {"auto_check": True, "check_interval_hours": 24},
+    )
+    monkeypatch.setattr("kiwimatecoder.updater.load_update_state", lambda: {})
+
+    assert updater.should_check_for_update() is True
+
+
+def test_should_check_for_update_respects_interval(monkeypatch):
+    import time
+
+    monkeypatch.setattr(
+        "kiwimatecoder.config.get_update",
+        lambda cfg=None: {"auto_check": True, "check_interval_hours": 24},
+    )
+    monkeypatch.setattr(
+        "kiwimatecoder.updater.load_update_state",
+        lambda: {"last_check": time.time() - 3600},
+    )
+
+    assert updater.should_check_for_update() is False
+
+
+def test_should_check_for_update_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "kiwimatecoder.config.get_update",
+        lambda cfg=None: {"auto_check": False, "check_interval_hours": 24},
+    )
+    monkeypatch.setattr("kiwimatecoder.updater.load_update_state", lambda: {})
+
+    assert updater.should_check_for_update() is False
+
+
+def test_update_state_roundtrip(monkeypatch, tmp_path):
+    state_file = tmp_path / "update_check.json"
+    monkeypatch.setattr(updater, "_update_state_path", lambda: state_file)
+
+    assert updater.load_update_state() == {}
+
+    updater.save_update_state({"last_check": 123.0, "update_available": True})
+    loaded = updater.load_update_state()
+    assert loaded["last_check"] == 123.0
+    assert loaded["update_available"] is True
+
+
+def test_get_remote_head_sha_success(monkeypatch):
+    class FakeCompleted:
+        returncode = 0
+        stdout = "abc1234567890abcdef1234567890abcdef12345678\trefs/heads/main\n"
+
+    monkeypatch.setattr(
+        "subprocess.run", lambda *args, **kwargs: FakeCompleted()
+    )
+
+    sha = updater._get_remote_head_sha("main")
+    assert sha == "abc1234"
+
+
+def test_get_remote_head_sha_failure(monkeypatch):
+    class FakeCompleted:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(
+        "subprocess.run", lambda *args, **kwargs: FakeCompleted()
+    )
+
+    assert updater._get_remote_head_sha("main") is None
+
+
+# ---------------------------------------------------------------------------
+# /update slash command tests
+# ---------------------------------------------------------------------------
+
+
+def test_slash_update_check_up_to_date(session, monkeypatch):
+    import io
+
+    from kiwimatecoder import updater as updater_mod
+    from kiwimatecoder.commands import dispatch
+
+    monkeypatch.setattr(
+        updater_mod,
+        "check_for_update",
+        lambda **kwargs: updater_mod.UpdateInfo(
+            update_available=False,
+            current_version="0.1.0",
+            latest_version="0.1.0",
+            current_sha="abc1234",
+            latest_sha="abc1234",
+        ),
+    )
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    result = dispatch("/update check", session, console)
+
+    assert result == "continue"
+    assert "up to date" in console.file.getvalue()
+
+
+def test_slash_update_check_available(session, monkeypatch):
+    import io
+
+    from kiwimatecoder import updater as updater_mod
+    from kiwimatecoder.commands import dispatch
+
+    monkeypatch.setattr(
+        updater_mod,
+        "check_for_update",
+        lambda **kwargs: updater_mod.UpdateInfo(
+            update_available=True,
+            current_version="0.1.0",
+            latest_version="0.1.0",
+            current_sha="abc1234",
+            latest_sha="def5678",
+            commits_behind=3,
+        ),
+    )
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    result = dispatch("/update check", session, console)
+
+    assert result == "continue"
+    output = console.file.getvalue()
+    assert "Update available" in output
+    assert "abc1234" in output
+    assert "def5678" in output
+
+
+def test_slash_update_check_error(session, monkeypatch):
+    import io
+
+    from kiwimatecoder import updater as updater_mod
+    from kiwimatecoder.commands import dispatch
+
+    monkeypatch.setattr(
+        updater_mod,
+        "check_for_update",
+        lambda **kwargs: updater_mod.UpdateInfo(
+            update_available=False,
+            current_version="0.1.0",
+            latest_version="0.1.0",
+            error="could not reach GitHub",
+        ),
+    )
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    result = dispatch("/update check", session, console)
+
+    assert result == "continue"
+    assert "Could not check for updates" in console.file.getvalue()
+
+
+def test_slash_update_auto_check_toggle(session, monkeypatch, tmp_path):
+    import io
+
+    from kiwimatecoder import config
+    from kiwimatecoder.commands import dispatch
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+
+    dispatch("/update auto-check off", session, console)
+    assert config.get_update()["auto_check"] is False
+    assert "disabled" in console.file.getvalue()
+
+    console2 = Console(file=io.StringIO(), force_terminal=False, width=120)
+    dispatch("/update auto-check on", session, console2)
+    assert config.get_update()["auto_check"] is True
+    assert "enabled" in console2.file.getvalue()
+
+    console3 = Console(file=io.StringIO(), force_terminal=False, width=120)
+    dispatch("/update auto-check", session, console3)
+    assert "on" in console3.file.getvalue()
+
+
+def test_slash_update_interval(session, monkeypatch, tmp_path):
+    import io
+
+    from kiwimatecoder import config
+    from kiwimatecoder.commands import dispatch
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+
+    dispatch("/update interval 12", session, console)
+    assert config.get_update()["check_interval_hours"] == 12
+
+    console2 = Console(file=io.StringIO(), force_terminal=False, width=120)
+    dispatch("/update interval", session, console2)
+    assert "12" in console2.file.getvalue()
+
+
+def test_slash_update_runs_updater(session, monkeypatch):
+    import io
+
+    from kiwimatecoder import updater as updater_mod
+    from kiwimatecoder.commands import dispatch
+
+    called = []
+
+    def fake_run_update(console=None, ref=None):
+        called.append(ref)
+        return 0
+
+    monkeypatch.setattr(updater_mod, "run_update", fake_run_update)
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    result = dispatch("/update", session, console)
+
+    assert result == "continue"
+    assert called == [None]
+    assert "Restart" in console.file.getvalue()
+
+
+def test_slash_update_unknown_action(session):
+    import io
+
+    from kiwimatecoder.commands import dispatch
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    result = dispatch("/update bogus", session, console)
+
+    assert result == "continue"
+    assert "Unknown /update action" in console.file.getvalue()
+
+
+def test_slash_config_update_show(session, monkeypatch, tmp_path):
+    import io
+
+    from kiwimatecoder import config
+    from kiwimatecoder.commands import dispatch
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+    result = dispatch("/config update show", session, console)
+
+    assert result == "continue"
+    output = console.file.getvalue()
+    assert "auto-check" in output
+    assert "interval" in output
+
+
+def test_slash_config_update_roundtrip(session, monkeypatch, tmp_path):
+    import io
+
+    from kiwimatecoder import config
+    from kiwimatecoder.commands import dispatch
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=120)
+
+    dispatch("/config update auto-check off", session, console)
+    assert config.get_update()["auto_check"] is False
+
+    dispatch("/config update interval 6", session, console)
+    assert config.get_update()["check_interval_hours"] == 6
+
+    dispatch("/config update show", session, console)
+    output = console.file.getvalue()
+    assert "off" in output
+    assert "6h" in output

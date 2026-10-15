@@ -1214,6 +1214,38 @@ def _load_session_mcp(bus: events.EventBus) -> mcp.McpManager:
     return manager
 
 
+async def _check_update_background(session: Session) -> None:
+    """Check for updates in the background; show a dim notice if one exists.
+
+    Runs the (blocking) check in a thread so the prompt is never delayed.
+    Failures are silent — an update check must never interrupt startup.
+    """
+    from kiwimatecoder import updater
+
+    if not updater.should_check_for_update():
+        return
+    try:
+        info = await asyncio.to_thread(updater.check_for_update)
+    except Exception:
+        return
+    if info.update_available and not info.error:
+        if info.current_sha and info.latest_sha:
+            behind = f" ({info.commits_behind} commit(s) behind)" if info.commits_behind else ""
+            console.print(
+                f"[yellow]Update available:[/yellow] "
+                f"[cyan]{escape(info.current_sha)}[/cyan] → "
+                f"[cyan]{escape(info.latest_sha)}[/cyan]{behind} — "
+                f"run [bold]/update[/bold] or press [bold]Ctrl+U[/bold] to install."
+            )
+        else:
+            console.print(
+                f"[yellow]Update available:[/yellow] "
+                f"[cyan]{escape(info.current_version)}[/cyan] → "
+                f"[cyan]{escape(info.latest_version)}[/cyan] — "
+                f"run [bold]/update[/bold] or press [bold]Ctrl+U[/bold] to install."
+            )
+
+
 async def _run_interactive(
     session: Session, bus: events.EventBus | None = None
 ) -> None:
@@ -1243,6 +1275,11 @@ async def _run_interactive(
         """Alt+Enter / Escape+Enter inserts newline for multi-line prompts."""
         event.current_buffer.insert_text("\n")
 
+    @kb.add("c-u")
+    def _(event: KeyPressEvent) -> None:
+        """Ctrl+U: insert '/update' into the buffer so the user can confirm."""
+        event.current_buffer.insert_text("/update")
+
     pt_session: PromptSession[str] = PromptSession(
         history=_build_history(),
         completer=SlashCommandCompleter(session),
@@ -1251,6 +1288,8 @@ async def _run_interactive(
         key_bindings=kb,
         vi_mode=ui.vi_mode_enabled(),
     )
+
+    update_task = asyncio.create_task(_check_update_background(session))
 
     multiline_buffer: list[str] = []
     in_multiline_block = False
@@ -1319,6 +1358,11 @@ async def _run_interactive(
             if await _run_turn_with_steering(agent, pt_session, session, line):
                 break
     finally:
+        update_task.cancel()
+        try:
+            await update_task
+        except (asyncio.CancelledError, Exception):
+            pass
         _run_lifecycle_hooks(bus, events.SESSION_END, session)
         current_mcp = mcp.get_manager()
         if current_mcp is not None:

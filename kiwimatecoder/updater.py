@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
@@ -12,6 +15,232 @@ from rich.markup import escape
 
 PACKAGE_NAME = "kiwimatecoder"
 GITHUB_REPO_URL = "https://github.com/Kyle8933/kiwimatecoder.git"
+GITHUB_REPO_OWNER = "Kyle8933"
+GITHUB_REPO_NAME = "kiwimatecoder"
+UPDATE_STATE_NAME = "update_check.json"
+DEFAULT_CHECK_INTERVAL_HOURS = 24
+
+
+@dataclass(frozen=True)
+class UpdateInfo:
+    """Result of checking for a newer KiwiMateCoder version."""
+
+    update_available: bool
+    current_version: str
+    latest_version: str
+    current_sha: str | None = None
+    latest_sha: str | None = None
+    commits_behind: int | None = None
+    error: str | None = None
+
+
+def _update_state_path() -> Path:
+    from kiwimatecoder.config import CONFIG_DIR
+
+    return CONFIG_DIR / UPDATE_STATE_NAME
+
+
+def load_update_state() -> dict:
+    """Load the cached update-check state (last check time, last seen version)."""
+    path = _update_state_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_update_state(state: dict) -> None:
+    """Persist the update-check state."""
+    from kiwimatecoder.config import ensure_config_dir
+
+    ensure_config_dir()
+    path = _update_state_path()
+    try:
+        path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _get_remote_head_sha(branch: str = "main") -> str | None:
+    """Return the short SHA of the remote branch HEAD via ``git ls-remote``."""
+    try:
+        cp = subprocess.run(
+            ["git", "ls-remote", GITHUB_REPO_URL, f"refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if cp.returncode != 0:
+        return None
+    line = cp.stdout.strip().splitlines()
+    if not line:
+        return None
+    full_sha = line[0].split()[0]
+    return full_sha[:7] if len(full_sha) >= 7 else full_sha
+
+
+def _get_latest_release_tag() -> str | None:
+    """Return the latest GitHub release tag, or None if unavailable."""
+    import httpx
+
+    from kiwimatecoder import network
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
+    try:
+        with httpx.Client(
+            timeout=8.0,
+            follow_redirects=True,
+            **network.current_options(),
+        ) as client:
+            response = client.get(url, headers={"Accept": "application/vnd.github+json"})
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            tag = data.get("tag_name")
+            return str(tag) if tag else None
+    except Exception:
+        return None
+
+
+def check_for_update(
+    *, force: bool = False, console: Console | None = None
+) -> UpdateInfo:
+    """Check whether a newer KiwiMateCoder version is available.
+
+    For source checkouts, compares the local HEAD SHA against the remote
+    branch HEAD. For packaged installs, queries the GitHub releases API.
+    Results are cached in ``~/.kiwimatecoder/update_check.json`` to avoid
+    hitting the network on every startup; ``force`` bypasses the cache.
+
+    Respects offline mode and never raises — failures return an ``UpdateInfo``
+    with ``error`` set.
+    """
+    from kiwimatecoder import __version__, network
+
+    if network.offline_enabled():
+        return UpdateInfo(
+            update_available=False,
+            current_version=__version__,
+            latest_version=__version__,
+            error="offline mode is enabled",
+        )
+
+    state = load_update_state()
+    now = time.time()
+
+    if not force:
+        last_check = state.get("last_check")
+        if isinstance(last_check, (int, float)):
+            from kiwimatecoder.config import get_update
+
+            interval_hours = get_update().get("check_interval_hours", DEFAULT_CHECK_INTERVAL_HOURS)
+            if now - last_check < interval_hours * 3600:
+                cached_available = state.get("update_available", False)
+                return UpdateInfo(
+                    update_available=bool(cached_available),
+                    current_version=str(state.get("current_version", __version__)),
+                    latest_version=str(state.get("latest_version", __version__)),
+                    current_sha=state.get("current_sha"),
+                    latest_sha=state.get("latest_sha"),
+                    commits_behind=state.get("commits_behind"),
+                )
+
+    current_version = __version__
+    source_root = find_source_root()
+
+    if source_root is not None and _has_git_remote(source_root):
+        local_sha = _get_short_sha(source_root)
+        branch = _get_branch(source_root) or "main"
+        remote_sha = _get_remote_head_sha(branch)
+
+        if remote_sha is None:
+            return UpdateInfo(
+                update_available=False,
+                current_version=current_version,
+                latest_version=current_version,
+                current_sha=local_sha,
+                error="could not reach GitHub",
+            )
+
+        if local_sha is None:
+            return UpdateInfo(
+                update_available=False,
+                current_version=current_version,
+                latest_version=current_version,
+                latest_sha=remote_sha,
+                error="could not determine local commit",
+            )
+
+        behind = _commits_behind(source_root, branch)
+        # Fetch first to get an accurate behind count
+        if behind is None:
+            try:
+                subprocess.run(
+                    ["git", "-C", str(source_root), "fetch", "origin", branch],
+                    capture_output=True,
+                    timeout=15,
+                )
+                behind = _commits_behind(source_root, branch)
+            except (OSError, subprocess.TimeoutExpired):
+                behind = None
+
+        update_available = local_sha != remote_sha and (behind is None or behind > 0)
+        result = UpdateInfo(
+            update_available=update_available,
+            current_version=current_version,
+            latest_version=current_version,
+            current_sha=local_sha,
+            latest_sha=remote_sha,
+            commits_behind=behind,
+        )
+    else:
+        latest_tag = _get_latest_release_tag()
+        if latest_tag is None:
+            return UpdateInfo(
+                update_available=False,
+                current_version=current_version,
+                latest_version=current_version,
+                error="could not reach GitHub",
+            )
+        update_available = latest_tag.lstrip("v") != current_version.lstrip("v")
+        result = UpdateInfo(
+            update_available=update_available,
+            current_version=current_version,
+            latest_version=latest_tag,
+        )
+
+    save_update_state(
+        {
+            "last_check": now,
+            "update_available": result.update_available,
+            "current_version": result.current_version,
+            "latest_version": result.latest_version,
+            "current_sha": result.current_sha,
+            "latest_sha": result.latest_sha,
+            "commits_behind": result.commits_behind,
+        }
+    )
+    return result
+
+
+def should_check_for_update() -> bool:
+    """Whether the periodic auto-check should run now (config + interval)."""
+    from kiwimatecoder.config import get_update
+
+    settings = get_update()
+    if not settings.get("auto_check", True):
+        return False
+    state = load_update_state()
+    last_check = state.get("last_check")
+    if not isinstance(last_check, (int, float)):
+        return True
+    interval_hours = settings.get("check_interval_hours", DEFAULT_CHECK_INTERVAL_HOURS)
+    return time.time() - last_check >= interval_hours * 3600
 
 
 def build_update_command(ref: str | None = None) -> list[str]:

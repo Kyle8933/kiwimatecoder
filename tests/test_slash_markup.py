@@ -256,7 +256,7 @@ def test_slash_commands_echo_typed_values_literally(hostile, setup):
 def test_the_sweep_covers_every_command_it_does_not_exclude():
     # A command added later must be run here or knowingly left out.
     left_out = {
-        "config", "exit", "quit", "doctor",
+        "config", "exit", "quit", "doctor", "update",
     }
     covered = {template.split()[0].lstrip("/") for template in TYPED}
     covered |= {name.lstrip("/") for name in SHOW}

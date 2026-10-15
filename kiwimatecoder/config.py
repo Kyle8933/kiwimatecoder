@@ -2629,6 +2629,59 @@ def offline_enabled(cfg: dict[str, Any] | None = None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Self-update settings
+# ---------------------------------------------------------------------------
+
+UPDATE_DEFAULTS: dict[str, Any] = {"auto_check": True, "check_interval_hours": 24}
+UPDATE_CHECK_INTERVAL_MIN = 1
+UPDATE_CHECK_INTERVAL_MAX = 24 * 30
+
+
+def get_update(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return normalized self-update settings, always fully populated."""
+    cfg = cfg or load_config()
+    stored = cfg.get("update") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    auto_check = stored.get("auto_check")
+    interval = stored.get("check_interval_hours")
+    return {
+        "auto_check": auto_check if isinstance(auto_check, bool) else UPDATE_DEFAULTS["auto_check"],
+        "check_interval_hours": (
+            interval
+            if isinstance(interval, (int, float))
+            and UPDATE_CHECK_INTERVAL_MIN <= interval <= UPDATE_CHECK_INTERVAL_MAX
+            else UPDATE_DEFAULTS["check_interval_hours"]
+        ),
+    }
+
+
+def set_update(
+    auto_check: bool | None = None,
+    check_interval_hours: float | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update self-update settings; omitted arguments keep their value."""
+    cfg = cfg or load_config()
+    current = get_update(cfg)
+    if auto_check is not None:
+        if not isinstance(auto_check, bool):
+            raise ValueError("update auto_check must be true or false.")
+        current["auto_check"] = auto_check
+    if check_interval_hours is not None:
+        hours = float(check_interval_hours)
+        if not UPDATE_CHECK_INTERVAL_MIN <= hours <= UPDATE_CHECK_INTERVAL_MAX:
+            raise ValueError(
+                f"update check_interval_hours must be between "
+                f"{UPDATE_CHECK_INTERVAL_MIN} and {UPDATE_CHECK_INTERVAL_MAX}."
+            )
+        current["check_interval_hours"] = int(hours)
+    cfg["update"] = current
+    save_config(cfg)
+    return current
+
+
+# ---------------------------------------------------------------------------
 # Persistent memory
 # ---------------------------------------------------------------------------
 

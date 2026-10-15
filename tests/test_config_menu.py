@@ -126,7 +126,8 @@ def test_menu_lists_every_section_this_suite_knows_about(session):
         "show", "providers", "keys", "model", "models", "mode", "permissions",
         "commands", "trust", "verify", "budget", "subagents", "sampling", "browser",
         "shell", "sandbox", "remote", "acp", "web", "network", "vision", "media",
-        "telemetry", "style", "ui", "prompt", "profile", "team", "cache", "help",
+        "telemetry", "style", "ui", "prompt", "profile", "team", "cache", "update",
+        "help",
     }
 
 
@@ -136,7 +137,7 @@ def test_menu_lists_every_section_this_suite_knows_about(session):
         "providers", "model", "models", "mode", "commands", "trust", "verify",
         "budget", "subagents", "sampling", "browser", "shell", "sandbox", "remote",
         "acp", "web", "network", "vision", "media", "telemetry", "style", "ui",
-        "prompt", "profile", "team", "cache",
+        "prompt", "profile", "team", "cache", "update",
     ],
 )
 def test_picking_a_section_asks_what_to_change(section, session, monkeypatch):
