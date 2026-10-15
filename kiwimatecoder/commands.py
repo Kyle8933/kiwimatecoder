@@ -3514,7 +3514,7 @@ def _update(arg: str, session: Session, console: Console) -> str:
             set_update(auto_check=False)
             console.print("[green]Auto-update check disabled.[/green]")
         else:
-            console.print("[yellow]Usage: /update auto-check [on|off][/yellow]")
+            console.print("[yellow]Usage: /update auto-check \\[on|off][/yellow]")
         return CommandResult.CONTINUE
 
     if action in {"interval", "check-interval"}:
@@ -3538,7 +3538,7 @@ def _update(arg: str, session: Session, console: Console) -> str:
     if action and not action.startswith("-"):
         console.print(
             f"[yellow]Unknown /update action '{escape(action)}'. "
-            "Usage: /update [check|auto-check [on|off]|interval <hours>][/yellow]"
+            "Usage: /update \\[check|auto-check \\[on|off]|interval <hours>][/yellow]"
         )
         return CommandResult.CONTINUE
 
