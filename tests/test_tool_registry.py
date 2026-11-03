@@ -22,6 +22,7 @@ BUILTIN_NAMES = [
     "shell",
     "shell_jobs",
     "update_todos",
+    "update_goal",
     "task",
     "ask_user",
     "web_fetch",

@@ -155,6 +155,7 @@ Goal: breadth of integrations and long-tail quality.
 - [x] 5.6 Vim/Emacs keybindings, notifications, image paste, @-mentions (M; depends 2.8)
 - [x] 5.7 Packaging: Homebrew/curl/Docker, version pin/rollback, SBOM, Windows CI (M–L)
 - [x] 5.8 Full accessibility audit (M; depends 2.8)
+- [x] 5.9 `/goal`: multi-round objectives with round limits, pause/resume, and model-reported status via `update_goal` (M; depends 1.11, 0.3)
 
 **5.1 follow-up:** image generation ships through OpenAI-compatible
 `/images/generations` endpoints (OpenRouter's `/images`; b64 or URL responses),
@@ -221,6 +222,15 @@ published tap yet), and `scripts/generate_sbom.py` writes a stdlib-only
 CycloneDX-style SBOM that CI uploads. The `windows-latest` CI job is
 `continue-on-error: true` because POSIX-only features (seatbelt/bwrap sandbox,
 some shell paths) are still unsupported there.
+
+**5.9 follow-up:** a goal is a REPL feature. Each round is an ordinary turn,
+and completion is self-reported: the model calls `update_goal` with `achieved`
+or `blocked`, which is offered only while a goal is active. There is no
+separate evaluator model call, so a goal that the model never reports is bounded
+by its round limit (10 by default, 100 at most) rather than by a verdict. Goals
+do not run in headless `-p` mode, and a goal saved with the session comes back
+paused. An unattended goal needs an auto-accept mode or pre-allowed tools,
+since permission prompts still apply.
 
 ## Critical paths
 

@@ -23,6 +23,7 @@ from kiwimatecoder.tools.forge import forge_tool, forge_write_tool
 from kiwimatecoder.tools.forge import preview as _forge_write_preview
 from kiwimatecoder.tools.git import git_tool, git_write_tool
 from kiwimatecoder.tools.git import preview as _git_write_preview
+from kiwimatecoder.tools.goal import update_goal_tool
 from kiwimatecoder.tools.image import (
     generate_image_tool,
     generate_video_tool,
@@ -83,6 +84,7 @@ _ALL_TOOLS: list[FunctionTool] = [
     shell_tool,
     shell_jobs_tool,
     update_todos_tool,
+    update_goal_tool,
     task_tool,
     ask_user_tool,
     web_fetch_tool,

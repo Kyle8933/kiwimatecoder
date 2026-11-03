@@ -116,6 +116,9 @@ class Agent:
         self.confirm = confirm
         self.bus = bus if bus is not None else events.BUS
         self._budget_warned = False
+        # Why the most recent run_turn ended ("stop", "budget", ...); the REPL
+        # reads it to decide whether a /goal keeps going. None while a turn runs.
+        self.last_stop_reason: str | None = None
         self.ascii_mode = bool(ascii_mode)
         self.output_mode = output_mode if output_mode in ui.OUTPUT_MODES else "normal"
         self.event_handler = event_handler
@@ -132,6 +135,11 @@ class Agent:
             self.event_handler(name, payload)
         except Exception:
             _log.debug("event handler failed for %s", name, exc_info=True)
+
+    def _done(self, reason: str, **payload: Any) -> None:
+        """Record how a turn ended, then tell the event handler."""
+        self.last_stop_reason = reason
+        self._emit("done", reason=reason, **payload)
 
     def _redacted_args(self, args: dict[str, Any]) -> dict[str, Any]:
         """Return a JSON-safe copy of tool arguments with secrets redacted."""
@@ -211,10 +219,11 @@ class Agent:
 
     async def run_turn(self, user_input: str) -> None:
         """Process one user message, looping over tool calls until the model stops."""
+        self.last_stop_reason = None
         blocked, reason = self._budget_exceeded()
         if blocked:
             self.console.print(f"[red]{escape(reason)}[/red]")
-            self._emit("done", reason="budget", error=reason)
+            self._done("budget", error=reason)
             return
 
         from kiwimatecoder.config import get_model_routing
@@ -246,7 +255,7 @@ class Agent:
             except ProviderError as exc:
                 self.console.print(f"\n[red]{escape(str(exc))}[/red]")
                 self._emit("error", kind="provider", error=str(exc))
-                self._emit("done", reason="provider_error")
+                self._done("provider_error")
                 return
 
             self.session.messages.append(assistant_msg)
@@ -260,11 +269,11 @@ class Agent:
                     # The model must answer the steered message.
                     continue
                 self._warn_budget()
-                self._emit("done", reason="stop")
+                self._done("stop")
                 return
 
             if self.max_turns is not None and tool_turns >= self.max_turns:
-                self._emit("done", reason="max_turns", limit=self.max_turns)
+                self._done("max_turns", limit=self.max_turns)
                 return
             edited = await self._handle_tool_calls(tool_calls) or edited
             tool_turns += 1
@@ -384,9 +393,11 @@ class Agent:
         rest as a second line of defense). Subagents never see ``task`` (no
         nested subagents) or ``ask_user`` (no interactive user), and ``task``
         is hidden for everyone while subagents are disabled. ``browser`` is
-        hidden until browser automation is enabled in config.
+        hidden until browser automation is enabled in config. ``update_goal``
+        is offered only while a /goal is active.
         """
         from kiwimatecoder.config import get_browser, get_subagents
+        from kiwimatecoder.goal import ACTIVE
 
         schemas = tools.tool_schemas(
             read_only=self.session.mode is PermissionMode.PLAN
@@ -398,6 +409,9 @@ class Agent:
             excluded.add("task")
         if not get_browser()["enabled"]:
             excluded.add("browser")
+        goal = self.session.goal
+        if goal is None or goal.status != ACTIVE:
+            excluded.add("update_goal")
         if excluded:
             schemas = [
                 schema
