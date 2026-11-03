@@ -77,7 +77,9 @@ class StrictConsole(Console):
     """A console that records every string that does not survive rendering."""
 
     def __init__(self, hostile: str) -> None:
-        super().__init__(file=io.StringIO(), force_terminal=False, width=200)
+        # Wide enough that a long hook command or interpreter path (a checkout
+        # under a deep directory, say) is never wrapped mid-string in the output.
+        super().__init__(file=io.StringIO(), force_terminal=False, width=1000)
         self.hostile = hostile
         self.problems: list[str] = []
 

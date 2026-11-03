@@ -956,13 +956,17 @@ def _expand_context_input(
     if pattern.is_absolute() or pattern.root or pattern.drive:
         return [], [f"Glob patterns must be relative to the workspace: {raw_path}"]
 
+    # Python 3.10-3.12 raise ValueError for "a**b", but 3.13 just returns no matches,
+    # so the rule is checked here: '**' is a wildcard only as a whole path component.
+    if any("**" in part and part != "**" for part in pattern.parts):
+        return [], ["Invalid glob pattern: '**' can only be an entire path component"]
+
     root = session.workspace_root.resolve()
     errors: list[str] = []
     matches: list[Path] = []
     try:
         candidates = sorted(root.glob(raw_path))
     except (NotImplementedError, ValueError, OSError) as exc:
-        # e.g. "a**b": '**' can only be an entire path component
         return [], [f"Invalid glob pattern: {exc}"]
     for candidate in candidates:
         try:
