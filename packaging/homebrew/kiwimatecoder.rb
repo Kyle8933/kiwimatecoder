@@ -21,9 +21,9 @@ class Kiwimatecoder < Formula
   desc "Agentic AI coding assistant CLI"
   homepage "https://github.com/Kyle8933/kiwimatecoder"
   url "https://github.com/Kyle8933/kiwimatecoder.git",
-      tag:      "v0.1.0", # TODO: bump to the release tag
-      revision: "0000000000000000000000000000000000000000" # TODO: tag commit SHA
-  version "0.1.0"
+      tag:      "v0.2.0",
+      revision: "97026c7fb176f67058cc8b4425fe7642a36acfc7"
+  version "0.2.0"
   license "MIT"
 
   depends_on "python@3.12"
