@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiwimatecoder import commands, config, i18n, jobs, tools
+from kiwimatecoder import commands, config, goal as goal_module, i18n, jobs, tools
 from kiwimatecoder import session as session_module
 from kiwimatecoder.checkpoints import Checkpoint
 from kiwimatecoder.commands import dispatch
@@ -41,7 +41,7 @@ TYPED = [
     "/context add {V}", "/context remove {V}", "/context remove {V}",
     "/context drop {V}", "/ctx add {V}", "/cost {V}", "/dry-run {V}",
     "/dryrun {V}", "/export {V}", "/files {V}", "/save {V}", "/load {V}",
-    "/fork {V}", "/help {V}", "/index {V}", "/jobs {V}", "/jobs show {V}",
+    "/fork {V}", "/goal {V}", "/help {V}", "/index {V}", "/jobs {V}", "/jobs show {V}",
     "/jobs cancel {V}", "/lsp {V}", "/mcp {V}", "/media {V}", "/memory {V}",
     "/memory add {V}", "/memory add-user {V}", "/memory clear {V}", "/mode {V}",
     "/model {V}", "/provider {V}", "/sessions {V}", "/share import {V}",
@@ -61,7 +61,7 @@ TYPED = [
 # Run after the state is seeded again (/clear above empties the checkpoints, and
 # the context list has been rebuilt), so every list/show command has rows to print.
 SHOW = [
-    "/checkpoints", "/context", "/cost", "/files", "/help", "/index", "/jobs",
+    "/checkpoints", "/context", "/cost", "/files", "/goal", "/help", "/index", "/jobs",
     "/jobs show job1", "/jobs cancel job1", "/lsp", "/mcp", "/media", "/memory",
     "/mode", "/model", "/provider", "/sessions", "/templates", "/todos",
     "/tools", "/video", "/dry-run", "/share", "/sync", "/undo",
@@ -213,6 +213,10 @@ def _seed(session, hostile) -> None:
     session.context_files = [
         hostile, f"gone{hostile}", f"dir{hostile}", f"bin{hostile}", f"../{hostile}",
     ]
+    # A paused goal whose objective, progress and reason all carry the value.
+    session.goal = goal_module.new_goal(hostile)
+    goal_module.pause(session.goal, hostile)
+    session.goal.progress = hostile
 
 
 @pytest.mark.parametrize("hostile", HOSTILE)

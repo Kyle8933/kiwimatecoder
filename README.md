@@ -176,6 +176,7 @@ paths outside the workspace root; writes stay sandboxed.
 | `/dry-run [on\|off\|toggle]` | Preview mutating actions without running them. |
 | `/undo [count]`, `/checkpoints` | Restore files changed by recent tools, or list checkpoints. |
 | `/todos` | Show the agent's task list. |
+| `/goal [--rounds N] <objective>`, `/goal pause\|resume\|clear` | Keep the agent working on an objective across rounds until it reports the goal achieved or blocked, or the round limit is reached. Bare `/goal` shows the current goal (see [Goals](#goals)). |
 | `/templates` | List custom prompt templates discovered in the workspace and user command directories. |
 | `/compact [budget]` | Trim older history to fit a token budget. |
 | `/save`, `/load`, `/sessions`, `/fork [name]`, `/export [path]` | Save, resume, branch, or export sessions as Markdown. |
@@ -275,6 +276,8 @@ The assistant has these capabilities, all scoped to the workspace:
 - `shell_jobs` — start, list, read, or kill detached background commands
   (approval-gated; see below).
 - `update_todos` — keep the visible task list in sync with multi-step work.
+- `update_goal` — report progress on, or the outcome of, a `/goal`. It is only
+  offered to the model while a goal is active (see Goals below).
 - `task` — delegate a focused investigation to a subagent with its own context
   (approval-gated; see below).
 - `ask_user` — ask a clarifying question with optional choices (interactive
@@ -1617,6 +1620,38 @@ kiwimatecoder config verify set "pytest -q"
 kiwimatecoder config verify show
 kiwimatecoder config verify clear
 ```
+
+## Goals
+
+`/goal` keeps the agent working on an objective across several rounds, so a
+larger task can run without you prompting each step:
+
+```text
+/goal make every test in tests/parser pass without changing expected output
+/goal --rounds 20 migrate the config loader to TOML
+/goal
+/goal pause
+/goal resume
+/goal clear
+```
+
+Each round is an ordinary agent turn. After a round, the agent starts another
+unless it reports the goal with `update_goal`:
+
+- `achieved`, once it has checked the result (the summary says how);
+- `blocked`, when it needs something only you can provide (the summary says what).
+
+A goal also pauses when the round limit is reached (10 by default, up to 100
+with `--rounds`), when a round ends abnormally (the budget is spent, the provider
+fails, or the tool-call limit is hit), or when you press Ctrl-C or run
+`/goal pause`. Messages you type during a round steer it, as usual.
+`/goal resume` gives it a fresh round allowance. A goal saved with `/save`
+comes back paused, so nothing runs until you resume it.
+
+Permission prompts still apply to every tool call. For an unattended run, pick
+`/mode auto-accept`, or answer `a` (always) at a prompt for the tools you trust.
+If the objective starts with a word such as `clear`, put `--` first:
+`/goal -- clear the build cache and rerun the tests`.
 
 ## Budgets
 

@@ -60,6 +60,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from kiwimatecoder import __version__, browser, events, hooks, images, lsp, mcp, notify, plugins, ui
+from kiwimatecoder import goal as goal_module
 from kiwimatecoder.agent import Agent
 from kiwimatecoder.commands import (
     CommandOption,
@@ -1168,11 +1169,54 @@ async def _run_turn_with_steering(
         raise
 
     if interrupted:
+        agent.last_stop_reason = "interrupted"
         console.print(f"\n[yellow]{t('prompt.interrupted')}[/yellow]")
 
     if await _process_deferred_commands(session):
         exit_requested = True
     return exit_requested
+
+
+def _announce_goal_stop(goal: goal_module.Goal) -> None:
+    """Say why a goal stopped after a round (it is not due another one)."""
+    if goal.status == goal_module.ACHIEVED:
+        console.print(
+            f"[green]Goal achieved after {goal.rounds} round(s).[/green] "
+            f"{escape(goal.outcome)}"
+        )
+    elif goal.status == goal_module.BLOCKED:
+        console.print(
+            f"[yellow]Goal blocked: {escape(goal.outcome)}[/yellow]\n"
+            "[dim]Answer above, then /goal resume.[/dim]"
+        )
+    elif goal.status == goal_module.PAUSED:
+        console.print(
+            f"[yellow]Goal paused: {escape(goal.outcome)}.[/yellow] "
+            "[dim]/goal resume continues it, /goal clear drops it.[/dim]"
+        )
+
+
+async def _drive_goal(
+    agent: Agent, pt_session: PromptSession[str], session: Session
+) -> bool:
+    """Run goal rounds back to back while the session goal is due.
+
+    Each round is an ordinary agent turn, so steering, Ctrl-C and approvals all
+    work as they do elsewhere. Returns True when the REPL should exit.
+    """
+    while session.goal is not None and session.goal.due:
+        goal = session.goal
+        prompt = goal_module.start_round(goal)
+        # Plain text rather than a box-drawing rule, which ASCII mode cannot show.
+        console.print(f"[dim]goal round {goal.rounds} of {goal.max_rounds}[/dim]")
+        if await _run_turn_with_steering(agent, pt_session, session, prompt):
+            return True
+        # A /goal command may have replaced or cleared the goal mid-round.
+        if session.goal is goal:
+            goal_module.finish_round(goal, agent.last_stop_reason)
+            if not goal.due:
+                _announce_goal_stop(goal)
+    return False
 
 
 def _run_lifecycle_hooks(
@@ -1296,6 +1340,9 @@ async def _run_interactive(
 
     try:
         while True:
+            # A goal set by /goal (or queued during a turn) runs before the next prompt.
+            if await _drive_goal(agent, pt_session, session):
+                break
             try:
                 prompt_str = (
                     HTML("<ansicyan>... </ansicyan>")

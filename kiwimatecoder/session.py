@@ -17,6 +17,7 @@ from kiwimatecoder.config import (
     get_provider_config,
     resolve_model,
 )
+from kiwimatecoder.goal import Goal
 from kiwimatecoder.permissions import PermissionMode
 from kiwimatecoder.pricing import estimate_messages_tokens
 from kiwimatecoder.providers import ProviderConfig
@@ -60,6 +61,8 @@ class Session:
     context_window: int = 128000
     # Agent-maintained task list.
     todos: list[dict[str, Any]] = field(default_factory=list)
+    # Standing objective set with /goal (see kiwimatecoder.goal), if any.
+    goal: Goal | None = None
     # File snapshots for /undo (in-memory; cleared when the process exits).
     checkpoints: list[Checkpoint] = field(default_factory=list)
     checkpoint_store: CheckpointStore | None = field(default=None, repr=False)
@@ -319,6 +322,7 @@ class Session:
             "compact_at_tokens": self.compact_at_tokens,
             "context_window": self.context_window,
             "todos": self.todos,
+            "goal": self.goal.to_dict() if self.goal else None,
         }
 
     @classmethod
@@ -366,6 +370,7 @@ class Session:
                 for todo in (data.get("todos") or [])
                 if isinstance(todo, dict)
             ],
+            goal=Goal.from_dict(data.get("goal")),
         )
 
 

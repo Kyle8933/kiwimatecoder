@@ -18,6 +18,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from kiwimatecoder import goal as goal_module
 from kiwimatecoder import tools
 from kiwimatecoder import media as media_module
 from kiwimatecoder import memory as memory_module
@@ -956,13 +957,17 @@ def _expand_context_input(
     if pattern.is_absolute() or pattern.root or pattern.drive:
         return [], [f"Glob patterns must be relative to the workspace: {raw_path}"]
 
+    # Python 3.10-3.12 raise ValueError for "a**b", but 3.13 just returns no matches,
+    # so the rule is checked here: '**' is a wildcard only as a whole path component.
+    if any("**" in part and part != "**" for part in pattern.parts):
+        return [], ["Invalid glob pattern: '**' can only be an entire path component"]
+
     root = session.workspace_root.resolve()
     errors: list[str] = []
     matches: list[Path] = []
     try:
         candidates = sorted(root.glob(raw_path))
     except (NotImplementedError, ValueError, OSError) as exc:
-        # e.g. "a**b": '**' can only be an entire path component
         return [], [f"Invalid glob pattern: {exc}"]
     for candidate in candidates:
         try:
@@ -6279,6 +6284,92 @@ def _media(
     return CommandResult.CONTINUE
 
 
+def _goal(arg: str, session: Session, console: Console) -> str:
+    """Show, set, pause, resume or clear the session goal (see kiwimatecoder.goal).
+
+    Setting or resuming a goal only marks it due; the REPL runs the rounds once
+    this command returns.
+    """
+    try:
+        command = goal_module.parse_goal_command(arg)
+    except ValueError as exc:
+        console.print(f"[yellow]{escape(str(exc))}[/yellow]")
+        return CommandResult.CONTINUE
+
+    goal = session.goal
+    if command.verb == "show":
+        _print_goal(goal, console)
+    elif command.verb == "set":
+        session.goal = goal_module.new_goal(command.objective, command.max_rounds)
+        console.print(
+            f"[green]Goal set[/green] (up to {session.goal.max_rounds} rounds): "
+            f"{escape(session.goal.objective)}"
+        )
+        console.print(
+            "[dim]Ctrl-C stops it. Permission prompts still apply; /mode auto-accept "
+            "lets it run unattended.[/dim]"
+        )
+    elif command.verb == "pause":
+        if goal is None or goal.status != goal_module.ACTIVE:
+            console.print("[yellow]No running goal to pause.[/yellow]")
+        else:
+            # Not due means a round is in progress, which finishes before the pause.
+            running = not goal.due
+            goal_module.pause(goal, "paused by you")
+            console.print(
+                "[yellow]Goal will pause after the current round.[/yellow]"
+                if running
+                else "[yellow]Goal paused.[/yellow]"
+            )
+            console.print("[dim]/goal resume continues it.[/dim]")
+    elif command.verb == "resume":
+        if goal is None:
+            console.print("[yellow]No goal to resume. Set one with /goal <objective>.[/yellow]")
+        elif goal.status == goal_module.ACHIEVED:
+            console.print(
+                "[dim]That goal is already achieved. Set a new one with /goal <objective>.[/dim]"
+            )
+        elif goal.status == goal_module.ACTIVE:
+            console.print("[dim]The goal is already running.[/dim]")
+        else:
+            goal_module.resume(goal)
+            console.print(f"[green]Resuming goal[/green] (up to {goal.max_rounds} more rounds).")
+    elif command.verb == "clear":
+        if goal is None:
+            console.print("[dim]No goal to clear.[/dim]")
+        else:
+            session.goal = None
+            console.print("[dim]Goal cleared.[/dim]")
+    return CommandResult.CONTINUE
+
+
+def _print_goal(goal: goal_module.Goal | None, console: Console) -> None:
+    if goal is None:
+        console.print("[dim]No goal set. Start one with /goal <objective>.[/dim]")
+        return
+    detail = f"{goal.status}, round {goal.rounds} of {goal.max_rounds}"
+    if not goal.rounds:
+        detail = f"{goal.status}, up to {goal.max_rounds} rounds"
+    console.print(f"[bold]Goal:[/bold] {escape(goal.objective)}")
+    console.print(f"Status: {escape(detail)}")
+    if goal.progress:
+        console.print(f"Last progress: {escape(goal.progress)}")
+    labels = {
+        goal_module.ACHIEVED: "Result",
+        goal_module.BLOCKED: "Needs",
+        goal_module.PAUSED: "Why",
+    }
+    if goal.outcome and goal.status in labels:
+        console.print(f"{labels[goal.status]}: {escape(goal.outcome)}")
+    hints = {
+        goal_module.ACTIVE: "Running. /goal pause stops it after this round.",
+        goal_module.PAUSED: "/goal resume continues it. /goal clear drops it.",
+        goal_module.BLOCKED: "Answer the question above, then /goal resume.",
+        goal_module.ACHIEVED: "Done. Set a new goal with /goal <objective>.",
+    }
+    console.print(f"[dim]{hints[goal.status]}[/dim]")
+
+
 _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "help": _help,
     "exit": _exit,
@@ -6311,6 +6402,7 @@ _COMMANDS: dict[str, Callable[[str, Session, Console], str]] = {
     "rewind": _undo,
     "checkpoints": _checkpoints,
     "todos": _todos,
+    "goal": _goal,
     "memory": _memory,
     "compact": _compact,
     "index": _index,
@@ -6400,6 +6492,12 @@ _HELP_GROUPS = [
             ("/undo [count]", "Restore files changed by recent tool actions."),
             ("/checkpoints", "List captured file checkpoints."),
             ("/todos", "Show the agent's task list."),
+            (
+                "/goal [--rounds N] <objective> | pause | resume | clear",
+                "Work toward an objective across rounds until the agent reports it "
+                "achieved or blocked, or the round limit (default 10) is reached. "
+                "Bare /goal shows the current goal.",
+            ),
             (
                 "/memory [list|add|add-user|clear]",
                 "Show or edit persistent project and user memory.",
@@ -6534,6 +6632,7 @@ _COMMAND_DESCRIPTIONS = {
     "rewind": "Alias for /undo.",
     "checkpoints": "List captured file checkpoints.",
     "todos": "Show the agent's task list.",
+    "goal": "Work toward an objective across rounds, or show, pause, resume, or clear it.",
     "memory": "Show or edit persistent project and user memory.",
     "compact": "Trim older history to fit a token budget.",
     "index": "Show, refresh, or delete the codebase index used by semantic search.",
@@ -6574,6 +6673,12 @@ _MODE_DESCRIPTIONS = {
     "ask": "Approve writes and shell commands.",
     "auto-accept": "Run writes and commands without prompting.",
     "plan": "Read-only planning mode.",
+}
+
+_GOAL_ACTION_DESCRIPTIONS = {
+    "pause": "Stop the goal after the current round.",
+    "resume": "Continue a paused or blocked goal.",
+    "clear": "Drop the goal.",
 }
 
 _MEMORY_ACTION_DESCRIPTIONS = {
@@ -6717,6 +6822,8 @@ def slash_argument_completions(
         choices = _MODE_DESCRIPTIONS
     elif command == "memory":
         choices = _MEMORY_ACTION_DESCRIPTIONS
+    elif command == "goal":
+        choices = _GOAL_ACTION_DESCRIPTIONS
     elif command == "index":
         choices = _INDEX_ACTION_DESCRIPTIONS
     elif command == "model" and session is not None:
